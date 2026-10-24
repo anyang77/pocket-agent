@@ -501,11 +501,14 @@ class GitRepository(
         extraEnv = extraEnv + mapOf(
             "GIT_TERMINAL_PROMPT" to "0",
             "GIT_SSH_COMMAND" to buildString {
-                append("ssh -F ${shellQuote(sshConfig.absolutePath)}")
+                // Git interprets this value as a shell command. App-private
+                // paths contain no spaces, so quoting here would be passed
+                // through literally by some Git versions.
+                append("ssh -F ${sshConfig.absolutePath}")
                 append(" -o BatchMode=yes")
                 append(" -o IdentitiesOnly=yes")
                 append(" -o StrictHostKeyChecking=accept-new")
-                append(" -o UserKnownHostsFile=${shellQuote(sshKnownHosts.absolutePath)}")
+                append(" -o UserKnownHostsFile=${sshKnownHosts.absolutePath}")
                 append(" -o ConnectTimeout=20")
             },
             "GIT_CONFIG_SYSTEM" to "/dev/null",
