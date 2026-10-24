@@ -1177,6 +1177,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(gitDiff = "", gitDiffTitle = null) }
     }
 
+    fun openGitCommitDetail(hash: String) {
+        if (_state.value.gitCommitDetailLoading) return
+        _state.update {
+            it.copy(
+                gitCommitDetail = null,
+                gitCommitDetailLoading = true,
+                gitError = null,
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { gitRepository.commitDetail(hash) }
+                .onSuccess { detail ->
+                    _state.update {
+                        it.copy(gitCommitDetail = detail, gitCommitDetailLoading = false)
+                    }
+                }
+                .onFailure { error ->
+                    _state.update {
+                        it.copy(
+                            gitCommitDetailLoading = false,
+                            gitError = error.message ?: "无法读取提交详情",
+                        )
+                    }
+                }
+        }
+    }
+
+    fun closeGitCommitDetail() {
+        _state.update { it.copy(gitCommitDetail = null, gitCommitDetailLoading = false) }
+    }
+
     fun switchManagedRepository(path: String) {
         chooseWorkspaceDirectory(path)
     }

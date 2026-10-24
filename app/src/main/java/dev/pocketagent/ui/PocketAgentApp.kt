@@ -342,6 +342,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onPush = viewModel::gitPush,
                 onOpenDiff = viewModel::openGitDiff,
                 onCloseDiff = viewModel::closeGitDiff,
+                onOpenCommitDetail = viewModel::openGitCommitDetail,
+                onCloseCommitDetail = viewModel::closeGitCommitDetail,
                 onGitAccountSelected = viewModel::selectGitAccount,
                 onGitAccountRemoved = viewModel::removeGitAccount,
                 onGenerateSshAccount = viewModel::generateSshAccount,

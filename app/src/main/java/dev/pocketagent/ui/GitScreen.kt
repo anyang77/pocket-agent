@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.pocketagent.data.GitChange
 import dev.pocketagent.data.GitCommit
+import dev.pocketagent.data.GitCommitDetail
 import dev.pocketagent.data.SshAccount
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -75,6 +76,8 @@ fun GitScreen(
     onPush: () -> Unit,
     onOpenDiff: (GitChange) -> Unit,
     onCloseDiff: () -> Unit,
+    onOpenCommitDetail: (String) -> Unit,
+    onCloseCommitDetail: () -> Unit,
     onGitAccountSelected: (String) -> Unit,
     onGitAccountRemoved: (String) -> Unit,
     onGenerateSshAccount: (String) -> Unit,
@@ -89,6 +92,7 @@ fun GitScreen(
     var sshDialog by rememberSaveable { mutableStateOf(false) }
     var manageVisible by rememberSaveable { mutableStateOf(false) }
     var historyVisible by rememberSaveable { mutableStateOf(false) }
+    var expandedCommit by rememberSaveable { mutableStateOf<String?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val git = state.gitState
     val context = LocalContext.current
@@ -160,9 +164,14 @@ fun GitScreen(
         }
     }
 
+    val closeHistory = {
+        historyVisible = false
+        expandedCommit = null
+        onCloseCommitDetail()
+    }
     if (historyVisible) {
         ModalBottomSheet(
-            onDismissRequest = { historyVisible = false },
+            onDismissRequest = closeHistory,
             sheetState = sheetState,
         ) {
             Column(
@@ -178,16 +187,38 @@ fun GitScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "提交历史",
+                        if (git.hasUpstream) {
+                            "提交历史 · ${git.upstream}"
+                        } else {
+                            "提交历史 · 仅本地"
+                        },
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.titleMedium,
                     )
-                    TextButton(onClick = { historyVisible = false }) { Text("关闭") }
+                    TextButton(onClick = closeHistory) { Text("关闭") }
                 }
                 HorizontalDivider()
                 LazyColumn(contentPadding = PaddingValues(16.dp)) {
                     items(git.commits, key = { "history-${it.hash}" }) { commit ->
-                        CommitRow(commit)
+                        val expanded = expandedCommit == commit.hash
+                        CommitRow(
+                            commit = commit,
+                            hasUpstream = git.hasUpstream,
+                            expanded = expanded,
+                            loading = expanded && state.gitCommitDetailLoading,
+                            detail = state.gitCommitDetail?.takeIf {
+                                expanded && it.hash.startsWith(commit.hash)
+                            },
+                            onToggle = {
+                                if (expanded) {
+                                    expandedCommit = null
+                                    onCloseCommitDetail()
+                                } else {
+                                    expandedCommit = commit.hash
+                                    onOpenCommitDetail(commit.hash)
+                                }
+                            },
+                        )
                     }
                     if (git.commits.isEmpty()) {
                         item {
@@ -262,6 +293,20 @@ fun GitScreen(
                             style = MaterialTheme.typography.labelMedium,
                             color = if (git.staged.isNotEmpty() || git.changes.isNotEmpty()) {
                                 MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        Text(
+                            text = when {
+                                !git.hasUpstream -> "仅本地仓库 · 尚未设置远程分支"
+                                git.ahead == 0 && git.behind == 0 ->
+                                    "已与 ${git.upstream} 同步"
+                                else -> "本地未推送 ↑${git.ahead} · 远程待拉取 ↓${git.behind}"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (git.ahead > 0 || !git.hasUpstream) {
+                                MaterialTheme.colorScheme.tertiary
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
@@ -651,30 +696,160 @@ private fun GitChange.displayStatus(): String = when (status) {
 }
 
 @Composable
-private fun CommitRow(commit: GitCommit) {
-    Row(
+private fun CommitRow(
+    commit: GitCommit,
+    hasUpstream: Boolean,
+    expanded: Boolean,
+    loading: Boolean,
+    detail: GitCommitDetail?,
+    onToggle: () -> Unit,
+) {
+    val localOnly = !hasUpstream || commit.isAheadOfRemote
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.Top,
+            .clickable(onClick = onToggle),
+        shape = RoundedCornerShape(12.dp),
+        color = if (expanded) {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
     ) {
-        Text(
-            "●",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        Column(Modifier.padding(start = 9.dp)) {
-            Text(
-                commit.subject,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                "${commit.hash} · ${commit.author} · ${commit.date}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
+                Text(
+                    "●",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (localOnly) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                )
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 9.dp),
+                ) {
+                    Text(
+                        commit.subject,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = if (expanded) 4 else 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        "${commit.hash} · ${commit.author} · ${commit.date}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    when {
+                        !hasUpstream -> "仅本地"
+                        commit.isAheadOfRemote -> "本地未推送"
+                        else -> "远程已同步"
+                    },
+                    modifier = Modifier.padding(start = 8.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (localOnly) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                )
+                Text(
+                    if (expanded) "⌃" else "⌄",
+                    modifier = Modifier.padding(start = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (expanded) {
+                HorizontalDivider(Modifier.padding(vertical = 10.dp))
+                when {
+                    loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    detail != null -> {
+                        Text(
+                            "作者：${detail.author} <${detail.email}>",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        Text(
+                            "时间：${detail.date}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "提交：${detail.hash}",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (detail.body.isNotBlank()) {
+                            Text(
+                                detail.body,
+                                modifier = Modifier.padding(top = 8.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Text(
+                            "改动文件 · ${detail.changes.size}",
+                            modifier = Modifier.padding(top = 10.dp, bottom = 5.dp),
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        detail.changes.forEach { change ->
+                            Text(
+                                "${change.displayStatus()}  ${change.path}",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                ),
+                                color = when (change.status.firstOrNull()) {
+                                    'D' -> TermuxEditorColors.operator
+                                    'A' -> TermuxEditorColors.string
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                        val diffLines = detail.diff.lines()
+                        Text(
+                            "差异",
+                            modifier = Modifier.padding(top = 12.dp, bottom = 5.dp),
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                        ) {
+                            diffLines.take(240).forEach { line ->
+                                Text(
+                                    line.ifBlank { " " },
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                        lineHeight = 17.sp,
+                                    ),
+                                    color = when {
+                                        line.startsWith("+") && !line.startsWith("+++") ->
+                                            TermuxEditorColors.string
+                                        line.startsWith("-") && !line.startsWith("---") ->
+                                            TermuxEditorColors.operator
+                                        line.startsWith("@@") -> TermuxEditorColors.type
+                                        else -> MaterialTheme.colorScheme.onSurface
+                                    },
+                                    softWrap = false,
+                                )
+                            }
+                            if (diffLines.size > 240) {
+                                Text(
+                                    "… 其余 ${diffLines.size - 240} 行未展开",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

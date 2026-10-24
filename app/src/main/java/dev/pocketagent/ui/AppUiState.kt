@@ -8,6 +8,7 @@ import dev.pocketagent.data.ConversationSummary
 import dev.pocketagent.data.DirectoryEntry
 import dev.pocketagent.data.FileEntry
 import dev.pocketagent.data.GitState
+import dev.pocketagent.data.GitCommitDetail
 import dev.pocketagent.data.GitAccount
 import dev.pocketagent.data.SshAccount
 import dev.pocketagent.data.ManagedRepository
@@ -73,6 +74,8 @@ data class AppUiState(
     val gitDiffTitle: String? = null,
     val gitLoading: Boolean = false,
     val gitError: String? = null,
+    val gitCommitDetail: GitCommitDetail? = null,
+    val gitCommitDetailLoading: Boolean = false,
     val gitAccounts: List<GitAccount> = emptyList(),
     val activeGitAccountId: String? = null,
     val sshAccounts: List<SshAccount> = emptyList(),

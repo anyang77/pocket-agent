@@ -17,11 +17,25 @@ data class GitCommit(
     val author: String,
     val date: String,
     val subject: String,
+    val isAheadOfRemote: Boolean = false,
+)
+
+data class GitCommitDetail(
+    val hash: String,
+    val author: String,
+    val email: String,
+    val date: String,
+    val subject: String,
+    val body: String,
+    val changes: List<GitChange>,
+    val diff: String,
 )
 
 data class GitState(
     val isRepository: Boolean = false,
     val branch: String = "",
+    val hasUpstream: Boolean = false,
+    val upstream: String? = null,
     val ahead: Int = 0,
     val behind: Int = 0,
     val staged: List<GitChange> = emptyList(),
@@ -38,6 +52,8 @@ data class GitOperationResult(
 
 data class ParsedGitStatus(
     val branch: String,
+    val hasUpstream: Boolean,
+    val upstream: String?,
     val ahead: Int,
     val behind: Int,
     val staged: List<GitChange>,
@@ -112,8 +128,15 @@ object GitStatusParser {
         }.ifBlank { "(detached)" }
         val ahead = Regex("""ahead (\d+)""").find(header)?.groupValues?.get(1)?.toIntOrNull() ?: 0
         val behind = Regex("""behind (\d+)""").find(header)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        val upstream = Regex("""\.\.\.(\S+)""")
+            .find(header)
+            ?.groupValues
+            ?.get(1)
+            ?.takeUnless { "[gone]" in header }
         return ParsedGitStatus(
             branch = branch,
+            hasUpstream = upstream != null,
+            upstream = upstream,
             ahead = ahead,
             behind = behind,
             staged = staged.distinctBy { it.path to it.status },
@@ -249,13 +272,14 @@ class GitRepository(
             30_000,
         )
         val commits = if (log.exitCode == 0) {
-            log.output.lineSequence().mapNotNull { line ->
+            log.output.lineSequence().mapIndexedNotNull { index, line ->
                 val parts = line.split('\u001f', limit = 4)
                 if (parts.size < 4) null else GitCommit(
                     hash = parts[0],
                     author = parts[1],
                     date = parts[2],
                     subject = parts[3],
+                    isAheadOfRemote = parsed.ahead > 0 && index < parsed.ahead,
                 )
             }.toList()
         } else {
@@ -273,6 +297,8 @@ class GitRepository(
         return GitState(
             isRepository = true,
             branch = parsed.branch,
+            hasUpstream = parsed.hasUpstream,
+            upstream = parsed.upstream,
             ahead = parsed.ahead,
             behind = parsed.behind,
             staged = stagedChanges,
@@ -325,6 +351,48 @@ class GitRepository(
         } else {
             body
         }
+    }
+
+    suspend fun commitDetail(hash: String): GitCommitDetail {
+        require(hash.matches(Regex("[0-9a-fA-F]{4,64}"))) { "提交 Hash 无效" }
+        val metadata = run(
+            "git show -s --format=%H%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%b $hash",
+            30_000,
+        )
+        check(metadata.exitCode == 0) {
+            metadata.output.ifBlank { metadata.error ?: "无法读取提交信息" }
+        }
+        val parts = metadata.output.trimEnd().split('\u001f', limit = 6)
+        require(parts.size >= 5) { "提交信息格式异常" }
+        val changesResult = run(
+            "git diff-tree --root --no-commit-id --name-status -r -z $hash",
+            30_000,
+        )
+        val changes = if (changesResult.exitCode == 0) {
+            GitNameStatusParser.parse(changesResult.output, staged = false)
+        } else {
+            emptyList()
+        }
+        val diffResult = run(
+            "git show --format= --no-color --no-ext-diff --find-renames $hash",
+            60_000,
+        )
+        return GitCommitDetail(
+            hash = parts[0],
+            author = parts[1],
+            email = parts[2],
+            date = parts[3],
+            subject = parts[4],
+            body = parts.getOrElse(5) { "" }.trim(),
+            changes = changes,
+            diff = if (diffResult.exitCode in 0..1) {
+                diffResult.output.ifBlank { "(没有可显示的差异)" }.take(500_000)
+            } else {
+                diffResult.output.take(20_000).ifBlank {
+                    diffResult.error ?: "无法读取提交差异"
+                }
+            },
+        )
     }
 
     suspend fun init(): GitOperationResult =

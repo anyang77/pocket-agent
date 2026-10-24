@@ -17,6 +17,8 @@ class GitStatusParserTest {
         )
 
         assertEquals("main", parsed.branch)
+        assertEquals(true, parsed.hasUpstream)
+        assertEquals("origin/main", parsed.upstream)
         assertEquals(2, parsed.ahead)
         assertEquals(1, parsed.behind)
         assertEquals(listOf("README.md", "old.txt"), parsed.staged.map { it.path })
