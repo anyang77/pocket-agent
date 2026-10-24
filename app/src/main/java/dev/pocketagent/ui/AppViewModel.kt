@@ -851,7 +851,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _state.update {
                 it.copy(
                     capabilities = it.capabilities.copy(internalTermuxReady = true),
-                    internalRuntimeInstallMessage = "内置 Termux 用户态已就绪",
+                    internalRuntimeInstallMessage = "内置开发环境已就绪",
                     internalRuntimeInstallProgress = 1f,
                 )
             }
@@ -860,11 +860,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 internalRuntimeInstalling = true,
-                internalRuntimeInstallMessage = "准备内置 Termux 用户态",
+                internalRuntimeInstallMessage = "准备内置开发环境",
                 internalRuntimeInstallProgress = 0f,
             )
         }
-        auditLog.append("runtime", "安装内置 Termux", "开始解压 bootstrap 和工具链")
+        auditLog.append("runtime", "安装开发环境", "开始解压运行环境和工具链")
         viewModelScope.launch {
             val installed = internalRuntime.ensureInstalled { message, progress ->
                 _state.update {
@@ -878,24 +878,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     internalRuntimeInstalling = false,
                     internalRuntimeInstallMessage = if (installed) {
-                        "内置 Termux 用户态已就绪"
+                        "内置开发环境已就绪"
                     } else {
-                        "内置 Termux 用户态安装失败"
+                        "内置开发环境安装失败"
                     },
                     internalRuntimeInstallProgress = if (installed) 1f else 0f,
                     capabilities = it.capabilities.copy(
                         internalTermuxReady = internalRuntime.isReady(),
                     ),
                     notice = if (installed) {
-                        "内置 Termux 用户态已就绪，不再依赖外部 Termux"
+                        "内置开发环境已就绪"
                     } else {
-                        "内置 Termux 用户态安装失败"
+                        "内置开发环境安装失败"
                     },
                 )
             }
             auditLog.append(
                 "runtime",
-                if (installed) "内置 Termux 就绪" else "内置 Termux 安装失败",
+                if (installed) "内置开发环境就绪" else "内置开发环境安装失败",
                 "prefix=${internalRuntime.prefix.absolutePath}",
             )
         }

@@ -61,7 +61,7 @@ class TermuxRuntime(context: Context) {
         onProgress: (String, Float) -> Unit = { _, _ -> },
     ): Boolean = withContext(Dispatchers.IO) {
         if (!isBaseReady()) {
-            onProgress("解压基础 Termux 用户态", 0.03f)
+            onProgress("解压基础运行环境", 0.03f)
             root.mkdirs()
             home.mkdirs()
             prefix.mkdirs()
@@ -74,10 +74,10 @@ class TermuxRuntime(context: Context) {
                 relocateTextAndSymlinks(staging)
                 prefix.deleteRecursively()
                 staging.renameTo(prefix).also { moved ->
-                    check(moved) { "无法切换到新的 Termux 用户态" }
+                    check(moved) { "无法切换到新的运行环境" }
                 }
                 marker.writeText(RUNTIME_VERSION)
-                onProgress("基础 Termux 已解压", 0.34f)
+                onProgress("基础运行环境已解压", 0.34f)
             } catch (error: Exception) {
                 Log.e(TAG, "Termux bootstrap install failed", error)
                 staging.deleteRecursively()
@@ -103,7 +103,7 @@ class TermuxRuntime(context: Context) {
             return@withContext true
         }
 
-        onProgress("准备国内 Termux 软件源", 0.35f)
+        onProgress("准备国内软件源", 0.35f)
         var downloadedBytes = 0L
         var packageCount = 0
         val mirrorArray = APT_MIRRORS.joinToString(" ") { shellQuote(it.url) }
@@ -128,7 +128,7 @@ class TermuxRuntime(context: Context) {
                     fi
                 done
                 [ "${'$'}selected" -eq 1 ] || {
-                    echo "所有 Termux 软件源均连接失败" >&2
+                    echo "所有软件源均连接失败" >&2
                     exit 1
                 }
                 apt-get install --download-only -y --no-install-recommends python python-pip npm nodejs clang make git openssh
@@ -216,7 +216,7 @@ class TermuxRuntime(context: Context) {
                 output = "",
                 timedOut = false,
                 durationMs = 0,
-                error = "内置 Termux 用户态尚未安装",
+                error = "内置开发环境尚未安装",
             )
         }
         ensureAptConfig()
@@ -267,7 +267,7 @@ class TermuxRuntime(context: Context) {
                 output = "",
                 timedOut = false,
                 durationMs = System.currentTimeMillis() - start,
-                error = error.message ?: "无法启动内置 Termux",
+                error = error.message ?: "无法启动内置开发环境",
             )
         }
 
@@ -295,7 +295,7 @@ class TermuxRuntime(context: Context) {
                     output = captured.toString(),
                     timedOut = !finished,
                     durationMs = System.currentTimeMillis() - start,
-                    error = if (finished) null else "内置 Termux 命令超时",
+                    error = if (finished) null else "内置命令执行超时",
                 )
             }
         } finally {
@@ -556,7 +556,7 @@ class TermuxRuntime(context: Context) {
                 "https://mirrors.nju.edu.cn/termux/apt/termux-main",
             ),
             AptMirror(
-                "Termux 官方",
+                "官方镜像",
                 "https://packages-cf.termux.dev/apt/termux-main",
             ),
         )

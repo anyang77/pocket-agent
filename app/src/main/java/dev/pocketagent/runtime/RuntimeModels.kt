@@ -22,7 +22,7 @@ data class RuntimeCapabilities(
 ) {
     val runtimeLabel: String
         get() = when {
-            internalTermuxReady -> "内置 Termux"
+            internalTermuxReady -> "开发环境就绪"
             rootGranted -> "Root 可用"
             else -> "系统 Shell"
         }

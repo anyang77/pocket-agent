@@ -22,7 +22,7 @@ private data class InstallStage(
 )
 
 private val installStages = listOf(
-    InstallStage("基础 Termux", 0f, 0.34f),
+    InstallStage("基础环境", 0f, 0.34f),
     InstallStage("软件源", 0.34f, 0.38f),
     InstallStage("下载工具链", 0.38f, 0.70f),
     InstallStage("解压与配置", 0.70f, 0.94f),

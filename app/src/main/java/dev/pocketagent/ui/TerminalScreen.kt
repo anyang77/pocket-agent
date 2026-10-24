@@ -47,12 +47,12 @@ fun TerminalScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Column(Modifier.weight(1f)) {
-                Text("Termux PTY", style = MaterialTheme.typography.titleSmall)
+                Text("交互式 Shell", style = MaterialTheme.typography.titleSmall)
                 Text(
                     if (state.capabilities.internalTermuxReady) {
-                        "bionic 交互式终端"
+                        "完整命令行与工具链"
                     } else {
-                        "正在准备内置 Termux 用户态"
+                        "正在准备内置开发环境"
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -85,7 +85,7 @@ fun TerminalScreen(
                 )
                 if (!state.internalRuntimeInstalling) {
                     OutlinedButton(onClick = onInstallRuntime) {
-                        Text("安装内置 Termux")
+                        Text("安装开发环境")
                     }
                 }
             }
