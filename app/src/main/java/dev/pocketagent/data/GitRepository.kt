@@ -181,6 +181,11 @@ class GitRepository(
     private val sshAccounts = SshAccountStore(context, commandRunner, runtimeHome)
     private val sshConfig = File(runtimeHome, ".ssh/config")
     private val sshKnownHosts = File(runtimeHome, ".ssh/known_hosts")
+    private val sshBinary = File(runtimeHome.parentFile, "usr/bin/ssh")
+    private val sshWrapper = File(
+        context.applicationInfo.nativeLibraryDir,
+        "libpocket_ssh.so",
+    )
 
     fun accounts(): List<GitAccount> = credentials.accounts()
 
@@ -500,17 +505,10 @@ class GitRepository(
         timeoutMs = timeoutMs,
         extraEnv = extraEnv + mapOf(
             "GIT_TERMINAL_PROMPT" to "0",
-            "GIT_SSH_COMMAND" to buildString {
-                // Git interprets this value as a shell command. App-private
-                // paths contain no spaces, so quoting here would be passed
-                // through literally by some Git versions.
-                append("ssh -F ${sshConfig.absolutePath}")
-                append(" -o BatchMode=yes")
-                append(" -o IdentitiesOnly=yes")
-                append(" -o StrictHostKeyChecking=accept-new")
-                append(" -o UserKnownHostsFile=${sshKnownHosts.absolutePath}")
-                append(" -o ConnectTimeout=20")
-            },
+            "GIT_SSH" to sshWrapper.absolutePath,
+            "POCKET_SSH_PATH" to sshBinary.absolutePath,
+            "POCKET_SSH_CONFIG" to sshConfig.absolutePath,
+            "POCKET_SSH_KNOWN_HOSTS" to sshKnownHosts.absolutePath,
             "GIT_CONFIG_SYSTEM" to "/dev/null",
             "GIT_CONFIG_COUNT" to "2",
             "GIT_CONFIG_KEY_0" to "safe.directory",
