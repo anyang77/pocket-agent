@@ -31,7 +31,7 @@ class SshAccountStore(
 
     fun accounts(): List<SshAccount> {
         val raw = preferences.getString("accounts", null) ?: return emptyList()
-        return runCatching {
+        val accounts = runCatching {
             val array = JSONArray(raw)
             buildList {
                 for (index in 0 until array.length()) {
@@ -53,6 +53,8 @@ class SshAccountStore(
                 }
             }
         }.getOrDefault(emptyList())
+        if (accounts.isNotEmpty()) writeConfig(accounts)
+        return accounts
     }
 
     suspend fun generate(label: String, onStatus: (String) -> Unit = {}): SshAccount {
@@ -119,11 +121,15 @@ class SshAccountStore(
                 appendLine("# Managed by Pocket Agent")
                 accounts.forEach { account ->
                     appendLine("Host ${account.alias}")
-                    appendLine("  HostName github.com")
+                    // Port 22 is blocked by some mobile carriers, VPNs and Wi-Fi
+                    // networks. GitHub officially supports SSH over 443 here.
+                    appendLine("  HostName ssh.github.com")
+                    appendLine("  Port 443")
                     appendLine("  User git")
                     appendLine("  IdentityFile ${account.keyPath}")
                     appendLine("  IdentitiesOnly yes")
                     appendLine("  StrictHostKeyChecking accept-new")
+                    appendLine("  ServerAliveInterval 30")
                     appendLine()
                 }
             },

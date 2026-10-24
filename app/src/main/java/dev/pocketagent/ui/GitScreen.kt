@@ -41,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -729,7 +730,15 @@ private fun CloneDialog(
     var username by rememberSaveable { mutableStateOf("") }
     var token by rememberSaveable { mutableStateOf("") }
     var selectedSshAccountId by rememberSaveable { mutableStateOf<String?>(null) }
+    var sshSelectionInitialized by rememberSaveable { mutableStateOf(false) }
     var showHttpsToken by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(sshAccounts) {
+        if (!sshSelectionInitialized && sshAccounts.isNotEmpty()) {
+            selectedSshAccountId = sshAccounts.first().id
+            sshSelectionInitialized = true
+        }
+    }
+    val selectedSshAccount = sshAccounts.firstOrNull { it.id == selectedSshAccountId }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("克隆 Git 仓库") },
@@ -749,12 +758,19 @@ private fun CloneDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (sshAccounts.isNotEmpty()) {
-                    Text("SSH 账号", style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        "SSH 账号（已配置的 Key 会自动优先使用）",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                         item {
                             AssistChip(
                                 onClick = { selectedSshAccountId = null },
-                                label = { Text("HTTPS") },
+                                label = {
+                                    Text(
+                                        if (selectedSshAccountId == null) "HTTPS ✓" else "HTTPS",
+                                    )
+                                },
                             )
                         }
                         items(sshAccounts, key = { it.id }) { account ->
@@ -762,7 +778,8 @@ private fun CloneDialog(
                                 onClick = { selectedSshAccountId = account.id },
                                 label = {
                                     Text(
-                                        account.label,
+                                        account.label +
+                                            if (selectedSshAccountId == account.id) " ✓" else "",
                                         color = if (selectedSshAccountId == account.id) {
                                             MaterialTheme.colorScheme.primary
                                         } else {
@@ -772,6 +789,13 @@ private fun CloneDialog(
                                 },
                             )
                         }
+                    }
+                    selectedSshAccount?.let { account ->
+                        Text(
+                            "将通过 SSH 克隆 · ${account.alias}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
                     }
                 }
                 if (selectedSshAccountId == null) {
