@@ -35,6 +35,7 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 - API Key 使用 Android Keystore + AES/GCM 保存
 - App 自带精简 Termux bionic 基础用户态，不依赖外部 Termux、不需要 Ubuntu/PRoot
 - 首次初始化通过 Termux apt 仓库按需下载 Python、pip、Node、npm、clang/LLVM 和 make
+- apt 初始化优先使用清华 TUNA，失败时自动回退 BFSU、USTC、NJU 和 Termux 官方源
 - App 使用 `targetSdk=30` 和 `MANAGE_EXTERNAL_STORAGE`，首次引导直接进入系统全盘文件访问授权
 - 内置 Termux 通过 system-linker 和 `termux-exec` 解决 Android 10+ 的 app-data 执行限制
 

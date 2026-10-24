@@ -103,14 +103,34 @@ class TermuxRuntime(context: Context) {
             return@withContext true
         }
 
-        onProgress("准备 Termux 软件源", 0.35f)
+        onProgress("准备国内 Termux 软件源", 0.35f)
         var downloadedBytes = 0L
         var packageCount = 0
+        val mirrorArray = APT_MIRRORS.joinToString(" ") { shellQuote(it.url) }
+        val mirrorNames = APT_MIRRORS.joinToString(" ") { shellQuote(it.label) }
         val result = run(
             command = """
                 set -e
                 export DEBIAN_FRONTEND=noninteractive
-                apt-get update -y
+                mirrors=($mirrorArray)
+                mirror_names=($mirrorNames)
+                selected=0
+                for index in "${'$'}{!mirrors[@]}"; do
+                    printf '__APT_MIRROR__:%s\n' "${'$'}{mirror_names[${'$'}index]}"
+                    printf 'deb %s stable main\n' "${'$'}{mirrors[${'$'}index]}" \
+                        > ${shellQuote(File(prefix, "etc/apt/sources.list").absolutePath)}
+                    if apt-get update -y \
+                        -o Acquire::Retries=2 \
+                        -o Acquire::http::Timeout=20 \
+                        -o Acquire::https::Timeout=20; then
+                        selected=1
+                        break
+                    fi
+                done
+                [ "${'$'}selected" -eq 1 ] || {
+                    echo "所有 Termux 软件源均连接失败" >&2
+                    exit 1
+                }
                 apt-get install --download-only -y --no-install-recommends python python-pip npm nodejs clang make git openssh
                 total=${'$'}(ls ${prefix.absolutePath}/var/cache/apt/archives/*.deb | wc -l)
                 index=0
@@ -126,6 +146,10 @@ class TermuxRuntime(context: Context) {
             timeoutMs = 15 * 60_000L,
             onOutput = { line ->
                 when {
+                    line.startsWith("__APT_MIRROR__:") -> onProgress(
+                        "连接软件源 · ${line.substringAfter("__APT_MIRROR__:").trim()}",
+                        0.36f,
+                    )
                     line.startsWith("Get:") -> {
                         packageCount++
                         downloadedBytes += parseAptSize(line)
@@ -446,6 +470,17 @@ class TermuxRuntime(context: Context) {
                 Acquire::https::CaInfo "${prefix.absolutePath}/etc/tls/cert.pem";
                 """.trimIndent() + "\n",
         )
+        val sources = File(aptDir, "sources.list")
+        if (
+            !sources.isFile ||
+            sources.readText().contains("packages.termux.dev") ||
+            sources.readText().contains("packages-cf.termux.dev")
+        ) {
+            sources.writeText(
+                "# Pocket Agent: domestic Termux mirror with automatic fallback\n" +
+                    "deb ${APT_MIRRORS.first().url} stable main\n",
+            )
+        }
         listOf(listsPartial, cachePartial).forEach {
             chmod(it, 0x1ED)
         }
@@ -501,5 +536,29 @@ class TermuxRuntime(context: Context) {
         private const val RUNTIME_VERSION = "termux-bootstrap-dynamic-v6"
         private const val LEGACY_RUNTIME_PREFIX = "termux-bootstrap-python-pip-node-clang"
         private const val TOOLCHAIN_VERSION = "apt-python-node-clang-make-v1"
+        private data class AptMirror(val label: String, val url: String)
+
+        private val APT_MIRRORS = listOf(
+            AptMirror(
+                "清华 TUNA",
+                "https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main",
+            ),
+            AptMirror(
+                "北外 BFSU",
+                "https://mirrors.bfsu.edu.cn/termux/apt/termux-main",
+            ),
+            AptMirror(
+                "中科大 USTC",
+                "https://mirrors.ustc.edu.cn/termux/apt/termux-main",
+            ),
+            AptMirror(
+                "南京大学 NJU",
+                "https://mirrors.nju.edu.cn/termux/apt/termux-main",
+            ),
+            AptMirror(
+                "Termux 官方",
+                "https://packages-cf.termux.dev/apt/termux-main",
+            ),
+        )
     }
 }
