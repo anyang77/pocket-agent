@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <link rel="stylesheet" href="codemirror.min.css">
+  <link rel="stylesheet" href="addon/hint/show-hint.min.css">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #090d12;
+    }
+    .CodeMirror {
+      position: absolute;
+      inset: 0;
+      width: auto !important;
+      height: auto !important;
+      background: #090d12;
+      color: #e6edf3;
+      font-family: "JetBrains Mono", "Roboto Mono", monospace;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .CodeMirror-gutters {
+      background: #0d141c;
+      border-right: 1px solid #263241;
+    }
+    .CodeMirror-linenumber {
+      color: #718096;
+    }
+    .CodeMirror-cursor {
+      border-left: 2px solid #8be9c1;
+    }
+    .CodeMirror-selected {
+      background: #26485e !important;
+    }
+    .CodeMirror-activeline-background {
+      background: #101b25;
+    }
+    .cm-keyword, .cm-builtin { color: #79c0ff; font-weight: 600; }
+    .cm-def, .cm-variable-2 { color: #d2a8ff; }
+    .cm-variable, .cm-variable-3 { color: #c9d1d9; }
+    .cm-string, .cm-string-2 { color: #7ee787; }
+    .cm-number { color: #e3d58a; }
+    .cm-comment { color: #8b949e; font-style: italic; }
+    .cm-type, .cm-atom { color: #56d4dd; }
+    .cm-operator, .cm-punctuation { color: #ff7b72; }
+    .cm-meta, .cm-tag { color: #ffa657; }
+    .cm-header { color: #79c0ff; font-weight: 700; }
+    .cm-link { color: #56d4dd; }
+    .cm-quote { color: #7ee787; }
+    .CodeMirror-hints {
+      background: #111821;
+      border: 1px solid #536476;
+      border-radius: 10px;
+      box-shadow: 0 8px 28px #0009;
+      color: #e6edf3;
+      font-family: "JetBrains Mono", "Roboto Mono", monospace;
+      font-size: 14px;
+      max-height: 240px;
+    }
+    .CodeMirror-hint {
+      color: #e6edf3;
+      padding: 7px 10px;
+    }
+    li.CodeMirror-hint-active {
+      background: #26485e;
+      color: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <textarea id="editor"></textarea>
+  <script src="codemirror.min.js"></script>
+  <script src="addon/edit/closebrackets.min.js"></script>
+  <script src="addon/edit/matchbrackets.min.js"></script>
+  <script src="addon/hint/show-hint.min.js"></script>
+  <script src="addon/mode/simple.min.js"></script>
+  <script src="mode/clike.min.js"></script>
+  <script src="mode/javascript.min.js"></script>
+  <script src="mode/python.min.js"></script>
+  <script src="mode/shell.min.js"></script>
+  <script src="mode/markdown.min.js"></script>
+  <script>
+    CodeMirror.defineSimpleMode("pocket-kotlin", {
+      start: [
+        {regex: /\/\/.*/, token: "comment"},
+        {regex: /\/\*/, token: "comment", next: "comment"},
+        {regex: /"(?:[^\\"]|\\.)*"?/, token: "string"},
+        {regex: /'(?:[^\\']|\\.)*'?/, token: "string"},
+        {regex: /\b(?:package|import|class|object|interface|fun|val|var|if|else|when|for|while|return|try|catch|finally|private|public|internal|protected|suspend|data|sealed|override|companion|lateinit|is|in|as|by)\b/, token: "keyword"},
+        {regex: /\b(?:String|Int|Long|Boolean|Float|Double|List|Map|Set|Any|Unit|Flow|Result|ByteArray)\b/, token: "type"},
+        {regex: /\b(?:true|false|null)\b/, token: "atom"},
+        {regex: /\b\d+(?:\.\d+)?\b/, token: "number"},
+        {regex: /@[A-Za-z_][\w.]*/, token: "def"},
+        {regex: /[A-Za-z_]\w*(?=\s*\()/, token: "def"},
+        {regex: /[+\-*\/%=<>!&|?:]+/, token: "operator"},
+        {regex: /[{}[\]();,.]/, token: "punctuation"}
+      ],
+      comment: [
+        {regex: /.*?\*\//, token: "comment", next: "start"},
+        {regex: /.*/, token: "comment"}
+      ],
+      meta: {dontIndentStates: ["comment"], lineComment: "//"}
+    });
+
+    const modes = {
+      kotlin: "pocket-kotlin",
+      java: "text/x-java",
+      cpp: "text/x-c++src",
+      python: "python",
+      javascript: "javascript",
+      typescript: "text/typescript",
+      shell: "shell",
+      json: {name: "javascript", json: true},
+      markdown: "markdown",
+      plain: null
+    };
+
+    const completions = {
+      kotlin: ["package", "import", "class", "object", "interface", "fun", "val", "var", "if", "else", "when", "for", "while", "return", "try", "catch", "private", "public", "suspend", "data", "override", "String", "Int", "Long", "Boolean", "List", "Map", "Result"],
+      java: ["package", "import", "class", "interface", "enum", "public", "private", "protected", "static", "final", "void", "new", "return", "if", "else", "for", "while", "try", "catch", "String", "Object", "Integer", "List", "Map"],
+      cpp: ["include", "int", "char", "void", "auto", "const", "static", "struct", "class", "namespace", "using", "return", "if", "else", "for", "while", "switch", "break", "vector", "string", "size_t"],
+      python: ["def", "class", "import", "from", "as", "if", "elif", "else", "for", "while", "return", "try", "except", "finally", "with", "lambda", "yield", "async", "await", "pass", "break", "continue", "True", "False", "None", "self", "print", "len"],
+      javascript: ["const", "let", "var", "function", "class", "import", "export", "from", "if", "else", "for", "while", "return", "async", "await", "try", "catch", "throw", "new", "console", "document", "Promise", "Array", "Object"],
+      typescript: ["const", "let", "var", "function", "class", "interface", "type", "import", "export", "from", "if", "else", "for", "while", "return", "async", "await", "try", "catch", "throw", "new", "string", "number", "boolean", "unknown", "Promise", "Record"],
+      shell: ["if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "function", "export", "local", "return", "echo", "cd", "pwd", "git", "python", "node", "clang"],
+      json: ["true", "false", "null"],
+      markdown: ["#", "##", "###", "- [ ]", "```"],
+      plain: []
+    };
+
+    let currentMode = "plain";
+    let currentDirty = false;
+    let suppressEvents = false;
+    let contentTimer = 0;
+    let positionTimer = 0;
+    let lastHintWord = "";
+
+    const editor = CodeMirror.fromTextArea(document.getElementById("editor"), {
+      mode: null,
+      lineNumbers: true,
+      lineWrapping: false,
+      indentUnit: 4,
+      tabSize: 4,
+      indentWithTabs: false,
+      smartIndent: true,
+      electricChars: true,
+      autoCloseBrackets: true,
+      matchBrackets: true,
+      viewportMargin: 18,
+      scrollbarStyle: "native",
+      inputStyle: "contenteditable",
+      styleActiveLine: true,
+      extraKeys: {
+        "Ctrl-Space": cm => cm.showHint({hint: pocketHint, completeSingle: false})
+      }
+    });
+
+    function bridge() {
+      return window.PocketEditorBridge || null;
+    }
+
+    function sendPosition() {
+      clearTimeout(positionTimer);
+      positionTimer = setTimeout(() => {
+        const pos = editor.getCursor();
+        const api = bridge();
+        if (api && api.onCursorChanged) api.onCursorChanged(pos.line + 1, pos.ch + 1);
+      }, 80);
+    }
+
+    function flushContent() {
+      clearTimeout(contentTimer);
+      contentTimer = 0;
+      const api = bridge();
+      if (api && api.onContentChanged) api.onContentChanged(editor.getValue());
+    }
+
+    function pocketHint(cm) {
+      const cursor = cm.getCursor();
+      const token = cm.getTokenAt(cursor);
+      const before = cm.getRange({line: cursor.line, ch: 0}, cursor);
+      const match = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
+      if (!match) return null;
+      const word = match[1];
+      const start = cursor.ch - word.length;
+      const words = new Set(completions[currentMode] || []);
+      const source = cm.getValue();
+      const symbols = source.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+      symbols.slice(0, 1200).forEach(value => {
+        if (value.length >= 2) words.add(value);
+      });
+      const list = Array.from(words)
+        .filter(value => value.toLowerCase().startsWith(word.toLowerCase()))
+        .sort((a, b) => a.length - b.length || a.localeCompare(b))
+        .slice(0, 30);
+      if (!list.length) return null;
+      return {
+        list,
+        from: CodeMirror.Pos(cursor.line, start),
+        to: cursor
+      };
+    }
+
+    editor.on("change", () => {
+      if (suppressEvents) return;
+      currentDirty = true;
+      const api = bridge();
+      if (api && api.onDirtyChanged) api.onDirtyChanged(true);
+      clearTimeout(contentTimer);
+      contentTimer = setTimeout(flushContent, 250);
+    });
+    editor.on("cursorActivity", sendPosition);
+    editor.on("blur", flushContent);
+    editor.on("inputRead", (cm, change) => {
+      if (!change.origin || !change.origin.startsWith("+")) return;
+      const cursor = cm.getCursor();
+      const before = cm.getRange({line: cursor.line, ch: 0}, cursor);
+      const match = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
+      const word = match ? match[1] : "";
+      if (word.length >= 2 && word !== lastHintWord) {
+        lastHintWord = word;
+        clearTimeout(window.hintTimer);
+        window.hintTimer = setTimeout(() => {
+          cm.showHint({hint: pocketHint, completeSingle: false});
+        }, 90);
+      }
+    });
+
+    window.PocketEditor = {
+      setValue(text) {
+        suppressEvents = true;
+        const cursor = editor.getCursor();
+        editor.setValue(text || "");
+        editor.setCursor(Math.min(cursor.line, Math.max(0, editor.lineCount() - 1)), 0);
+        currentDirty = false;
+        suppressEvents = false;
+        setTimeout(() => editor.refresh(), 0);
+      },
+      setMode(mode) {
+        currentMode = mode in modes ? mode : "plain";
+        editor.setOption("mode", modes[currentMode]);
+        setTimeout(() => editor.refresh(), 0);
+      },
+      getValue() {
+        return editor.getValue();
+      },
+      focus() {
+        editor.focus();
+      },
+      showCompletions() {
+        editor.showHint({hint: pocketHint, completeSingle: false});
+      },
+      flush() {
+        flushContent();
+      }
+    };
+
+    setTimeout(() => {
+      editor.refresh();
+      const api = bridge();
+      if (api && api.onReady) api.onReady();
+    }, 30);
+  </script>
+</body>
+</html>
