@@ -16,9 +16,14 @@
       overflow: hidden;
       background: #090d12;
     }
+    body {
+      display: flex;
+      flex-direction: column;
+    }
     .CodeMirror {
-      position: absolute;
-      inset: 0;
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
       width: auto !important;
       height: auto !important;
       background: #090d12;
@@ -39,11 +44,10 @@
     }
     #findPanel {
       display: none;
-      position: fixed;
-      z-index: 20;
-      top: 8px;
-      right: 8px;
-      width: min(92vw, 560px);
+      position: relative;
+      flex: 0 0 auto;
+      width: auto;
+      margin: 8px;
       padding: 9px;
       background: #111821;
       border: 1px solid #536476;
