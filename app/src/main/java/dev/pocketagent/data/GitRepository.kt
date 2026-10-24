@@ -179,6 +179,8 @@ class GitRepository(
 ) {
     private val credentials = GitCredentialStore(context)
     private val sshAccounts = SshAccountStore(context, commandRunner, runtimeHome)
+    private val sshConfig = File(runtimeHome, ".ssh/config")
+    private val sshKnownHosts = File(runtimeHome, ".ssh/known_hosts")
 
     fun accounts(): List<GitAccount> = credentials.accounts()
 
@@ -498,6 +500,15 @@ class GitRepository(
         timeoutMs = timeoutMs,
         extraEnv = extraEnv + mapOf(
             "GIT_TERMINAL_PROMPT" to "0",
+            "GIT_SSH_COMMAND" to buildString {
+                append("ssh -F ${shellQuote(sshConfig.absolutePath)}")
+                append(" -o BatchMode=yes")
+                append(" -o IdentitiesOnly=yes")
+                append(" -o StrictHostKeyChecking=accept-new")
+                append(" -o UserKnownHostsFile=${shellQuote(sshKnownHosts.absolutePath)}")
+                append(" -o ConnectTimeout=20")
+            },
+            "GIT_CONFIG_SYSTEM" to "/dev/null",
             "GIT_CONFIG_COUNT" to "2",
             "GIT_CONFIG_KEY_0" to "safe.directory",
             "GIT_CONFIG_VALUE_0" to "*",
