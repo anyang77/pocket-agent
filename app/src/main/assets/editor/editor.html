@@ -105,6 +105,10 @@
     .CodeMirror-activeline-background {
       background: #101b25;
     }
+    .pocket-search-match {
+      background: #66501a;
+      border-radius: 2px;
+    }
     .cm-keyword, .cm-builtin { color: #79c0ff; font-weight: 600; }
     .cm-def, .cm-variable-2 { color: #d2a8ff; }
     .cm-variable, .cm-variable-3 { color: #c9d1d9; }
@@ -221,6 +225,7 @@
     let contentTimer = 0;
     let positionTimer = 0;
     let lastHintWord = "";
+    let searchMarks = [];
 
     const editor = CodeMirror.fromTextArea(document.getElementById("editor"), {
       mode: null,
@@ -249,15 +254,32 @@
     const replaceText = document.getElementById("replaceText");
     const findStatus = document.getElementById("findStatus");
 
+    function refreshSearchMarks() {
+      searchMarks.forEach(mark => mark.clear());
+      searchMarks = [];
+      const query = findQuery.value;
+      if (!query) return 0;
+      let count = 0;
+      const cursor = editor.getSearchCursor(query, {line: 0, ch: 0}, {caseFold: true});
+      while (cursor.findNext()) {
+        searchMarks.push(editor.markText(
+          cursor.from(),
+          cursor.to(),
+          {className: "pocket-search-match", inclusiveLeft: false, inclusiveRight: false}
+        ));
+        count++;
+      }
+      return count;
+    }
+
     function updateFindStatus(extra) {
       const query = findQuery.value;
       if (!query) {
+        refreshSearchMarks();
         findStatus.textContent = "";
         return;
       }
-      let count = 0;
-      const cursor = editor.getSearchCursor(query, {line: 0, ch: 0}, {caseFold: true});
-      while (cursor.findNext()) count++;
+      const count = refreshSearchMarks();
       findStatus.textContent = extra ? `${extra} · 共 ${count} 处` : `共 ${count} 处`;
     }
 
@@ -272,6 +294,8 @@
 
     function closeSearch() {
       findPanel.classList.remove("visible");
+      searchMarks.forEach(mark => mark.clear());
+      searchMarks = [];
       editor.focus();
     }
 
@@ -287,17 +311,36 @@
           updateFindStatus();
           return;
         }
+        const wrapped = editor.getSearchCursor(query, {line: 0, ch: 0}, {caseFold: true});
+        if (wrapped.findNext()) {
+          editor.setSelection(wrapped.from(), wrapped.to());
+          editor.scrollIntoView({from: wrapped.from(), to: wrapped.to()}, 80);
+          updateFindStatus("已回到第一个匹配");
+          return;
+        }
       } else {
         const cursor = editor.getSearchCursor(query, {line: 0, ch: 0}, {caseFold: true});
         let previous = null;
         while (cursor.findNext()) {
-          if (CodeMirror.cmpPos(cursor.from(), origin) >= 0) break;
-          previous = {from: cursor.from(), to: cursor.to()};
+          const match = {from: cursor.from(), to: cursor.to()};
+          if (CodeMirror.cmpPos(cursor.from(), origin) < 0) previous = match;
+          else break;
         }
         if (previous) {
           editor.setSelection(previous.from, previous.to);
           editor.scrollIntoView(previous, 80);
           updateFindStatus();
+          return;
+        }
+        const wrapped = editor.getSearchCursor(query, {line: 0, ch: 0}, {caseFold: true});
+        let finalMatch = null;
+        while (wrapped.findNext()) {
+          finalMatch = {from: wrapped.from(), to: wrapped.to()};
+        }
+        if (finalMatch) {
+          editor.setSelection(finalMatch.from, finalMatch.to);
+          editor.scrollIntoView(finalMatch, 80);
+          updateFindStatus("已跳到最后一个匹配");
           return;
         }
       }
@@ -406,6 +449,9 @@
       if (api && api.onDirtyChanged) api.onDirtyChanged(true);
       clearTimeout(contentTimer);
       contentTimer = setTimeout(flushContent, 250);
+      if (findPanel.classList.contains("visible")) {
+        setTimeout(() => updateFindStatus(), 0);
+      }
     });
     editor.on("cursorActivity", sendPosition);
     editor.on("blur", flushContent);
@@ -433,6 +479,9 @@
         currentDirty = false;
         suppressEvents = false;
         setTimeout(() => editor.refresh(), 0);
+        if (findPanel.classList.contains("visible")) {
+          setTimeout(() => updateFindStatus(), 0);
+        }
       },
       setMode(mode) {
         currentMode = mode in modes ? mode : "plain";
