@@ -8,19 +8,25 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.InsertDriveFile
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +58,8 @@ fun FilesScreen(
     onCloseFile: () -> Unit,
     onEditorChange: (String) -> Unit,
     onSave: (String) -> Unit,
+    onRunScript: (String) -> Unit,
+    onCloseScriptOutput: () -> Unit,
     onCreateEntry: (String, Boolean) -> Unit,
     onRenameEntry: (String, String) -> Unit,
     onDeleteEntry: (String) -> Unit,
@@ -61,6 +69,14 @@ fun FilesScreen(
     onCloseWorkspacePicker: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    state.scriptOutput?.let { output ->
+        ScriptOutputDialog(
+            title = state.scriptTitle ?: "脚本运行",
+            output = output,
+            running = state.scriptRunning,
+            onDismiss = onCloseScriptOutput,
+        )
+    }
     if (state.workspacePickerVisible) {
         WorkspaceDirectoryPicker(
             state = state,
@@ -90,6 +106,7 @@ fun FilesScreen(
             onClose = onCloseFile,
             onChange = onEditorChange,
             onSave = { onSave(it) },
+            onRun = onRunScript,
             modifier = modifier,
         )
     }
@@ -492,9 +509,14 @@ private fun Editor(
     onClose: () -> Unit,
     onChange: (String) -> Unit,
     onSave: (String) -> Unit,
+    onRun: (String) -> Unit,
     modifier: Modifier,
 ) {
     val language = remember(path) { syntaxLanguageFor(path) }
+    val canRun = remember(path) {
+        path.substringAfterLast('.', "").lowercase() in
+            setOf("sh", "shell", "bash", "py", "python", "js", "mjs", "cjs")
+    }
     var localDirty by remember(path) { mutableStateOf(dirty) }
     var cursorLine by remember(path) { mutableStateOf(1) }
     var cursorColumn by remember(path) { mutableStateOf(1) }
@@ -539,8 +561,16 @@ private fun Editor(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            TextButton(onClick = { controller?.showCompletions() }) {
-                Text("补全")
+            IconButton(onClick = { controller?.openSearch() }) {
+                Icon(Icons.Outlined.Search, contentDescription = "搜索和替换")
+            }
+            IconButton(
+                onClick = {
+                    controller?.getContent { latest -> onRun(latest) }
+                },
+                enabled = canRun && controller != null,
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = "运行脚本")
             }
             TextButton(
                 onClick = {
@@ -573,4 +603,50 @@ private fun formatBytes(bytes: Long): String = when {
     bytes < 1_024 -> "$bytes B"
     bytes < 1_048_576 -> "%.1f KB".format(bytes / 1_024.0)
     else -> "%.1f MB".format(bytes / 1_048_576.0)
+}
+
+@Composable
+private fun ScriptOutputDialog(
+    title: String,
+    output: String,
+    running: Boolean,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("运行输出", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    title,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (running) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                SelectionContainer {
+                    Text(
+                        text = output.ifBlank { "(暂无输出)" },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 480.dp)
+                            .verticalScroll(rememberScrollState()),
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(if (running) "后台运行" else "关闭")
+            }
+        },
+    )
 }

@@ -32,6 +32,10 @@ class CodeEditorController internal constructor(
         webView.evaluateJavascript("PocketEditor.showCompletions();", null)
     }
 
+    fun openSearch() {
+        webView.evaluateJavascript("PocketEditor.openSearch();", null)
+    }
+
     fun getContent(onResult: (String) -> Unit) {
         webView.evaluateJavascript(
             "PocketEditor.flush(); PocketEditor.getValue();",

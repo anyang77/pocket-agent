@@ -317,6 +317,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onCloseFile = viewModel::closeFile,
                 onEditorChange = viewModel::updateEditor,
                 onSave = viewModel::saveEditor,
+                onRunScript = viewModel::runEditorFile,
+                onCloseScriptOutput = viewModel::closeScriptOutput,
                 onCreateEntry = viewModel::createWorkspaceEntry,
                 onRenameEntry = viewModel::renameWorkspaceEntry,
                 onDeleteEntry = viewModel::deleteWorkspaceEntry,

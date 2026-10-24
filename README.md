@@ -10,7 +10,8 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 
 - Jetpack Compose 手机界面
 - `/sdcard` 工作区、目录搜索、文件/目录增删改和安全确认删除
-- CodeMirror 代码编辑器：多色语法高亮、行号、括号匹配、补全和光标定位
+- CodeMirror 代码编辑器：多色语法高亮、行号、括号匹配、补全、搜索、替换和全部替换
+- Shell、Python 和 Node 脚本可在编辑器内直接运行并查看输出与退出码
 - Termux `TerminalView` + PTY 交互式终端，字号可调
 - 自动探测 `su`；拿到 Root 后终端、Shell 命令和系统只读访问会自动使用 Root
 - OpenAI-compatible 模型接入

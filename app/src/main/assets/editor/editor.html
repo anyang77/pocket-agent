@@ -37,6 +37,64 @@
     .CodeMirror-cursor {
       border-left: 2px solid #8be9c1;
     }
+    #findPanel {
+      display: none;
+      position: fixed;
+      z-index: 20;
+      top: 8px;
+      right: 8px;
+      width: min(92vw, 560px);
+      padding: 9px;
+      background: #111821;
+      border: 1px solid #536476;
+      border-radius: 12px;
+      box-shadow: 0 8px 28px #000b;
+    }
+    #findPanel.visible {
+      display: block;
+    }
+    .find-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .find-row:last-child {
+      margin-bottom: 0;
+    }
+    .find-input {
+      min-width: 0;
+      flex: 1;
+      height: 38px;
+      box-sizing: border-box;
+      padding: 0 10px;
+      color: #e6edf3;
+      background: #090d12;
+      border: 1px solid #536476;
+      border-radius: 8px;
+      font: 14px "Roboto Mono", monospace;
+      outline: none;
+    }
+    .find-button {
+      min-width: 40px;
+      height: 38px;
+      padding: 0 10px;
+      color: #d5faec;
+      background: #173d32;
+      border: 1px solid #365f50;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+    .find-button.secondary {
+      color: #e6edf3;
+      background: #1b2632;
+      border-color: #536476;
+    }
+    #findStatus {
+      color: #c2cfdc;
+      font: 12px "Roboto Mono", monospace;
+      white-space: nowrap;
+    }
     .CodeMirror-selected {
       background: #26485e !important;
     }
@@ -76,11 +134,28 @@
   </style>
 </head>
 <body>
+  <div id="findPanel">
+    <div class="find-row">
+      <input id="findQuery" class="find-input" placeholder="搜索">
+      <button class="find-button" id="findPrev">上一个</button>
+      <button class="find-button" id="findNext">下一个</button>
+      <button class="find-button secondary" id="findClose">关闭</button>
+    </div>
+    <div class="find-row">
+      <input id="replaceText" class="find-input" placeholder="替换为">
+      <button class="find-button" id="replaceOne">替换</button>
+      <button class="find-button" id="replaceAll">全部替换</button>
+    </div>
+    <div class="find-row">
+      <span id="findStatus"></span>
+    </div>
+  </div>
   <textarea id="editor"></textarea>
   <script src="codemirror.min.js"></script>
   <script src="addon/edit/closebrackets.min.js"></script>
   <script src="addon/edit/matchbrackets.min.js"></script>
   <script src="addon/hint/show-hint.min.js"></script>
+  <script src="addon/search/searchcursor.min.js"></script>
   <script src="addon/mode/simple.min.js"></script>
   <script src="mode/clike.min.js"></script>
   <script src="mode/javascript.min.js"></script>
@@ -159,8 +234,119 @@
       inputStyle: "contenteditable",
       styleActiveLine: true,
       extraKeys: {
-        "Ctrl-Space": cm => cm.showHint({hint: pocketHint, completeSingle: false})
+        "Ctrl-Space": cm => cm.showHint({hint: pocketHint, completeSingle: false}),
+        "Ctrl-F": () => openSearch(),
+        "Cmd-F": () => openSearch()
       }
+    });
+
+    const findPanel = document.getElementById("findPanel");
+    const findQuery = document.getElementById("findQuery");
+    const replaceText = document.getElementById("replaceText");
+    const findStatus = document.getElementById("findStatus");
+
+    function updateFindStatus(extra) {
+      const query = findQuery.value;
+      if (!query) {
+        findStatus.textContent = "";
+        return;
+      }
+      let count = 0;
+      const cursor = editor.getSearchCursor(query, {line: 0, ch: 0}, {caseFold: true});
+      while (cursor.findNext()) count++;
+      findStatus.textContent = extra ? `${extra} · 共 ${count} 处` : `共 ${count} 处`;
+    }
+
+    function openSearch() {
+      const selected = editor.getSelection();
+      if (selected && !selected.includes("\n")) findQuery.value = selected;
+      findPanel.classList.add("visible");
+      updateFindStatus();
+      findQuery.focus();
+      findQuery.select();
+    }
+
+    function closeSearch() {
+      findPanel.classList.remove("visible");
+      editor.focus();
+    }
+
+    function findMatch(backwards) {
+      const query = findQuery.value;
+      if (!query) return;
+      const origin = editor.getCursor(backwards ? "start" : "end");
+      if (!backwards) {
+        const cursor = editor.getSearchCursor(query, origin, {caseFold: true});
+        if (cursor.findNext()) {
+          editor.setSelection(cursor.from(), cursor.to());
+          editor.scrollIntoView({from: cursor.from(), to: cursor.to()}, 80);
+          updateFindStatus();
+          return;
+        }
+      } else {
+        const cursor = editor.getSearchCursor(query, {line: 0, ch: 0}, {caseFold: true});
+        let previous = null;
+        while (cursor.findNext()) {
+          if (CodeMirror.cmpPos(cursor.from(), origin) >= 0) break;
+          previous = {from: cursor.from(), to: cursor.to()};
+        }
+        if (previous) {
+          editor.setSelection(previous.from, previous.to);
+          editor.scrollIntoView(previous, 80);
+          updateFindStatus();
+          return;
+        }
+      }
+      findStatus.textContent = `未找到“${query}”`;
+    }
+
+    function replaceOne() {
+      const query = findQuery.value;
+      if (!query) return;
+      const replacement = replaceText.value;
+      if (editor.getSelection().toLocaleLowerCase() === query.toLocaleLowerCase()) {
+        editor.replaceSelection(replacement);
+        updateFindStatus("已替换 1 处");
+        findMatch(false);
+      } else {
+        findMatch(false);
+      }
+    }
+
+    function replaceEveryMatch() {
+      const query = findQuery.value;
+      if (!query) return;
+      const replacement = replaceText.value;
+      let replaced = 0;
+      editor.operation(() => {
+        const cursor = editor.getSearchCursor(query, {line: 0, ch: 0}, {caseFold: true});
+        while (cursor.findNext()) {
+          cursor.replace(replacement);
+          replaced++;
+        }
+      });
+      updateFindStatus(`已替换 ${replaced} 处`);
+    }
+
+    document.getElementById("findPrev").addEventListener("click", () => findMatch(true));
+    document.getElementById("findNext").addEventListener("click", () => findMatch(false));
+    document.getElementById("findClose").addEventListener("click", closeSearch);
+    document.getElementById("replaceOne").addEventListener("click", replaceOne);
+    document.getElementById("replaceAll").addEventListener("click", replaceEveryMatch);
+    findQuery.addEventListener("input", () => updateFindStatus());
+    findQuery.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        findMatch(event.shiftKey);
+      }
+      if (event.key === "Escape") closeSearch();
+    });
+    replaceText.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        replaceOne();
+      }
+      if (event.key === "Escape") closeSearch();
     });
 
     function bridge() {
@@ -257,6 +443,9 @@
       },
       showCompletions() {
         editor.showHint({hint: pocketHint, completeSingle: false});
+      },
+      openSearch() {
+        openSearch();
       },
       flush() {
         flushContent();

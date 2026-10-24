@@ -1499,6 +1499,75 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun runEditorFile(editorContent: String) {
+        if (_state.value.scriptRunning) return
+        val path = _state.value.activeFile ?: return
+        val extension = path.substringAfterLast('.', "").lowercase()
+        val runner = when (extension) {
+            "sh", "shell" -> "sh"
+            "bash" -> "bash"
+            "py", "python" -> "python3"
+            "js", "mjs", "cjs" -> "node"
+            else -> {
+                _state.update {
+                    it.copy(notice = "当前文件类型不支持直接运行：.$extension")
+                }
+                return
+            }
+        }
+        val file = workspace.resolve(path)
+        val command = "$runner -- ${shellQuote(file.absolutePath)}"
+        _state.update {
+            it.copy(
+                editorContent = editorContent,
+                editorDirty = true,
+                scriptRunning = true,
+                scriptTitle = path,
+                scriptOutput = "正在运行：\n$command\n\n",
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val output = runCatching {
+                workspace.writeText(path, editorContent)
+                commandRunner.run(
+                    command = command,
+                    workingDir = file.parentFile ?: workspace.root,
+                    timeoutMs = 10 * 60_000L,
+                )
+            }.fold(
+                onSuccess = { result ->
+                    buildString {
+                        append(result.output.trimEnd())
+                        if (result.timedOut) append("\n\n运行超时，进程已终止")
+                        append("\n\n[退出码 ${result.exitCode}]")
+                    }.trim()
+                },
+                onFailure = { error ->
+                    "运行失败：${error.message ?: error.javaClass.simpleName}"
+                },
+            )
+            auditLog.append(
+                "script",
+                "运行脚本",
+                "$command\n${output.takeLast(2_000)}",
+                if (output.startsWith("运行失败")) "failed" else "success",
+            )
+            _state.update {
+                it.copy(
+                    scriptRunning = false,
+                    scriptOutput = output,
+                    editorDirty = false,
+                )
+            }
+            refreshFiles()
+            refreshGit()
+        }
+    }
+
+    fun closeScriptOutput() {
+        _state.update { it.copy(scriptOutput = null, scriptTitle = null) }
+    }
+
     fun setTerminalRoot(enabled: Boolean) {
         if (enabled && !_state.value.capabilities.rootGranted) {
             _state.update { it.copy(notice = "请先在设置里完成 root 授权") }
@@ -1981,6 +2050,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         true
     }.getOrDefault(false)
+
+    private fun shellQuote(value: String): String =
+        "'" + value.replace("'", "'\"'\"'") + "'"
 
     private fun hasNotificationPermission(): Boolean =
         appContext.getSystemService(NotificationManager::class.java).areNotificationsEnabled() &&
