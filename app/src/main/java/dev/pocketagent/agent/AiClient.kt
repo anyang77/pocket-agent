@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
 class AiClient(
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(90, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .callTimeout(30, TimeUnit.SECONDS)
         .build(),
