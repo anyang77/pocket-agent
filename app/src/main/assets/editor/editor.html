@@ -460,7 +460,11 @@
     }
 
     function scanLocalSyntax(text) {
-      if (currentMode === "plain" || currentMode === "markdown") return [];
+      if (
+        currentMode === "plain" ||
+        currentMode === "markdown" ||
+        currentMode === "shell"
+      ) return [];
       const diagnostics = [];
       const stack = [];
       const pairs = {")": "(", "]": "[", "}": "{"};
@@ -499,7 +503,15 @@
           index++;
           continue;
         }
-        if (ch === "#" && (currentMode === "python" || currentMode === "shell")) {
+        if (ch === "#" && currentMode === "python") {
+          lineComment = true;
+          continue;
+        }
+        if (
+          ch === "#" &&
+          currentMode === "shell" &&
+          (index === 0 || /[\s;|&()]/.test(text[index - 1]))
+        ) {
           lineComment = true;
           continue;
         }
