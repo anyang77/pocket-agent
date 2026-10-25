@@ -523,7 +523,7 @@ private fun Editor(
     val language = remember(path) { syntaxLanguageFor(path) }
     val canRun = remember(path) {
         path.substringAfterLast('.', "").lowercase() in
-            setOf("sh", "shell", "bash", "py", "python", "js", "mjs", "cjs")
+            setOf("sh", "shell", "bash", "py", "python", "js", "mjs", "cjs", "java")
     }
     var localDirty by remember(path) { mutableStateOf(dirty) }
     var cursorLine by remember(path) { mutableStateOf(1) }

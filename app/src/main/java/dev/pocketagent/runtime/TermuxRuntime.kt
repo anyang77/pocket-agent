@@ -99,7 +99,7 @@ class TermuxRuntime(context: Context) {
         ensureAptConfig()
         if (!force && isToolchainsReady()) {
             toolchainsMarker.writeText(TOOLCHAIN_VERSION)
-            onProgress("Python、Node、clang、ShellCheck 已就绪", 1f)
+            onProgress("Python、Node、Java、clang、ShellCheck 已就绪", 1f)
             return@withContext true
         }
 
@@ -131,7 +131,7 @@ class TermuxRuntime(context: Context) {
                     echo "所有软件源均连接失败" >&2
                     exit 1
                 }
-                apt-get install --download-only -y --no-install-recommends python python-pip npm nodejs clang make git openssh shellcheck
+                apt-get install --download-only -y --no-install-recommends python python-pip npm nodejs clang make git openssh shellcheck openjdk-17
                 total=${'$'}(ls ${prefix.absolutePath}/var/cache/apt/archives/*.deb | wc -l)
                 index=0
                 for deb in ${prefix.absolutePath}/var/cache/apt/archives/*.deb; do
@@ -185,20 +185,24 @@ class TermuxRuntime(context: Context) {
                 }
             },
         )
-        if (result.exitCode != 0 || !isToolchainsReady()) {
+        if (result.exitCode != 0) {
             Log.e(
                 TAG,
-                "apt toolchain install failed: ${result.error.orEmpty()} " +
+                "apt toolchain extraction reported errors: ${result.error.orEmpty()} " +
                     result.output.takeLast(2_000),
             )
-            onProgress("开发工具链安装失败，可重试", 0f)
-            return@withContext false
         }
         onProgress("迁移工具链运行路径", 0.94f)
         relocateTextAndSymlinks(prefix)
-        onProgress("验证 Python、Node、clang、ShellCheck", 0.98f)
+        ensureJavaLinks()
+        if (!isToolchainsReady()) {
+            Log.e(TAG, "toolchain validation failed after relocation")
+            onProgress("开发工具链安装失败，可重试", 0f)
+            return@withContext false
+        }
+        onProgress("验证 Python、Node、Java、clang、ShellCheck", 0.98f)
         toolchainsMarker.writeText(TOOLCHAIN_VERSION)
-        onProgress("Python、Node、clang、ShellCheck、make 和 git 已安装", 1f)
+        onProgress("Python、Node、Java、clang、ShellCheck、make 和 git 已安装", 1f)
         true
         }
     }
@@ -444,6 +448,18 @@ class TermuxRuntime(context: Context) {
         }
     }
 
+    private fun ensureJavaLinks() {
+        val javaBin = File(prefix, "lib/jvm/java-17-openjdk/bin")
+        listOf("java", "javac").forEach { name ->
+            val target = File(javaBin, name)
+            if (!target.isFile) return@forEach
+            val link = File(prefix, "bin/$name")
+            link.delete()
+            link.parentFile?.mkdirs()
+            Files.createSymbolicLink(link.toPath(), target.toPath())
+        }
+    }
+
     private fun ensureAptConfig() {
         val aptDir = File(prefix, "etc/apt").apply { mkdirs() }
         val listsPartial = File(prefix, "var/lib/apt/lists/partial").apply { mkdirs() }
@@ -526,6 +542,8 @@ class TermuxRuntime(context: Context) {
         File(prefix, "bin/pip3"),
         File(prefix, "bin/node"),
         File(prefix, "bin/npm"),
+        File(prefix, "bin/java"),
+        File(prefix, "bin/javac"),
         File(prefix, "bin/clang"),
         File(prefix, "bin/shellcheck"),
         File(prefix, "bin/make"),
@@ -539,7 +557,7 @@ class TermuxRuntime(context: Context) {
         private const val MAX_CAPTURE_CHARS = 256_000
         private const val RUNTIME_VERSION = "termux-bootstrap-dynamic-v6"
         private const val LEGACY_RUNTIME_PREFIX = "termux-bootstrap-python-pip-node-clang"
-        private const val TOOLCHAIN_VERSION = "apt-python-node-clang-shellcheck-v2"
+        private const val TOOLCHAIN_VERSION = "apt-python-node-java-clang-shellcheck-v3"
         private data class AptMirror(val label: String, val url: String)
 
         private val APT_MIRRORS = listOf(

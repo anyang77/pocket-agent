@@ -14,7 +14,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -34,7 +33,6 @@ import dev.pocketagent.data.AiSettings
 fun SettingsScreen(
     state: AppUiState,
     onSaveSettings: (AiSettings) -> Unit,
-    onClearChat: () -> Unit,
     onProfileSelected: (String) -> Unit,
     onCreateProfile: (String, String, String, Int) -> Unit,
     onDeleteProfile: (String) -> Unit,
@@ -50,6 +48,7 @@ fun SettingsScreen(
         mutableStateOf(state.settings.contextWindow)
     }
     var showNewProfile by rememberSaveable { mutableStateOf(false) }
+    var deleteProfileId by rememberSaveable { mutableStateOf<String?>(null) }
 
     if (showNewProfile) {
         NewProfileDialog(
@@ -58,6 +57,37 @@ fun SettingsScreen(
             onCreate = { name, base, key, context ->
                 showNewProfile = false
                 onCreateProfile(name, base, key, context)
+            },
+        )
+    }
+    deleteProfileId?.let { profileId ->
+        val profile = state.modelProfiles.firstOrNull { it.id == profileId }
+        AlertDialog(
+            onDismissRequest = { deleteProfileId = null },
+            title = { Text("删除模型配置？") },
+            text = {
+                Text(
+                    "将永久删除“${profile?.name ?: profileId}”及其保存的 API Key。" +
+                        "历史对话不会被删除。",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteProfileId = null
+                        onDeleteProfile(profileId)
+                    },
+                ) {
+                    Text(
+                        "确认删除",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteProfileId = null }) {
+                    Text("取消")
+                }
             },
         )
     }
@@ -84,7 +114,7 @@ fun SettingsScreen(
                     Spacer(Modifier.weight(1f))
                     TextButton(onClick = { showNewProfile = true }) { Text("新建") }
                     TextButton(
-                        onClick = { onDeleteProfile(state.activeProfileId) },
+                        onClick = { deleteProfileId = state.activeProfileId },
                         enabled = state.modelProfiles.size > 1,
                     ) { Text("删除当前") }
                 }
@@ -180,22 +210,6 @@ fun SettingsScreen(
                 enabled = !state.agentRunning,
             ) {
                 Text("保存并刷新模型")
-            }
-        }
-        item {
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-            )
-        }
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("会话", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "历史对话会保存在本机，可随时切换。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                TextButton(onClick = onClearChat) { Text("新建对话") }
             }
         }
         item {

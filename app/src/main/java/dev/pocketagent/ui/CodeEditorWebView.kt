@@ -77,10 +77,16 @@ object EditorDiagnosticParser {
             RegexOption.MULTILINE,
         )
         shellMessage.findAll(clean).forEach { match ->
+            val message = match.groupValues[2]
+                .trim()
+                .replaceFirst(
+                    Regex("""^(?:error|warning|note):\s*""", RegexOption.IGNORE_CASE),
+                    "",
+                )
             diagnostics += EditorDiagnostic(
                 line = match.groupValues[1].toIntOrNull() ?: 1,
                 column = 1,
-                message = match.groupValues[2].trim().take(500),
+                message = message.take(500),
             )
         }
 

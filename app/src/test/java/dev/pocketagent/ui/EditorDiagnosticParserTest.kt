@@ -68,4 +68,20 @@ class EditorDiagnosticParserTest {
             diagnostic.message,
         )
     }
+
+    @Test
+    fun parsesJavacErrorWithoutColumn() {
+        val diagnostic = EditorDiagnosticParser.parse(
+            """
+            /tmp/Main.java:3: error: illegal start of expression
+                    int value = ;
+                                ^
+            1 error
+            """.trimIndent(),
+            "/tmp/Main.java",
+        ).single()
+
+        assertEquals(3, diagnostic.line)
+        assertEquals("illegal start of expression", diagnostic.message)
+    }
 }

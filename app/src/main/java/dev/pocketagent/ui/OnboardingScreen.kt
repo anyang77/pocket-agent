@@ -444,7 +444,7 @@ private fun EnvironmentSetup(
 ) {
     Text("2. 初始化内置运行环境", style = MaterialTheme.typography.titleLarge)
     Text(
-        "一次性安装 Python、Node、C/C++、Git 和 SSH。工具链未就绪时不能继续。",
+        "一次性安装 Python、Node、Java、C/C++、Git 和 SSH。工具链未就绪时不能继续。",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )

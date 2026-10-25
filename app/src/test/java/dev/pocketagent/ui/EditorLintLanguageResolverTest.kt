@@ -22,6 +22,25 @@ class EditorLintLanguageResolverTest {
     }
 
     @Test
+    fun detectsJavaSource() {
+        assertEquals(
+            EditorLintLanguage.JAVA,
+            EditorLintLanguageResolver.resolve("Main.java", "class Main {}\n"),
+        )
+    }
+
+    @Test
+    fun usesPublicJavaTypeAsCompilerFilename() {
+        assertEquals(
+            "Main.java",
+            EditorLintLanguageResolver.javaSourceFilename(
+                "Download/demo.java",
+                "public final class Main {}\n",
+            ),
+        )
+    }
+
+    @Test
     fun detectsShellWithoutExtensionFromShebang() {
         assertEquals(
             EditorLintLanguage.SHELL,

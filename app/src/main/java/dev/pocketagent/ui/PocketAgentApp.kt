@@ -367,7 +367,6 @@ fun PocketAgentApp(viewModel: AppViewModel) {
             AppTab.SETTINGS -> SettingsScreen(
                 state = state,
                 onSaveSettings = viewModel::saveSettings,
-                onClearChat = viewModel::clearChat,
                 onProfileSelected = viewModel::selectModelProfile,
                 onCreateProfile = viewModel::createModelProfile,
                 onDeleteProfile = viewModel::deleteModelProfile,

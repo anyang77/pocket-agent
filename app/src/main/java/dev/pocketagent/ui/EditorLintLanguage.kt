@@ -6,6 +6,7 @@ enum class EditorLintLanguage(
 ) {
     PYTHON("py"),
     JAVASCRIPT("js"),
+    JAVA("java"),
     SHELL("sh", "sh"),
     BASH("sh", "bash"),
     JSON("json"),
@@ -14,12 +15,17 @@ enum class EditorLintLanguage(
 }
 
 object EditorLintLanguageResolver {
+    private val publicJavaType = Regex(
+        """\bpublic\s+(?:(?:abstract|final|sealed|non-sealed|strictfp)\s+)*""" +
+            """(?:class|interface|enum|record)\s+([A-Za-z_$][A-Za-z0-9_$]*)""",
+    )
     private val extensionMap = mapOf(
         "py" to EditorLintLanguage.PYTHON,
         "python" to EditorLintLanguage.PYTHON,
         "js" to EditorLintLanguage.JAVASCRIPT,
         "mjs" to EditorLintLanguage.JAVASCRIPT,
         "cjs" to EditorLintLanguage.JAVASCRIPT,
+        "java" to EditorLintLanguage.JAVA,
         "json" to EditorLintLanguage.JSON,
         "c" to EditorLintLanguage.C,
         "h" to EditorLintLanguage.C,
@@ -68,5 +74,16 @@ object EditorLintLanguageResolver {
             }
         }
         return null
+    }
+
+    fun javaSourceFilename(path: String, content: String): String {
+        val publicType = publicJavaType.find(content)?.groupValues?.getOrNull(1)
+        if (!publicType.isNullOrBlank()) return "$publicType.java"
+        val original = path.substringAfterLast('/').substringBeforeLast('.')
+        return if (original.matches(Regex("""[A-Za-z_$][A-Za-z0-9_$]*"""))) {
+            "$original.java"
+        } else {
+            "Source.java"
+        }
     }
 }

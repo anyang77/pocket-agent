@@ -10,8 +10,11 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 
 - Jetpack Compose 手机界面
 - `/sdcard` 工作区、目录搜索、文件/目录增删改和安全确认删除
-- CodeMirror 代码编辑器：多色语法高亮、行号、括号匹配、补全、搜索、替换和全部替换
-- Shell、Python 和 Node 脚本可在编辑器内直接运行并查看输出与退出码
+- CodeMirror 代码编辑器：VS Code Dark+ 风格高亮、行号、括号匹配、输入自动补全、搜索/替换和撤销/重做
+- 上下文补全支持关键字、函数、类型、文档符号、Shell 变量、对象属性和代码片段，并提供模糊匹配与说明
+- 编辑器问题面板支持多错误定位、悬停提示、行列跳转和全角标点一键修复
+- Shell 使用 ShellCheck + 解释器解析检查；Python、JavaScript、Java、JSON、C/C++ 使用对应真实工具检查
+- Shell、Python、Node 和 Java 可在编辑器内直接运行并查看输出与退出码
 - Termux `TerminalView` + PTY 交互式终端，字号可调
 - 自动探测 `su`；拿到 Root 后终端、Shell 命令和系统只读访问会自动使用 Root
 - OpenAI-compatible 模型接入
@@ -34,7 +37,9 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 - 本地仓库列表、多 GitHub HTTPS 账号、SSH Key 账号和多仓库快速切换
 - API Key 使用 Android Keystore + AES/GCM 保存
 - App 自带精简 Termux bionic 基础用户态，不依赖外部 Termux、不需要 Ubuntu/PRoot
-- 首次初始化通过 Termux apt 仓库按需下载 Python、pip、Node、npm、clang/LLVM 和 make
+- 首次初始化通过内置 apt 用户态一次性下载 Python、Node、Java/JDK、ShellCheck、clang/LLVM、Git 和 SSH
+- Java 使用 `javac` 解析阶段检查和 `java --source 17` 单文件运行，不依赖外部 Termux 或系统 JDK
+- 初始化会修复应用私有工具链的所有权与 SELinux 标签，工具链就绪后 Git 不再重复安装
 - apt 初始化优先使用清华 TUNA，失败时自动回退 BFSU、USTC、NJU 和 Termux 官方源
 - App 使用 `targetSdk=30` 和 `MANAGE_EXTERNAL_STORAGE`，首次引导直接进入系统全盘文件访问授权
 - 内置 Termux 通过 system-linker 和 `termux-exec` 解决 Android 10+ 的 app-data 执行限制
@@ -64,8 +69,8 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## 下一阶段
 
-1. 增加任务级回滚和测试结果解析。
-2. 继续完善编辑器的大文件索引与语言服务。
+1. 增加任务级变更快照与测试结果解析。
+2. 继续完善跨文件语言服务、定义跳转和引用查找。
 3. 完善 root 设备上的系统目录工具和操作审计。
 
 ## 许可证

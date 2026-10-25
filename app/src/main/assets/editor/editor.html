@@ -268,7 +268,7 @@
 
     const completions = {
       kotlin: ["package", "import", "class", "object", "interface", "fun", "val", "var", "if", "else", "when", "for", "while", "return", "try", "catch", "private", "public", "suspend", "data", "override", "String", "Int", "Long", "Boolean", "List", "Map", "Result"],
-      java: ["package", "import", "class", "interface", "enum", "public", "private", "protected", "static", "final", "void", "new", "return", "if", "else", "for", "while", "try", "catch", "String", "Object", "Integer", "List", "Map"],
+      java: ["package", "import", "class", "interface", "enum", "public", "private", "protected", "static", "final", "void", "new", "return", "if", "else", "for", "while", "try", "catch", "String", "Object", "Integer", "List", "Map", "Set", "System", "Math", "ArrayList", "HashMap"],
       cpp: ["include", "int", "char", "void", "auto", "const", "static", "struct", "class", "namespace", "using", "return", "if", "else", "for", "while", "switch", "break", "vector", "string", "size_t"],
       python: ["def", "class", "import", "from", "as", "if", "elif", "else", "for", "while", "return", "try", "except", "finally", "with", "lambda", "yield", "async", "await", "pass", "break", "continue", "True", "False", "None", "self", "print", "len"],
       javascript: ["const", "let", "var", "function", "class", "import", "export", "from", "if", "else", "for", "while", "return", "async", "await", "try", "catch", "throw", "new", "console", "document", "Promise", "Array", "Object"],
@@ -318,6 +318,26 @@
         Path: ["type", "路径对象", "from pathlib import Path"],
         dataclass: ["type", "数据类", "from dataclasses import dataclass"]
       },
+      java: {
+        package: ["keyword", "包声明", "package com.example;"],
+        import: ["keyword", "导入类型", "import java.util.List;"],
+        class: ["snippet", "类声明", "public class ClassName {}"],
+        interface: ["keyword", "接口声明", "interface Name {}"],
+        enum: ["keyword", "枚举声明", "enum Name {}"],
+        public: ["keyword", "公开访问级别", "public"],
+        private: ["keyword", "私有访问级别", "private"],
+        protected: ["keyword", "受保护访问级别", "protected"],
+        static: ["keyword", "静态成员", "static"],
+        final: ["keyword", "不可修改", "final"],
+        void: ["type", "无返回值", "void"],
+        new: ["keyword", "创建实例", "new Type(...)"],
+        return: ["keyword", "返回结果", "return value;"],
+        try: ["snippet", "异常处理", "try {} catch (Exception error) {}"],
+        String: ["type", "字符串类型", "java.lang.String"],
+        List: ["type", "有序集合", "java.util.List"],
+        Map: ["type", "键值映射", "java.util.Map"],
+        System: ["variable", "系统工具", "System.out.println(...)"]
+      },
       javascript: {
         const: ["keyword", "常量声明", "const value = expression"],
         let: ["keyword", "块级变量", "let value = expression"],
@@ -357,6 +377,22 @@
         ["all", "等待全部 Promise"], ["allSettled", "等待全部结果"],
         ["race", "首个完成结果"], ["resolve", "创建成功 Promise"],
         ["reject", "创建失败 Promise"]
+      ],
+      System: [
+        ["out", "标准输出"], ["err", "标准错误"], ["in", "标准输入"],
+        ["currentTimeMillis", "当前时间毫秒"], ["nanoTime", "高精度时间"],
+        ["getenv", "读取环境变量"], ["getProperty", "读取系统属性"],
+        ["arraycopy", "复制数组"], ["exit", "退出程序"]
+      ],
+      out: [
+        ["println", "输出并换行"], ["print", "输出"], ["printf", "格式化输出"],
+        ["flush", "刷新输出"]
+      ],
+      List: [
+        ["of", "创建不可变列表"], ["copyOf", "复制列表"]
+      ],
+      String: [
+        ["format", "格式化文本"], ["valueOf", "转换为字符串"], ["join", "连接字符串"]
       ]
     };
 
@@ -408,7 +444,7 @@
 
     const typeCompletions = {
       kotlin: ["String", "Int", "Long", "Boolean", "Float", "Double", "List", "Map", "Set", "Any", "Unit", "Flow", "Result"],
-      java: ["String", "Object", "Integer", "Long", "Boolean", "List", "Map", "Set", "void", "int", "long", "float", "double", "char", "byte"],
+      java: ["String", "Object", "Integer", "Long", "Boolean", "List", "Map", "Set", "ArrayList", "HashMap", "void", "int", "long", "float", "double", "char", "byte"],
       cpp: ["string", "vector", "map", "set", "size_t", "uint8_t", "int32_t", "unique_ptr", "shared_ptr", "optional"],
       python: ["str", "int", "float", "bool", "list", "dict", "set"],
       javascript: ["String", "Number", "Boolean", "Array", "Object", "Promise", "Map", "Set"],
@@ -428,6 +464,13 @@
         ["pathlib", "路径操作"], ["subprocess", "子进程"], ["asyncio", "异步编程"],
         ["dataclasses", "数据类"], ["typing", "类型标注"], ["collections", "容器类型"],
         ["logging", "日志"], ["re", "正则表达式"], ["datetime", "日期时间"]
+      ],
+      java: [
+        ["java.util.List", "列表"], ["java.util.Map", "映射"],
+        ["java.util.Set", "集合"], ["java.util.ArrayList", "动态数组"],
+        ["java.util.HashMap", "哈希映射"], ["java.io.File", "文件路径"],
+        ["java.nio.file.Files", "文件操作"], ["java.nio.file.Path", "路径"],
+        ["java.time.Instant", "时间点"], ["java.util.concurrent", "并发工具"]
       ],
       javascript: [
         ["fs", "文件系统"], ["path", "路径工具"], ["http", "HTTP 服务"],
@@ -863,7 +906,14 @@
       });
       addSnippetCandidates(candidates, word);
 
-      if (property && (currentMode === "javascript" || currentMode === "typescript")) {
+      if (
+        property &&
+        (
+          currentMode === "javascript" ||
+          currentMode === "typescript" ||
+          currentMode === "java"
+        )
+      ) {
         (propertyCompletions[property[1]] || []).forEach(([label, detail]) => {
           candidates.push(completionItem(label, detail, "property"));
           start = cursor.ch - word.length;
@@ -878,7 +928,8 @@
       if (
         (currentMode === "python" && /^\s*(?:from|import)\s+[A-Za-z0-9_]*$/.test(before)) ||
         ((currentMode === "javascript" || currentMode === "typescript") &&
-          /^\s*import\b.*\bfrom\s+["']?[A-Za-z0-9_]*$/.test(before))
+          /^\s*import\b.*\bfrom\s+["']?[A-Za-z0-9_]*$/.test(before)) ||
+        (currentMode === "java" && /^\s*import\s+[A-Za-z0-9_.]*$/.test(before))
       ) {
         (moduleCompletions[currentMode] || []).forEach(([label, detail]) => {
           candidates.push(completionItem(label, detail, "module"));

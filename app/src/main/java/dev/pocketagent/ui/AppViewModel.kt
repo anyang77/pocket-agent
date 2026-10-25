@@ -855,8 +855,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun repairRuntimeOwnership() {
         val owner = appContext.applicationInfo.uid
         val path = shellQuote(internalRuntime.runtimeRoot.absolutePath)
+        val contextSource = shellQuote(
+            internalRuntime.runtimeRoot.parentFile?.absolutePath
+                ?: appContext.filesDir.absolutePath,
+        )
         val result = commandRunner.run(
-            command = "chown -R $owner:$owner -- $path",
+            command = buildString {
+                append("chown -R $owner:$owner -- $path")
+                append(" && context=${'$'}(stat -c '%C' $contextSource)")
+                append(" && [ -n \"${'$'}context\" ]")
+                append(" && /system/bin/chcon -Rh \"${'$'}context\" $path")
+                append(" && if [ -x /system/bin/restorecon ]; then ")
+                append("/system/bin/restorecon -RF $path; fi")
+            },
             workingDir = File("/"),
             asRoot = true,
             timeoutMs = 60_000,
@@ -1590,6 +1601,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             EditorLintLanguage.JAVASCRIPT -> { file ->
                 "node --check ${shellQuote(file)}"
             }
+            EditorLintLanguage.JAVA -> { file ->
+                val classesDir = File(File(file).parentFile, "classes")
+                "javac -encoding UTF-8 -proc:none -XDshould-stop.at=PARSE " +
+                    "-d ${shellQuote(classesDir.absolutePath)} " +
+                    shellQuote(file)
+            }
             EditorLintLanguage.SHELL, EditorLintLanguage.BASH -> { file ->
                 val dialect = language.shellDialect ?: "sh"
                 val fallback = if (language == EditorLintLanguage.BASH) "bash -n" else "sh -n"
@@ -1616,7 +1633,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             appContext.cacheDir,
             "editor-lint/${UUID.randomUUID()}",
         )
-        val lintFile = File(lintDir, "source.${language.sourceExtension}")
+        val lintFilename = if (language == EditorLintLanguage.JAVA) {
+            EditorLintLanguageResolver.javaSourceFilename(path, content)
+        } else {
+            "source.${language.sourceExtension}"
+        }
+        val lintFile = File(lintDir, lintFilename)
         return try {
             lintDir.mkdirs()
             lintFile.writeText(content)
@@ -1657,6 +1679,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "bash" -> "bash"
             "py", "python" -> "python3"
             "js", "mjs", "cjs" -> "node"
+            "java" -> "java"
             else -> {
                 _state.update {
                     it.copy(notice = "当前文件类型不支持直接运行：.$extension")
@@ -1665,7 +1688,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         val file = workspace.resolve(path)
-        val command = "$runner -- ${shellQuote(file.absolutePath)}"
+        val command = if (extension == "java") {
+            "java --source 17 ${shellQuote(file.absolutePath)}"
+        } else {
+            "$runner -- ${shellQuote(file.absolutePath)}"
+        }
         _state.update {
             it.copy(
                 editorContent = editorContent,
