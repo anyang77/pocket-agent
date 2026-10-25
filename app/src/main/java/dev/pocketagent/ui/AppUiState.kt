@@ -96,6 +96,7 @@ data class AppUiState(
     val activeFile: String? = null,
     val editorContent: String = "",
     val editorDirty: Boolean = false,
+    val editorDiagnostics: List<EditorDiagnostic> = emptyList(),
     val scriptRunning: Boolean = false,
     val scriptOutput: String? = null,
     val scriptTitle: String? = null,

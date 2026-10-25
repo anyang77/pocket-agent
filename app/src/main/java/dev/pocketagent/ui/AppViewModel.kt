@@ -44,6 +44,7 @@ import dev.pocketagent.runtime.TermuxRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,6 +53,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -107,6 +109,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     )
     private var pendingApprovalDeferred: CompletableDeferred<Boolean>? = null
     private var agentJob: Job? = null
+    private var editorLintJob: Job? = null
     private val nextId = AtomicLong(1)
     private val nextConversationId = AtomicLong(1)
     private val conversationCache = linkedMapOf<Long, StoredConversation>()
@@ -1412,8 +1415,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             activeFile = path,
                             editorContent = content,
                             editorDirty = false,
+                            editorDiagnostics = emptyList(),
                         )
                     }
+                    scheduleEditorLint(path, content)
                 }
                 .onFailure { error ->
                     _state.update { it.copy(notice = error.message ?: "无法读取文件") }
@@ -1490,17 +1495,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closeFile() {
+        editorLintJob?.cancel()
+        editorLintJob = null
         _state.update {
             it.copy(
                 activeFile = null,
                 editorContent = "",
                 editorDirty = false,
+                editorDiagnostics = emptyList(),
             )
         }
     }
 
     fun updateEditor(content: String) {
-        _state.update { it.copy(editorContent = content, editorDirty = true) }
+        val path = _state.value.activeFile
+        _state.update {
+            it.copy(
+                editorContent = content,
+                editorDirty = true,
+                editorDiagnostics = emptyList(),
+            )
+        }
+        if (path != null) scheduleEditorLint(path, content)
     }
 
     fun saveEditor(editorContent: String) {
@@ -1517,6 +1533,120 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     _state.update { it.copy(notice = error.message ?: "保存失败") }
                 }
         }
+    }
+
+    private fun scheduleEditorLint(path: String, content: String) {
+        editorLintJob?.cancel()
+        editorLintJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(450)
+            if (
+                _state.value.activeFile != path ||
+                _state.value.editorContent != content
+            ) {
+                return@launch
+            }
+            val diagnostics = runEditorLint(path, content)
+            if (_state.value.activeFile == path) {
+                _state.update { it.copy(editorDiagnostics = diagnostics) }
+            }
+        }
+    }
+
+    private suspend fun runEditorLint(
+        path: String,
+        content: String,
+    ): List<EditorDiagnostic> {
+        if (content.length > 500_000 || !internalRuntime.isToolchainsReady()) {
+            return emptyList()
+        }
+        val extension = path.substringAfterLast('.', "").lowercase()
+        val commandFor: (String) -> String? = when (extension) {
+            "py", "python" -> { file -> "python3 -m py_compile ${shellQuote(file)}" }
+            "js", "mjs", "cjs" -> { file -> "node --check ${shellQuote(file)}" }
+            "sh", "shell" -> { file -> "sh -n ${shellQuote(file)}" }
+            "bash" -> { file -> "bash -n ${shellQuote(file)}" }
+            "json" -> { file -> "python3 -m json.tool ${shellQuote(file)} >/dev/null" }
+            "c", "h" -> { file ->
+                "clang -fsyntax-only -x c ${shellQuote(file)}"
+            }
+            "cc", "cpp", "cxx", "hpp" -> { file ->
+                "clang --driver-mode=g++ -fsyntax-only -x c++ ${shellQuote(file)}"
+            }
+            else -> return emptyList()
+        }
+        val lintDir = File(
+            appContext.cacheDir,
+            "editor-lint/${UUID.randomUUID()}",
+        )
+        val lintFile = File(lintDir, "source.$extension")
+        return try {
+            lintDir.mkdirs()
+            lintFile.writeText(content)
+            val command = commandFor(lintFile.absolutePath) ?: return emptyList()
+            val result = commandRunner.run(
+                command = command,
+                workingDir = lintDir,
+                timeoutMs = 30_000,
+            )
+            if (result.exitCode == 0) {
+                emptyList()
+            } else {
+                parseEditorDiagnostics(result.output, lintFile.absolutePath)
+            }
+        } catch (_: Exception) {
+            emptyList()
+        } finally {
+            lintDir.deleteRecursively()
+        }
+    }
+
+    private fun parseEditorDiagnostics(
+        output: String,
+        lintPath: String,
+    ): List<EditorDiagnostic> {
+        val clean = output.replace(lintPath, "当前文件").trim()
+        if (clean.isBlank()) return emptyList()
+        val line = Regex("""line\s+(\d+)""")
+            .find(clean)
+            ?.groupValues
+            ?.get(1)
+            ?.toIntOrNull()
+            ?: Regex(""":(\d+)(?::(\d+))?""")
+                .find(clean)
+                ?.groupValues
+                ?.get(1)
+                ?.toIntOrNull()
+            ?: 1
+        val column = Regex("""column\s+(\d+)""")
+            .find(clean)
+            ?.groupValues
+            ?.get(1)
+            ?.toIntOrNull()
+            ?: Regex(""":\d+:(\d+)""")
+                .find(clean)
+                ?.groupValues
+                ?.get(1)
+                ?.toIntOrNull()
+            ?: 1
+        val message = clean.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .lastOrNull {
+                it.contains("SyntaxError", ignoreCase = true) ||
+                    it.contains("IndentationError", ignoreCase = true) ||
+                    it.contains("TabError", ignoreCase = true) ||
+                    it.contains("syntax error", ignoreCase = true) ||
+                    it.contains("Unexpected token", ignoreCase = true) ||
+                    it.contains("expected", ignoreCase = true)
+            }
+            ?: clean.lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
+        return listOf(
+            EditorDiagnostic(
+                line = line,
+                column = column,
+                message = message.take(500).ifBlank { "语法检查失败" },
+            ),
+        )
     }
 
     fun runEditorFile(editorContent: String) {

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <link rel="stylesheet" href="codemirror.min.css">
   <link rel="stylesheet" href="addon/hint/show-hint.min.css">
+  <link rel="stylesheet" href="addon/lint/lint.min.css">
   <style>
     html, body {
       margin: 0;
@@ -114,18 +115,31 @@
       box-shadow: inset 0 0 0 2px #ffd166;
       border-radius: 3px;
     }
-    .cm-keyword, .cm-builtin { color: #79c0ff; font-weight: 600; }
-    .cm-def, .cm-variable-2 { color: #d2a8ff; }
-    .cm-variable, .cm-variable-3 { color: #c9d1d9; }
-    .cm-string, .cm-string-2 { color: #7ee787; }
-    .cm-number { color: #e3d58a; }
-    .cm-comment { color: #8b949e; font-style: italic; }
-    .cm-type, .cm-atom { color: #56d4dd; }
-    .cm-operator, .cm-punctuation { color: #ff7b72; }
-    .cm-meta, .cm-tag { color: #ffa657; }
-    .cm-header { color: #79c0ff; font-weight: 700; }
-    .cm-link { color: #56d4dd; }
-    .cm-quote { color: #7ee787; }
+    .cm-keyword, .cm-builtin { color: #82aaff; font-weight: 600; }
+    .cm-def, .cm-variable-2 { color: #c792ea; }
+    .cm-variable, .cm-variable-3 { color: #d6deeb; }
+    .cm-string, .cm-string-2 { color: #a5d6a7; }
+    .cm-number { color: #e5c07b; }
+    .cm-comment { color: #7f8c98; font-style: italic; }
+    .cm-type, .cm-atom { color: #66c2cd; }
+    .cm-operator { color: #f07178; }
+    .cm-punctuation { color: #d6deeb; }
+    .cm-meta, .cm-tag { color: #d7a86e; }
+    .cm-header { color: #82aaff; font-weight: 700; }
+    .cm-link { color: #66c2cd; }
+    .cm-quote { color: #a5d6a7; }
+    .CodeMirror-lint-mark-error {
+      border-bottom: none !important;
+      text-decoration-line: underline;
+      text-decoration-style: wavy;
+      text-decoration-color: #f85149;
+      text-decoration-thickness: 1.5px;
+      text-underline-offset: 3px;
+    }
+    .CodeMirror-lint-marker-error {
+      content: "●";
+      color: #f85149;
+    }
     .CodeMirror-hints {
       background: #111821;
       border: 1px solid #536476;
@@ -169,6 +183,7 @@
   <script src="addon/edit/matchbrackets.min.js"></script>
   <script src="addon/hint/show-hint.min.js"></script>
   <script src="addon/search/searchcursor.min.js"></script>
+  <script src="addon/lint/lint.min.js"></script>
   <script src="addon/mode/simple.min.js"></script>
   <script src="mode/clike.min.js"></script>
   <script src="mode/javascript.min.js"></script>
@@ -232,6 +247,9 @@
     let lastHintWord = "";
     let searchMarks = [];
     let activeSearchMatch = null;
+    let serverDiagnostics = [];
+    let localDiagnostics = [];
+    let localDiagnosticsTimer = 0;
 
     const editor = CodeMirror.fromTextArea(document.getElementById("editor"), {
       mode: null,
@@ -244,6 +262,8 @@
       electricChars: true,
       autoCloseBrackets: true,
       matchBrackets: true,
+      gutters: ["CodeMirror-linenumbers", "CodeMirror-lint-markers"],
+      lint: {getAnnotations: currentDiagnostics, delay: 180},
       viewportMargin: 18,
       scrollbarStyle: "native",
       inputStyle: "contenteditable",
@@ -425,6 +445,138 @@
       return window.PocketEditorBridge || null;
     }
 
+    function diagnosticAt(text, index, message) {
+      const before = text.slice(0, index);
+      const line = before.split("\n").length - 1;
+      const lastBreak = before.lastIndexOf("\n");
+      return {
+        from: CodeMirror.Pos(line, index - lastBreak - 1),
+        to: CodeMirror.Pos(line, index - lastBreak),
+        severity: "error",
+        message
+      };
+    }
+
+    function scanLocalSyntax(text) {
+      if (currentMode === "plain" || currentMode === "markdown") return [];
+      const diagnostics = [];
+      const stack = [];
+      const pairs = {")": "(", "]": "[", "}": "{"};
+      let quote = null;
+      let blockComment = false;
+      let lineComment = false;
+      for (let index = 0; index < text.length; index++) {
+        const ch = text[index];
+        const next = text[index + 1];
+        if (lineComment) {
+          if (ch === "\n") lineComment = false;
+          continue;
+        }
+        if (blockComment) {
+          if (ch === "*" && next === "/") {
+            blockComment = false;
+            index++;
+          }
+          continue;
+        }
+        if (quote) {
+          if (ch === "\\") {
+            index++;
+            continue;
+          }
+          if (ch === quote) quote = null;
+          continue;
+        }
+        if (ch === "/" && next === "/") {
+          lineComment = true;
+          index++;
+          continue;
+        }
+        if (ch === "/" && next === "*") {
+          blockComment = true;
+          index++;
+          continue;
+        }
+        if (ch === "#" && (currentMode === "python" || currentMode === "shell")) {
+          lineComment = true;
+          continue;
+        }
+        if (
+          (ch === '"' || ch === "'") &&
+          next === ch &&
+          text[index + 2] === ch &&
+          (currentMode === "python" || currentMode === "kotlin" || currentMode === "java")
+        ) {
+          const delimiter = ch + ch + ch;
+          const close = text.indexOf(delimiter, index + 3);
+          if (close < 0) {
+            diagnostics.push(diagnosticAt(text, index, "多行字符串没有闭合"));
+            break;
+          }
+          index = close + 2;
+          continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") {
+          quote = ch;
+          continue;
+        }
+        if (ch === "(" || ch === "[" || ch === "{") {
+          stack.push({char: ch, index});
+          continue;
+        }
+        if (ch === ")" || ch === "]" || ch === "}") {
+          const open = stack.pop();
+          if (!open || open.char !== pairs[ch]) {
+            diagnostics.push(diagnosticAt(text, index, `括号不匹配：多余的 ${ch}`));
+          }
+        }
+      }
+      if (quote) {
+        diagnostics.push(diagnosticAt(text, Math.max(0, text.length - 1), `字符串没有闭合：${quote}`));
+      }
+      if (blockComment) {
+        diagnostics.push(diagnosticAt(text, Math.max(0, text.length - 1), "块注释没有闭合"));
+      }
+      stack.slice(-10).forEach(open => {
+        diagnostics.push(diagnosticAt(text, open.index, `括号没有闭合：${open.char}`));
+      });
+      if (currentMode === "json") {
+        try {
+          JSON.parse(text);
+        } catch (error) {
+          const lineMatch = /line\s+(\d+)\s+column\s+(\d+)/i.exec(error.message);
+          const positionMatch = /position\s+(\d+)/i.exec(error.message);
+          let line = 0;
+          let ch = 0;
+          if (lineMatch) {
+            line = Math.max(0, Number(lineMatch[1]) - 1);
+            ch = Math.max(0, Number(lineMatch[2]) - 1);
+          } else if (positionMatch) {
+            const offset = Number(positionMatch[1]);
+            const before = text.slice(0, offset);
+            line = before.split("\n").length - 1;
+            ch = offset - before.lastIndexOf("\n") - 1;
+          }
+          diagnostics.push({
+            from: CodeMirror.Pos(line, ch),
+            to: CodeMirror.Pos(line, ch + 1),
+            severity: "error",
+            message: error.message
+          });
+        }
+      }
+      return diagnostics;
+    }
+
+    function refreshLocalDiagnostics() {
+      localDiagnostics = scanLocalSyntax(editor.getValue());
+      editor.performLint();
+    }
+
+    function currentDiagnostics() {
+      return serverDiagnostics.concat(localDiagnostics);
+    }
+
     function sendPosition() {
       clearTimeout(positionTimer);
       positionTimer = setTimeout(() => {
@@ -475,6 +627,8 @@
       if (api && api.onDirtyChanged) api.onDirtyChanged(true);
       clearTimeout(contentTimer);
       contentTimer = setTimeout(flushContent, 250);
+      clearTimeout(localDiagnosticsTimer);
+      localDiagnosticsTimer = setTimeout(refreshLocalDiagnostics, 180);
       if (findPanel.classList.contains("visible")) {
         setTimeout(() => updateFindStatus(), 0);
       }
@@ -504,6 +658,8 @@
         editor.setCursor(Math.min(cursor.line, Math.max(0, editor.lineCount() - 1)), 0);
         currentDirty = false;
         suppressEvents = false;
+        localDiagnostics = scanLocalSyntax(editor.getValue());
+        editor.performLint();
         setTimeout(() => editor.refresh(), 0);
         if (findPanel.classList.contains("visible")) {
           setTimeout(() => updateFindStatus(), 0);
@@ -512,6 +668,8 @@
       setMode(mode) {
         currentMode = mode in modes ? mode : "plain";
         editor.setOption("mode", modes[currentMode]);
+        localDiagnostics = scanLocalSyntax(editor.getValue());
+        editor.performLint();
         setTimeout(() => editor.refresh(), 0);
       },
       getValue() {
@@ -525,6 +683,20 @@
       },
       openSearch() {
         openSearch();
+      },
+      setDiagnostics(diagnostics) {
+        serverDiagnostics = (Array.isArray(diagnostics) ? diagnostics : []).map(item => {
+          if (item.from) return item;
+          const line = Math.max(0, Number(item.line) || 0);
+          const ch = Math.max(0, Number(item.ch) || 0);
+          return {
+            from: CodeMirror.Pos(line, ch),
+            to: CodeMirror.Pos(line, ch + 1),
+            severity: item.severity || "error",
+            message: item.message || "语法错误"
+          };
+        });
+        editor.performLint();
       },
       flush() {
         flushContent();

@@ -12,6 +12,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -20,6 +21,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 import org.json.JSONTokener
+import org.json.JSONArray
+
+data class EditorDiagnostic(
+    val line: Int,
+    val column: Int,
+    val message: String,
+)
 
 class CodeEditorController internal constructor(
     private val webView: WebView,
@@ -54,6 +62,7 @@ fun CodeEditorWebView(
     path: String,
     initialContent: String,
     language: SyntaxLanguage,
+    diagnostics: List<EditorDiagnostic>,
     onContentChanged: (String) -> Unit,
     onDirtyChanged: (Boolean) -> Unit,
     onCursorChanged: (Int, Int) -> Unit,
@@ -66,7 +75,6 @@ fun CodeEditorWebView(
     val currentControllerReady by rememberUpdatedState(onControllerReady)
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val context = LocalContext.current
-
     val webView = remember(path) {
         WebView(context).apply {
             setBackgroundColor(Color.rgb(9, 13, 18))
@@ -81,6 +89,24 @@ fun CodeEditorWebView(
             isVerticalScrollBarEnabled = false
             isHorizontalScrollBarEnabled = false
         }
+    }
+    LaunchedEffect(diagnostics) {
+        val payload = JSONArray().apply {
+            diagnostics.forEach { diagnostic ->
+                put(
+                    JSONObject().apply {
+                        put("line", diagnostic.line.coerceAtLeast(1) - 1)
+                        put("ch", diagnostic.column.coerceAtLeast(1) - 1)
+                        put("message", diagnostic.message)
+                        put("severity", "error")
+                    },
+                )
+            }
+        }
+        webView.evaluateJavascript(
+            "if (window.PocketEditor) PocketEditor.setDiagnostics(${payload});",
+            null,
+        )
     }
 
     val controller = remember(webView) { CodeEditorController(webView) }
@@ -128,7 +154,10 @@ fun CodeEditorWebView(
                         val mode = JSONObject.quote(language.name.lowercase())
                         val text = JSONObject.quote(initialContent)
                         view.evaluateJavascript(
-                            "PocketEditor.setMode($mode); PocketEditor.setValue($text);",
+                            "if (window.PocketEditor) {" +
+                                "PocketEditor.setMode($mode); " +
+                                "PocketEditor.setValue($text);" +
+                                "}",
                             null,
                         )
                         currentControllerReady(controller)

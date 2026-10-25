@@ -103,6 +103,7 @@ fun FilesScreen(
             path = state.activeFile,
             content = state.editorContent,
             dirty = state.editorDirty,
+            diagnostics = state.editorDiagnostics,
             onClose = onCloseFile,
             onChange = onEditorChange,
             onSave = { onSave(it) },
@@ -506,6 +507,7 @@ private fun Editor(
     path: String,
     content: String,
     dirty: Boolean,
+    diagnostics: List<EditorDiagnostic>,
     onClose: () -> Unit,
     onChange: (String) -> Unit,
     onSave: (String) -> Unit,
@@ -585,6 +587,7 @@ private fun Editor(
             path = path,
             initialContent = content,
             language = language,
+            diagnostics = diagnostics,
             onContentChanged = onChange,
             onDirtyChanged = { localDirty = it },
             onCursorChanged = { line, column ->
