@@ -549,6 +549,30 @@ fun AgentScreen(
             }
         }
 
+        if (input.trimStart().startsWith("/") && '\n' !in input) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                items(
+                    listOf(
+                        "/goal" to "设置目标",
+                        "/new" to "新对话",
+                        "/clear" to "清空对话",
+                    ),
+                ) { (command, label) ->
+                    AssistChip(
+                        onClick = {
+                            if (command == "/goal") {
+                                input = "/goal "
+                            } else {
+                                onSend(command)
+                                input = ""
+                            }
+                        },
+                        label = { Text("$command · $label") },
+                    )
+                }
+            }
+        }
+
         if (state.queuedPrompts.isNotEmpty()) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -663,7 +687,7 @@ fun AgentScreen(
             )
             if (state.agentRunning) {
                 Canvas(Modifier.matchParentSize()) {
-                    val strokeWidth = 2.dp.toPx()
+                    val strokeWidth = 1.5.dp.toPx()
                     val inset = strokeWidth / 2f
                     val ring = Path().apply {
                         addRoundRect(
@@ -681,34 +705,27 @@ fun AgentScreen(
                     }
                     drawPath(
                         path = ring,
-                        color = flowPrimary.copy(alpha = 0.16f),
+                        color = flowPrimary.copy(alpha = 0.10f),
                         style = Stroke(width = strokeWidth),
                     )
                     val measure = PathMeasure().apply { setPath(ring, false) }
                     val totalLength = measure.length
                     if (totalLength <= 0f) return@Canvas
-                    val dashLength = totalLength * 0.12f
-                    listOf(0f, 0.34f, 0.67f).forEach { offset ->
-                        val segment = Path()
-                        var start = ((flowProgress + offset) % 1f) * totalLength
-                        var remaining = dashLength
-                        while (remaining > 0f) {
-                            val end = (start + remaining).coerceAtMost(totalLength)
-                            measure.getSegment(start, end, segment, true)
-                            remaining -= end - start
-                            start = 0f
-                        }
-                        drawPath(
-                            path = segment,
-                            color = flowSecondary.copy(alpha = 0.16f),
-                            style = Stroke(width = strokeWidth * 4f),
-                        )
-                        drawPath(
-                            path = segment,
-                            color = flowPrimary,
-                            style = Stroke(width = strokeWidth),
-                        )
+                    val dashLength = totalLength * 0.075f
+                    val segment = Path()
+                    var start = flowProgress * totalLength
+                    var remaining = dashLength
+                    while (remaining > 0f) {
+                        val end = (start + remaining).coerceAtMost(totalLength)
+                        measure.getSegment(start, end, segment, true)
+                        remaining -= end - start
+                        start = 0f
                     }
+                    drawPath(
+                        path = segment,
+                        color = flowSecondary.copy(alpha = 0.9f),
+                        style = Stroke(width = strokeWidth),
+                    )
                 }
             }
         }

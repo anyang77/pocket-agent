@@ -2172,6 +2172,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendChat(text: String) {
         val prompt = text.trim()
+        when (prompt.lowercase()) {
+            "/new" -> {
+                newConversation()
+                return
+            }
+            "/clear" -> {
+                clearChat()
+                return
+            }
+        }
         if (handleGoalCommand(prompt)) return
         if (prompt.isBlank()) return
         if (_state.value.settings.apiKey.isBlank()) {
