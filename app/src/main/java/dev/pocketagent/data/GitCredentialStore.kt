@@ -123,12 +123,32 @@ class GitCredentialStore(context: Context) {
         )
     }
 
+    fun accessToken(host: String): String? {
+        val account = activeAccount(host) ?: return null
+        return secrets.getApiKey(secretKey(account.id)).takeIf { it.isNotBlank() }
+    }
+
     fun hostOf(url: String): String? = runCatching {
         URI(url.trim()).host?.takeIf { it.isNotBlank() }
     }.getOrNull()
 
-    fun saveGithubAccount(token: String, login: String, displayName: String): GitAccount? =
-        save("https://github.com", login, token, displayName.ifBlank { login })
+    fun saveGithubAccount(token: String, login: String, displayName: String): GitAccount? {
+        if (token.isBlank() || login.isBlank()) return null
+        val account = GitAccount(
+            id = "github.com::$login",
+            host = "github.com",
+            username = login,
+            label = displayName.trim().ifBlank { login },
+        )
+        val previous = accounts()
+        previous.filter { it.host == "github.com" }
+            .filterNot { it.id == account.id }
+            .forEach { secrets.putApiKey(secretKey(it.id), "") }
+        saveAccounts(previous.filterNot { it.host == "github.com" } + account)
+        secrets.putApiKey(secretKey(account.id), token.trim())
+        preferences.edit().putString(activeKey("github.com"), account.id).apply()
+        return account
+    }
 
     fun removeActiveGithubAccount() {
         activeAccount("github.com")?.let { removeAccount(it.id) }

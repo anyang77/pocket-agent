@@ -10,7 +10,7 @@ import dev.pocketagent.data.FileEntry
 import dev.pocketagent.data.GitState
 import dev.pocketagent.data.GitCommitDetail
 import dev.pocketagent.data.GitAccount
-import dev.pocketagent.data.SshAccount
+import dev.pocketagent.data.GitHubRepository
 import dev.pocketagent.data.ManagedRepository
 import dev.pocketagent.data.ModelProfile
 import dev.pocketagent.agent.TokenUsage
@@ -89,8 +89,9 @@ data class AppUiState(
     val githubLoginRunning: Boolean = false,
     val githubLoginError: String? = null,
     val githubOAuthClientConfigured: Boolean = false,
-    val sshAccounts: List<SshAccount> = emptyList(),
-    val sshKeyGenerating: Boolean = false,
+    val githubRepositories: List<GitHubRepository> = emptyList(),
+    val githubRepositoriesLoading: Boolean = false,
+    val githubRepositoriesError: String? = null,
     val managedRepositories: List<ManagedRepository> = emptyList(),
     val chat: List<ChatEntry> = emptyList(),
     val agentRunning: Boolean = false,

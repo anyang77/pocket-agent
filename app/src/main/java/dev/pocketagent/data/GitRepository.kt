@@ -232,6 +232,8 @@ class GitRepository(
         displayName = displayName,
     )
 
+    fun githubAccessToken(): String? = credentials.accessToken("github.com")
+
     fun sshAccounts(): List<SshAccount> = sshAccounts.accounts()
 
     suspend fun generateSshAccount(

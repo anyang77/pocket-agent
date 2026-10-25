@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -53,14 +52,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.pocketagent.data.GitChange
 import dev.pocketagent.data.GitCommit
 import dev.pocketagent.data.GitCommitDetail
-import dev.pocketagent.data.SshAccount
+import dev.pocketagent.data.GitHubRepository
+
+private enum class GitSection {
+    LOCAL,
+    REMOTE,
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -80,13 +83,12 @@ fun GitScreen(
     onCloseDiff: () -> Unit,
     onOpenCommitDetail: (String) -> Unit,
     onCloseCommitDetail: () -> Unit,
-    onGitAccountSelected: (String) -> Unit,
     onGitAccountRemoved: (String) -> Unit,
     onGitHubLogin: () -> Unit,
     onCancelGitHubLogin: () -> Unit,
     onSaveGitHubClientId: (String) -> Unit,
-    onGenerateSshAccount: (String) -> Unit,
-    onRemoveSshAccount: (String) -> Unit,
+    onRefreshGitHubRepositories: () -> Unit,
+    onCloneGitHubRepository: (GitHubRepository) -> Unit,
     onSwitchRepository: (String) -> Unit,
     onRemoveRepository: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -94,14 +96,17 @@ fun GitScreen(
     var commitMessage by rememberSaveable { mutableStateOf("") }
     var cloneDialog by rememberSaveable { mutableStateOf(false) }
     var branchDialog by rememberSaveable { mutableStateOf(false) }
-    var sshDialog by rememberSaveable { mutableStateOf(false) }
-    var manageVisible by rememberSaveable { mutableStateOf(false) }
+    var repositoriesVisible by rememberSaveable { mutableStateOf(false) }
+    var section by rememberSaveable { mutableStateOf(GitSection.LOCAL) }
     var historyVisible by rememberSaveable { mutableStateOf(false) }
     var expandedCommit by rememberSaveable { mutableStateOf<String?>(null) }
     var openedLoginCode by rememberSaveable { mutableStateOf("") }
     var githubClientId by rememberSaveable { mutableStateOf("") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val git = state.gitState
+    val activeGitAccount = state.gitAccounts.firstOrNull {
+        it.id == state.activeGitAccountId
+    }
     val context = LocalContext.current
 
     LaunchedEffect(state.githubLogin?.userCode) {
@@ -275,7 +280,6 @@ fun GitScreen(
 
     if (cloneDialog) {
         CloneDialog(
-            sshAccounts = state.sshAccounts,
             onDismiss = { cloneDialog = false },
             onClone = { url, folder, username, token, sshAccountId ->
                 cloneDialog = false
@@ -284,15 +288,20 @@ fun GitScreen(
         )
     }
 
-    if (sshDialog) {
-        NewSshAccountDialog(
-            generating = state.sshKeyGenerating,
-            onDismiss = { sshDialog = false },
-            onCreate = {
-                sshDialog = false
-                onGenerateSshAccount(it)
-            },
-        )
+    if (repositoriesVisible) {
+        ModalBottomSheet(
+            onDismissRequest = { repositoriesVisible = false },
+            sheetState = sheetState,
+        ) {
+            GitHubRepositorySheet(
+                state = state,
+                onRefresh = onRefreshGitHubRepositories,
+                onClone = { repository ->
+                    repositoriesVisible = false
+                    onCloneGitHubRepository(repository)
+                },
+            )
+        }
     }
 
     if (branchDialog) {
@@ -326,63 +335,31 @@ fun GitScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (git.isRepository) {
-                        Text(
-                            text = "已暂存 ${git.staged.size} · 更改 ${git.changes.size}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (git.staged.isNotEmpty() || git.changes.isNotEmpty()) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                        Text(
-                            text = when {
-                                !git.hasUpstream -> "仅本地仓库 · 尚未设置远程分支"
-                                git.ahead == 0 && git.behind == 0 ->
-                                    "已与 ${git.upstream} 同步"
-                                else -> "本地未推送 ↑${git.ahead} · 远程待拉取 ↓${git.behind}"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (git.ahead > 0 || !git.hasUpstream) {
-                                MaterialTheme.colorScheme.tertiary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                    }
-                }
-                if (git.isRepository) {
-                    AssistChip(
-                        onClick = { branchDialog = true },
-                        label = {
-                            Text(
-                                git.branch +
-                                    if (git.ahead > 0 || git.behind > 0) {
-                                        "  ↑${git.ahead} ↓${git.behind}"
-                                    } else {
-                                        ""
-                                    },
-                            )
-                        },
-                    )
-                }
-                IconButton(
-                    onClick = { historyVisible = true },
-                    enabled = git.isRepository,
-                ) {
-                    Icon(Icons.Filled.History, contentDescription = "历史")
                 }
                 IconButton(onClick = onRefresh, enabled = !state.gitLoading) {
                     Icon(Icons.Filled.Refresh, contentDescription = "刷新 Git")
                 }
-                TextButton(onClick = { manageVisible = !manageVisible }) {
-                    Text(if (manageVisible) "收起" else "管理")
-                }
             }
         }
         item {
-            if (manageVisible && state.managedRepositories.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AssistChip(
+                    onClick = { section = GitSection.LOCAL },
+                    modifier = Modifier.weight(1f),
+                    label = { Text(if (section == GitSection.LOCAL) "本地 ✓" else "本地") },
+                )
+                AssistChip(
+                    onClick = { section = GitSection.REMOTE },
+                    modifier = Modifier.weight(1f),
+                    label = { Text(if (section == GitSection.REMOTE) "远程 ✓" else "远程") },
+                )
+            }
+        }
+        item {
+            if (section == GitSection.LOCAL && state.managedRepositories.isNotEmpty()) {
                 Card {
                     Column(
                         modifier = Modifier
@@ -422,45 +399,7 @@ fun GitScreen(
                 }
             }
         }
-        if (manageVisible && state.gitAccounts.isNotEmpty()) {
-            item {
-                Card {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(7.dp),
-                    ) {
-                        Text("GitHub 登录账号", style = MaterialTheme.typography.bodyMedium)
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                            items(state.gitAccounts, key = { it.id }) { gitAccount ->
-                                AssistChip(
-                                    onClick = { onGitAccountSelected(gitAccount.id) },
-                                    label = {
-                                        Text(
-                                            gitAccount.label,
-                                            color = if (
-                                                gitAccount.id == state.activeGitAccountId
-                                            ) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurface
-                                            },
-                                        )
-                                    },
-                                )
-                            }
-                        }
-                        state.activeGitAccountId?.let { activeId ->
-                            TextButton(onClick = { onGitAccountRemoved(activeId) }) {
-                                Text("移除当前凭据")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if (manageVisible) item {
+        if (section == GitSection.REMOTE) item {
             Card {
                 Column(
                     modifier = Modifier
@@ -470,14 +409,25 @@ fun GitScreen(
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("GitHub 登录", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "浏览器确认一次，Token 加密保存，仓库自动复用",
+                                if (activeGitAccount == null) "GitHub 登录" else "GitHub 账号",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                if (activeGitAccount == null) {
+                                    "浏览器确认一次，Token 加密保存，仓库自动复用"
+                                } else {
+                                    "已登录 ${activeGitAccount.label}"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        if (state.githubLoginRunning) {
+                        if (activeGitAccount != null) {
+                            TextButton(onClick = { onGitAccountRemoved(activeGitAccount.id) }) {
+                                Text("退出登录")
+                            }
+                        } else if (state.githubLoginRunning) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp,
@@ -488,7 +438,7 @@ fun GitScreen(
                             }
                         }
                     }
-                    if (!state.githubOAuthClientConfigured) {
+                    if (activeGitAccount == null && !state.githubOAuthClientConfigured) {
                         Text(
                             "发布版应在构建时设置 Client ID。本地调试也可以在这里填写一次。",
                             style = MaterialTheme.typography.labelSmall,
@@ -532,17 +482,10 @@ fun GitScreen(
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
-                    if (state.gitAccounts.isNotEmpty()) {
-                        Text(
-                            "已登录 ${state.gitAccounts.joinToString { it.label }}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
             }
         }
-        if (manageVisible) item {
+        if (section == GitSection.REMOTE) item {
             Card {
                 Column(
                     modifier = Modifier
@@ -552,58 +495,52 @@ fun GitScreen(
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("SSH 账号", style = MaterialTheme.typography.bodyMedium)
+                            Text("GitHub 仓库", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "每个 GitHub 账号添加一次 Public Key，所有仓库通用",
+                                "显示当前账号可访问的仓库，点选即可克隆",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        TextButton(
-                            onClick = { sshDialog = true },
-                            enabled = !state.sshKeyGenerating,
-                        ) { Text("生成 Key") }
-                    }
-                    state.sshAccounts.forEach { ssh ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                ssh.label,
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            TextButton(
-                                onClick = {
-                                    val clipboard = context.getSystemService(
-                                        ClipboardManager::class.java,
-                                    )
-                                    clipboard.setPrimaryClip(
-                                        ClipData.newPlainText("SSH Public Key", ssh.publicKey),
-                                    )
-                                },
-                            ) { Text("复制公钥") }
-                            TextButton(
-                                onClick = {
-                                    runCatching {
-                                        context.startActivity(
-                                            Intent(
-                                                Intent.ACTION_VIEW,
-                                                Uri.parse("https://github.com/settings/ssh/new"),
-                                            ),
-                                        )
-                                    }
-                                },
-                            ) { Text("添加") }
-                            TextButton(onClick = { onRemoveSshAccount(ssh.id) }) {
-                                Text("删除")
+                        if (state.activeGitAccountId != null) {
+                            IconButton(
+                                onClick = onRefreshGitHubRepositories,
+                                enabled = !state.githubRepositoriesLoading,
+                            ) {
+                                Icon(Icons.Filled.Refresh, contentDescription = "刷新仓库")
                             }
                         }
                     }
-                    if (state.sshAccounts.isEmpty()) {
+                    if (state.activeGitAccountId == null) {
                         Text(
-                            "尚未创建 SSH Key",
+                            "登录 GitHub 后显示仓库",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    } else {
+                        if (state.githubRepositoriesLoading) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        }
+                        Text(
+                            "可访问 ${state.githubRepositories.size} 个仓库",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        state.githubRepositoriesError?.let { error ->
+                            Text(
+                                error,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                repositoriesVisible = true
+                                onRefreshGitHubRepositories()
+                            },
+                            enabled = !state.githubRepositoriesLoading,
+                        ) {
+                            Text("浏览仓库")
+                        }
                     }
                 }
             }
@@ -630,22 +567,68 @@ fun GitScreen(
                         modifier = Modifier.padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Text("当前工作区不是 Git 仓库", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "可以初始化新仓库，或克隆一个远程仓库后自动切换过去。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(onClick = onInit) { Text("初始化仓库") }
-                            OutlinedButton(onClick = { cloneDialog = true }) { Text("克隆仓库") }
+                        if (section == GitSection.LOCAL) {
+                            Text("当前工作区不是 Git 仓库", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "可以在这里初始化本地仓库，或去远程页面克隆已有仓库。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Button(onClick = onInit) { Text("初始化本地仓库") }
+                                OutlinedButton(
+                                    onClick = { section = GitSection.REMOTE },
+                                ) { Text("前往远程") }
+                            }
+                        } else {
+                            Text("克隆远程仓库", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (state.activeGitAccountId == null) {
+                                    "先登录 GitHub，随后可浏览账号中的仓库并直接克隆。"
+                                } else {
+                                    "当前账号已连接，可以浏览仓库，也可以输入公开仓库 URL。"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            OutlinedButton(
+                                onClick = { cloneDialog = true },
+                                enabled = !state.gitLoading,
+                            ) { Text("按 URL 克隆") }
                         }
                     }
                 }
             }
-            return@LazyColumn
         }
-        if (git.staged.isNotEmpty()) {
+        if (section == GitSection.LOCAL && git.isRepository) {
+            item {
+                Card {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("本地仓库", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "分支 ${git.branch} · 已暂存 ${git.staged.size} · 更改 ${git.changes.size}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        AssistChip(
+                            onClick = { branchDialog = true },
+                            label = { Text("切换分支") },
+                        )
+                        IconButton(onClick = { historyVisible = true }) {
+                            Icon(Icons.Filled.History, contentDescription = "提交历史")
+                        }
+                    }
+                }
+            }
+        }
+        if (section == GitSection.LOCAL && git.isRepository && git.staged.isNotEmpty()) {
             item {
                 SectionHeader("已暂存 · ${git.staged.size}", null)
             }
@@ -662,7 +645,7 @@ fun GitScreen(
                 }
             }
         }
-        if (git.changes.isNotEmpty()) {
+        if (section == GitSection.LOCAL && git.isRepository && git.changes.isNotEmpty()) {
             item {
                 SectionHeader("更改 · ${git.changes.size}", "全部暂存", onStageAll)
             }
@@ -679,7 +662,12 @@ fun GitScreen(
                 }
             }
         }
-        if (git.staged.isEmpty() && git.changes.isEmpty()) {
+        if (
+            section == GitSection.LOCAL &&
+            git.isRepository &&
+            git.staged.isEmpty() &&
+            git.changes.isEmpty()
+        ) {
             item {
                 Text(
                     "工作区没有未提交的改动",
@@ -689,7 +677,7 @@ fun GitScreen(
                 )
             }
         }
-        item {
+        if (section == GitSection.LOCAL && git.isRepository) item {
             OutlinedTextField(
                 value = commitMessage,
                 onValueChange = { commitMessage = it },
@@ -700,7 +688,7 @@ fun GitScreen(
                 shape = RoundedCornerShape(14.dp),
             )
         }
-        item {
+        if (section == GitSection.LOCAL && git.isRepository) item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -716,17 +704,41 @@ fun GitScreen(
                 ) {
                     Text("提交")
                 }
-                OutlinedButton(
-                    onClick = onPull,
-                    enabled = !state.gitLoading,
-                ) { Text("拉取") }
-                OutlinedButton(
-                    onClick = onPush,
-                    enabled = !state.gitLoading,
-                ) { Text("推送") }
             }
         }
-        if (manageVisible) item {
+        if (section == GitSection.REMOTE && git.isRepository) item {
+            Card {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("远程同步", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        when {
+                            !git.hasUpstream -> "当前分支尚未设置远程分支"
+                            git.ahead == 0 && git.behind == 0 ->
+                                "已与 ${git.upstream} 同步"
+                            else -> "本地待推送 ↑${git.ahead} · 远程待拉取 ↓${git.behind}"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = onPull,
+                            enabled = !state.gitLoading,
+                        ) { Text("拉取") }
+                        OutlinedButton(
+                            onClick = onPush,
+                            enabled = !state.gitLoading,
+                        ) { Text("推送") }
+                    }
+                }
+            }
+        }
+        if (section == GitSection.REMOTE && git.isRepository) item {
             OutlinedButton(
                 onClick = { cloneDialog = true },
                 modifier = Modifier.fillMaxWidth(),
@@ -976,43 +988,122 @@ private fun CommitRow(
 }
 
 @Composable
-private fun NewSshAccountDialog(
-    generating: Boolean,
-    onDismiss: () -> Unit,
-    onCreate: (String) -> Unit,
+private fun GitHubRepositorySheet(
+    state: AppUiState,
+    onRefresh: () -> Unit,
+    onClone: (GitHubRepository) -> Unit,
 ) {
-    var label by rememberSaveable { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("新建 SSH 账号") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = label,
-                    onValueChange = { label = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("账号名称") },
-                    placeholder = { Text("例如 工作 GitHub") },
-                    singleLine = true,
-                )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 700.dp)
+            .padding(bottom = 18.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("克隆 GitHub 仓库", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "生成后复制 Public Key，并在 GitHub 的 SSH Keys 页面添加一次。",
-                    style = MaterialTheme.typography.bodySmall,
+                    state.gitAccounts.firstOrNull { it.id == state.activeGitAccountId }?.label
+                        ?: "GitHub",
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (generating) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+            IconButton(
+                onClick = onRefresh,
+                enabled = !state.githubRepositoriesLoading,
+            ) {
+                Icon(Icons.Filled.Refresh, contentDescription = "刷新仓库")
+            }
+        }
+        if (state.githubRepositoriesLoading) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+        state.githubRepositoriesError?.let { error ->
+            Text(
+                error,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        HorizontalDivider()
+        LazyColumn(
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(state.githubRepositories, key = { it.fullName }) { repository ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onClone(repository) },
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                repository.fullName,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            repository.description.takeIf { it.isNotBlank() }?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Text(
+                                buildString {
+                                    append(if (repository.private) "私有" else "公开")
+                                    append(" · ")
+                                    append(repository.defaultBranch)
+                                    if (repository.updatedAt.isNotBlank()) {
+                                        append(" · ")
+                                        append(repository.updatedAt.take(10))
+                                    }
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { onClone(repository) }) {
+                            Text("克隆")
+                        }
+                    }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { onCreate(label) },
-                enabled = label.isNotBlank() && !generating,
-            ) { Text("生成") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
+            if (
+                !state.githubRepositoriesLoading &&
+                state.githubRepositories.isEmpty() &&
+                state.githubRepositoriesError == null
+            ) {
+                item {
+                    Text(
+                        "没有可克隆的仓库",
+                        modifier = Modifier.padding(vertical = 24.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1099,24 +1190,11 @@ private fun GitHubDeviceLoginDialog(
 
 @Composable
 private fun CloneDialog(
-    sshAccounts: List<SshAccount>,
     onDismiss: () -> Unit,
     onClone: (String, String, String, String, String?) -> Unit,
 ) {
     var url by rememberSaveable { mutableStateOf("") }
     var folder by rememberSaveable { mutableStateOf("repo") }
-    var username by rememberSaveable { mutableStateOf("") }
-    var token by rememberSaveable { mutableStateOf("") }
-    var selectedSshAccountId by rememberSaveable { mutableStateOf<String?>(null) }
-    var sshSelectionInitialized by rememberSaveable { mutableStateOf(false) }
-    var showHttpsToken by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(sshAccounts) {
-        if (!sshSelectionInitialized && sshAccounts.isNotEmpty()) {
-            selectedSshAccountId = sshAccounts.first().id
-            sshSelectionInitialized = true
-        }
-    }
-    val selectedSshAccount = sshAccounts.firstOrNull { it.id == selectedSshAccountId }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("克隆 Git 仓库") },
@@ -1131,73 +1209,10 @@ private fun CloneDialog(
                     singleLine = true,
                 )
                 Text(
-                    "公开仓库直接 Clone。私有 GitHub 仓库建议选择 SSH；HTTPS Token 仅作为可选项。",
+                    "公开仓库可直接克隆。私有 GitHub 仓库会复用当前登录账号。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (sshAccounts.isNotEmpty()) {
-                    Text(
-                        "SSH 账号（已配置的 Key 会自动优先使用）",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                        item {
-                            AssistChip(
-                                onClick = { selectedSshAccountId = null },
-                                label = {
-                                    Text(
-                                        if (selectedSshAccountId == null) "HTTPS ✓" else "HTTPS",
-                                    )
-                                },
-                            )
-                        }
-                        items(sshAccounts, key = { it.id }) { account ->
-                            AssistChip(
-                                onClick = { selectedSshAccountId = account.id },
-                                label = {
-                                    Text(
-                                        account.label +
-                                            if (selectedSshAccountId == account.id) " ✓" else "",
-                                        color = if (selectedSshAccountId == account.id) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        },
-                                    )
-                                },
-                            )
-                        }
-                    }
-                    selectedSshAccount?.let { account ->
-                        Text(
-                            "将通过 SSH 克隆 · ${account.alias}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
-                if (selectedSshAccountId == null) {
-                    TextButton(onClick = { showHttpsToken = !showHttpsToken }) {
-                        Text(if (showHttpsToken) "收起 HTTPS Token" else "使用 HTTPS Token（可选）")
-                    }
-                    if (showHttpsToken) {
-                        OutlinedTextField(
-                            value = username,
-                            onValueChange = { username = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("用户名（可选）") },
-                            singleLine = true,
-                        )
-                        OutlinedTextField(
-                            value = token,
-                            onValueChange = { token = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Token（可选）") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            singleLine = true,
-                        )
-                    }
-                }
                 OutlinedTextField(
                     value = folder,
                     onValueChange = { folder = it },
@@ -1210,7 +1225,7 @@ private fun CloneDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    onClone(url, folder, username, token, selectedSshAccountId)
+                    onClone(url, folder, "", "", null)
                 },
                 enabled = url.isNotBlank() && folder.isNotBlank(),
             ) { Text("克隆") }

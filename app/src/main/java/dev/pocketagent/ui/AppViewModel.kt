@@ -31,6 +31,7 @@ import dev.pocketagent.data.GitChange
 import dev.pocketagent.data.GitHubDeviceAuthClient
 import dev.pocketagent.data.GitHubDevicePollResult
 import dev.pocketagent.data.GitHubOAuthConfigStore
+import dev.pocketagent.data.GitHubRepository
 import dev.pocketagent.data.GitOperationResult
 import dev.pocketagent.data.GitRepository
 import dev.pocketagent.data.ModelProfile
@@ -135,7 +136,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             gitAccounts = gitRepository.accounts(),
             activeGitAccountId = gitRepository.activeGithubAccount()?.id,
             githubOAuthClientConfigured = githubOAuthClientId().isNotBlank(),
-            sshAccounts = gitRepository.sshAccounts(),
             managedRepositories = managedRepositoryStore.load(),
             chat = emptyList(),
         ),
@@ -420,7 +420,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectTab(tab: AppTab) {
         _state.update { it.copy(tab = tab) }
-        if (tab == AppTab.GIT) refreshGit()
+        if (tab == AppTab.GIT) {
+            refreshGit()
+            if (
+                _state.value.activeGitAccountId != null &&
+                _state.value.githubRepositories.isEmpty()
+            ) {
+                refreshGitHubRepositories()
+            }
+        }
     }
 
     fun refreshSystemPermissions() {
@@ -1284,14 +1292,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun gitPush() = runGitAction { gitRepository.push() }
 
-    fun selectGitAccount(accountId: String) {
-        gitRepository.setActiveAccount(accountId)
-        refreshGitAccounts()
-    }
-
     fun removeGitAccount(accountId: String) {
         gitRepository.removeAccount(accountId)
         refreshGitAccounts()
+        if (gitRepository.activeGithubAccount() == null) {
+            _state.update {
+                it.copy(
+                    githubRepositories = emptyList(),
+                    githubRepositoriesError = null,
+                )
+            }
+        } else {
+            refreshGitHubRepositories()
+        }
     }
 
     fun startGitHubLogin() {
@@ -1379,6 +1392,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 displayName = user.name,
                             ) ?: throw IllegalStateException("无法保存 GitHub 凭据")
                             refreshGitAccounts()
+                            refreshGitHubRepositories()
                             _state.update {
                                 it.copy(
                                     githubLogin = null,
@@ -1453,51 +1467,55 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             githubOAuthConfigStore.clientId()
         }
 
-    fun generateSshAccount(label: String) {
-        if (_state.value.sshKeyGenerating) return
-        _state.update { it.copy(sshKeyGenerating = true, notice = "正在生成 SSH Key") }
+    fun refreshGitHubRepositories() {
+        if (_state.value.githubRepositoriesLoading) return
+        val token = gitRepository.githubAccessToken()
+        if (token.isNullOrBlank()) {
+            _state.update {
+                it.copy(
+                    githubRepositories = emptyList(),
+                    githubRepositoriesLoading = false,
+                    githubRepositoriesError = "登录 GitHub 后可查看仓库",
+                )
+            }
+            return
+        }
+        _state.update {
+            it.copy(
+                githubRepositoriesLoading = true,
+                githubRepositoriesError = null,
+            )
+        }
         viewModelScope.launch(Dispatchers.IO) {
-            if (!ensureGitToolchain()) {
-                _state.update {
-                    it.copy(
-                        sshKeyGenerating = false,
-                        notice = "SSH 工具链安装失败",
-                    )
+            runCatching { githubAuthClient.repositories(token) }
+                .onSuccess { repositories ->
+                    _state.update {
+                        it.copy(
+                            githubRepositories = repositories,
+                            githubRepositoriesLoading = false,
+                            githubRepositoriesError = null,
+                        )
+                    }
                 }
-                return@launch
-            }
-            runCatching {
-                gitRepository.generateSshAccount(label) { message ->
-                    _state.update { it.copy(notice = message) }
+                .onFailure { error ->
+                    _state.update {
+                        it.copy(
+                            githubRepositoriesLoading = false,
+                            githubRepositoriesError = error.message ?: "无法读取 GitHub 仓库",
+                        )
+                    }
                 }
-            }.onSuccess { account ->
-                _state.update {
-                    it.copy(
-                        sshAccounts = gitRepository.sshAccounts(),
-                        sshKeyGenerating = false,
-                        notice = "SSH Key 已生成：${account.label}",
-                    )
-                }
-                auditLog.append("git", "生成 SSH Key", "label=${account.label}", "success")
-            }.onFailure { error ->
-                _state.update {
-                    it.copy(
-                        sshKeyGenerating = false,
-                        notice = error.message ?: "SSH Key 生成失败",
-                    )
-                }
-            }
         }
     }
 
-    fun removeSshAccount(id: String) {
-        gitRepository.removeSshAccount(id)
-        _state.update {
-            it.copy(
-                sshAccounts = gitRepository.sshAccounts(),
-                notice = "SSH 账号已删除",
-            )
-        }
+    fun cloneGitHubRepository(repository: GitHubRepository) {
+        gitClone(
+            url = repository.cloneUrl,
+            folder = repository.name,
+            username = "",
+            token = "",
+            sshAccountId = null,
+        )
     }
 
     private fun refreshGitAccounts() {

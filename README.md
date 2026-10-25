@@ -36,7 +36,7 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 - 默认工作区为 `/sdcard`，在文件页直接用目录选择器切换；文件面板、编辑器、Agent 和终端同步切换
 - 首次引导和设置页可配置 128K、200K、256K、512K 或 1M 上下文窗口
 - 可视化 Git：初始化/克隆、分支、暂存、提交、diff、历史和拉取/推送
-- 本地仓库列表、多 GitHub HTTPS 账号、SSH Key 账号和多仓库快速切换
+- Git 页面区分本地与远程：本地负责改动/暂存/提交，远程负责单账号登录、仓库浏览和同步
 - GitHub 浏览器设备授权登录：无需 SSH Key 或手动粘贴 Token，登录一次后 clone/pull/push 自动复用
 - API Key 使用 Android Keystore + AES/GCM 保存
 - App 自带精简 Termux bionic 基础用户态，不依赖外部 Termux、不需要 Ubuntu/PRoot
@@ -61,8 +61,8 @@ export ANDROID_HOME="$HOME/android-sdk"
 ./gradlew :app:assembleDebug
 ```
 
-私有 GitHub 仓库优先使用 App 内生成的 SSH Key：复制 Public Key 到对应 GitHub 账号一次，
-之后该账号的所有仓库共用。HTTPS Token 仅在 Clone 对话框中按需展开。
+私有 GitHub 仓库通过 App 内浏览器登录授权。登录后直接列出账号可访问的仓库，
+选择仓库即可克隆；克隆、拉取和推送自动复用当前账号。
 
 ### GitHub OAuth Device Flow
 

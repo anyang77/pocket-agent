@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -20,6 +21,16 @@ data class GitHubDeviceGrant(
 data class GitHubOAuthUser(
     val login: String,
     val name: String,
+)
+
+data class GitHubRepository(
+    val fullName: String,
+    val name: String,
+    val cloneUrl: String,
+    val private: Boolean,
+    val defaultBranch: String,
+    val description: String,
+    val updatedAt: String,
 )
 
 sealed interface GitHubDevicePollResult {
@@ -95,6 +106,43 @@ class GitHubDeviceAuthClient(
             }
         }
 
+    suspend fun repositories(accessToken: String): List<GitHubRepository> =
+        withContext(Dispatchers.IO) {
+            val repositories = linkedMapOf<String, GitHubRepository>()
+            for (page in 1..3) {
+                val request = Request.Builder()
+                    .url(
+                        "https://api.github.com/user/repos" +
+                            "?per_page=100&page=$page&sort=updated" +
+                            "&affiliation=owner,collaborator,organization_member",
+                    )
+                    .header("Accept", "application/vnd.github+json")
+                    .header("Authorization", "Bearer $accessToken")
+                    .get()
+                    .build()
+                val array = executeArray(request)
+                for (index in 0 until array.length()) {
+                    val repo = array.optJSONObject(index) ?: continue
+                    val fullName = repo.optString("full_name")
+                    val cloneUrl = repo.optString("clone_url")
+                    if (fullName.isBlank() || cloneUrl.isBlank()) continue
+                    repositories[fullName] = GitHubRepository(
+                        fullName = fullName,
+                        name = repo.optString("name", fullName.substringAfterLast('/')),
+                        cloneUrl = cloneUrl,
+                        private = repo.optBoolean("private"),
+                        defaultBranch = repo.optString("default_branch", "main"),
+                        description = repo.optString("description")
+                            .takeUnless { it.equals("null", ignoreCase = true) }
+                            .orEmpty(),
+                        updatedAt = repo.optString("updated_at"),
+                    )
+                }
+                if (array.length() < 100) break
+            }
+            repositories.values.sortedBy { it.fullName.lowercase() }
+        }
+
     private fun executeJson(request: Request): JSONObject {
         val call = httpClient.newCall(request)
         activeCall = call
@@ -111,6 +159,27 @@ class GitHubDeviceAuthClient(
                     )
                 }
                 return json
+            }
+        } finally {
+            if (activeCall === call) activeCall = null
+        }
+    }
+
+    private fun executeArray(request: Request): JSONArray {
+        val call = httpClient.newCall(request)
+        activeCall = call
+        try {
+            call.execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val message = runCatching {
+                        JSONObject(body).optString("message")
+                    }.getOrNull().orEmpty()
+                    throw IOException(
+                        message.ifBlank { "GitHub 仓库列表请求失败 HTTP ${response.code}" },
+                    )
+                }
+                return JSONArray(body)
             }
         } finally {
             if (activeCall === call) activeCall = null
