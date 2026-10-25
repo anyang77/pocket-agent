@@ -77,7 +77,7 @@ class AiClient(
         settings: AiSettings,
         messages: List<AgentMessage>,
         tools: List<ToolDefinition>,
-        onRetry: (String) -> Unit = {},
+        onRetry: (RetryNotice) -> Unit = {},
         onDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {},
     ): AssistantTurn = withContext(Dispatchers.IO) {
@@ -152,15 +152,18 @@ class AiClient(
                         },
                     )
                 }
-                val waitMs = 1_000L
+                val waitMs = (1_000L shl (attempt - 1)).coerceAtMost(4_000L)
                 onRetry(
-                    if (error.isTimeout()) {
-                        "第 $attempt/${MAX_TRANSIENT_ATTEMPTS - 1} 次重试：" +
-                            "${REQUEST_TIMEOUT_SECONDS} 秒内没有首包，1 秒后重试"
-                    } else {
-                        "第 $attempt/${MAX_TRANSIENT_ATTEMPTS - 1} 次重试：" +
-                            "连接中断，1 秒后重试"
-                    },
+                    RetryNotice(
+                        attempt = attempt,
+                        maxAttempts = MAX_TRANSIENT_ATTEMPTS - 1,
+                        delaySeconds = (waitMs / 1_000).toInt(),
+                        reason = if (error.isTimeout()) {
+                            "等待 ${REQUEST_TIMEOUT_SECONDS} 秒没有收到首包"
+                        } else {
+                            "网络连接中断"
+                        },
+                    ),
                 )
                 delay(waitMs)
             } catch (error: AgentHttpException) {
@@ -173,9 +176,12 @@ class AiClient(
                     ?.coerceIn(1_000, 30_000)
                     ?: (1_000L shl (attempt - 1)).coerceAtMost(8_000)
                 onRetry(
-                    "服务暂时不可用 HTTP ${error.statusCode}，" +
-                        "第 $attempt/${MAX_TRANSIENT_ATTEMPTS - 1} 次重试将在 " +
-                        "${waitMs / 1_000} 秒后开始",
+                    RetryNotice(
+                        attempt = attempt,
+                        maxAttempts = MAX_TRANSIENT_ATTEMPTS - 1,
+                        delaySeconds = (waitMs / 1_000).toInt(),
+                        reason = "服务暂时不可用 · HTTP ${error.statusCode}",
+                    ),
                 )
                 delay(waitMs)
             }
@@ -542,7 +548,7 @@ class AiClient(
     }
 
     companion object {
-        private const val MAX_TRANSIENT_ATTEMPTS = 2
+        private const val MAX_TRANSIENT_ATTEMPTS = 3
         private const val REQUEST_TIMEOUT_SECONDS = 30
         private const val STREAM_TOTAL_TIMEOUT_SECONDS = 300
     }

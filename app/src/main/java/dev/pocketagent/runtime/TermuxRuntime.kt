@@ -55,6 +55,9 @@ class TermuxRuntime(context: Context) {
     fun isToolchainsReady(): Boolean =
         isBaseReady() && requiredToolchains().all(::isUsableProgram)
 
+    fun isGitReady(): Boolean =
+        isBaseReady() && requiredGitTools().all(::isUsableProgram)
+
     fun isReady(): Boolean = isBaseReady() && isToolchainsReady()
 
     suspend fun ensureInstalled(
@@ -547,6 +550,9 @@ class TermuxRuntime(context: Context) {
         File(prefix, "bin/clang"),
         File(prefix, "bin/shellcheck"),
         File(prefix, "bin/make"),
+    ) + requiredGitTools()
+
+    private fun requiredGitTools(): List<File> = listOf(
         File(prefix, "bin/git"),
         File(prefix, "bin/ssh"),
         File(prefix, "bin/ssh-keygen"),

@@ -3,6 +3,7 @@ package dev.pocketagent.agent
 import dev.pocketagent.data.AiSettings
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -14,7 +15,7 @@ import kotlin.concurrent.thread
 
 class AiClientTimeoutTest {
     @Test
-    fun failsAfterTwoCallsWhenResponseBodyNeverCompletes() = runBlocking {
+    fun reportsEveryRetryBeforeFailingWhenResponseNeverCompletes() = runBlocking {
         val server = ServerSocket(0, 2, InetAddress.getByName("127.0.0.1"))
         val responder = thread(isDaemon = true, name = "hanging-model-server") {
             while (!server.isClosed) {
@@ -49,11 +50,13 @@ class AiClientTimeoutTest {
             apiKey = "test-key",
         )
         val startedAt = System.nanoTime()
+        val retries = mutableListOf<RetryNotice>()
         try {
             client.complete(
                 settings = settings,
                 messages = listOf(AgentMessage(role = "user", content = "hello")),
                 tools = emptyList(),
+                onRetry = retries::add,
             )
             fail("Hanging response should time out")
         } catch (error: AgentException) {
@@ -63,6 +66,9 @@ class AiClientTimeoutTest {
             responder.join(1_000)
         }
         val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
+        assertEquals(listOf(1, 2), retries.map { it.attempt })
+        assertEquals(listOf(2, 2), retries.map { it.maxAttempts })
+        assertEquals(listOf(1, 2), retries.map { it.delaySeconds })
         assertTrue("Expected bounded retry time, was ${elapsedMs}ms", elapsedMs < 5_000)
     }
 }

@@ -93,6 +93,13 @@ data class AssistantTurn(
     val contentWasStreamed: Boolean = false,
 )
 
+data class RetryNotice(
+    val attempt: Int,
+    val maxAttempts: Int,
+    val delaySeconds: Int,
+    val reason: String,
+)
+
 data class ModelInfo(
     val id: String,
     val reasoningEfforts: List<String> = emptyList(),
@@ -164,7 +171,9 @@ sealed interface AgentEvent {
         val elapsedMs: Long,
         val contentChars: Int,
         val toolCallCount: Int,
+        val retryCount: Int,
     ) : AgentEvent
+    data class RetryScheduled(val notice: RetryNotice) : AgentEvent
     data class AssistantDelta(val text: String) : AgentEvent
     data class ModelReasoningProgress(val chars: Int) : AgentEvent
     data class PlanUpdated(val steps: List<AgentPlanStep>) : AgentEvent
@@ -173,7 +182,10 @@ sealed interface AgentEvent {
     data class State(val text: String) : AgentEvent
     data object Completed : AgentEvent
     data class Stopped(val message: String) : AgentEvent
-    data class Failed(val message: String) : AgentEvent
+    data class Failed(
+        val message: String,
+        val retryCount: Int = 0,
+    ) : AgentEvent
 }
 
 open class AgentException(message: String) : Exception(message)

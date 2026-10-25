@@ -310,6 +310,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 lastRequestAt = message.lastRequestAt,
                 plan = message.plan,
                 error = message.error,
+                retryCount = message.retryCount,
             )
         }
         val history = chat.mapNotNull { message ->
@@ -410,6 +411,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         lastRequestAt = lastRequestAt,
         plan = plan,
         error = error,
+        retryCount = retryCount,
     )
 
     private data class LoadedState(
@@ -956,7 +958,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun ensureGitToolchain(): Boolean {
-        if (internalRuntime.isToolchainsReady()) return true
+        if (internalRuntime.isGitReady()) return true
         _state.update {
             it.copy(
                 internalRuntimeInstalling = true,
@@ -972,11 +974,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+        val gitReady = internalRuntime.isGitReady()
+        val success = installed || gitReady
         _state.update {
             it.copy(
                 internalRuntimeInstalling = false,
-                internalRuntimeInstallProgress = if (installed) 1f else 0f,
-                internalRuntimeInstallMessage = if (installed) {
+                internalRuntimeInstallProgress = if (success) 1f else 0f,
+                internalRuntimeInstallMessage = if (success) {
                     "Git、SSH 和开发工具链已就绪"
                 } else {
                     "Git 工具链安装失败"
@@ -988,10 +992,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         auditLog.append(
             "runtime",
-            if (installed) "Git 工具链就绪" else "Git 工具链安装失败",
-            "prefix=${internalRuntime.prefix.absolutePath}",
+            if (success) "Git 工具链就绪" else "Git 工具链安装失败",
+            "prefix=${internalRuntime.prefix.absolutePath} " +
+                "git=${internalRuntime.isGitReady()} installed=$installed",
         )
-        return installed
+        return success
     }
 
     fun refreshRuntimeCapabilities() {
@@ -1158,7 +1163,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 gitLoading = true,
-                gitError = if (internalRuntime.isToolchainsReady()) null
+                gitError = if (internalRuntime.isGitReady()) null
                 else "正在安装 Git 与 SSH 工具链",
             )
         }
@@ -2119,6 +2124,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 agentRunning = true,
                 agentStatus = "正在分析项目",
                 agentRequestStartedAt = System.currentTimeMillis(),
+                agentRetry = null,
             )
         }
         persistCurrentConversation()
@@ -2145,6 +2151,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 it.copy(
                                     agentStatus = "正在等待模型响应 · 第 ${event.round} 轮",
                                     agentRequestStartedAt = System.currentTimeMillis(),
+                                    agentRetry = null,
+                                )
+                            }
+                        }
+                        is AgentEvent.RetryScheduled -> {
+                            val notice = event.notice
+                            val retry = AgentRetryState(
+                                attempt = notice.attempt,
+                                maxAttempts = notice.maxAttempts,
+                                reason = notice.reason,
+                                retryAt = System.currentTimeMillis() +
+                                    notice.delaySeconds * 1_000L,
+                            )
+                            updateRunningActivitySummary(
+                                assistantId,
+                                "模型请求",
+                                "${notice.reason} · ${notice.delaySeconds} 秒后重试",
+                            )
+                            _state.update { current ->
+                                current.copy(
+                                    agentStatus = "准备重新连接",
+                                    agentRetry = retry,
+                                    chat = current.chat.map { entry ->
+                                        if (entry.id == assistantId) {
+                                            entry.copy(retryCount = notice.attempt)
+                                        } else {
+                                            entry
+                                        }
+                                    },
                                 )
                             }
                         }
@@ -2162,6 +2197,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 it.copy(
                                     agentStatus = "模型已响应，正在处理结果",
                                     agentRequestStartedAt = null,
+                                    agentRetry = null,
                                 )
                             }
                         }
@@ -2232,6 +2268,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 it.copy(
                                     agentStatus = "正在执行工具 · ${event.name}",
                                     agentRequestStartedAt = null,
+                                    agentRetry = null,
                                 )
                             }
                         }
@@ -2279,6 +2316,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 it.copy(
                                     notice = event.message,
                                     agentRequestStartedAt = null,
+                                    agentRetry = null,
                                     agentCompacting = false,
                                     agentCompactionStartedAt = null,
                                 )
@@ -2305,7 +2343,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 current.copy(
                                     chat = current.chat.map { entry ->
                                         if (entry.id == assistantId) {
-                                            entry.copy(error = event.message)
+                                            entry.copy(
+                                                error = event.message,
+                                                retryCount = event.retryCount,
+                                            )
                                         } else {
                                             entry
                                         }
@@ -2316,6 +2357,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 it.copy(
                                     notice = event.message,
                                     agentRequestStartedAt = null,
+                                    agentRetry = null,
                                     agentCompacting = false,
                                     agentCompactionStartedAt = null,
                                 )
@@ -2323,7 +2365,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         AgentEvent.Completed -> {
                             _state.update {
-                                it.copy(agentRequestStartedAt = null)
+                                it.copy(
+                                    agentRequestStartedAt = null,
+                                    agentRetry = null,
+                                )
                             }
                         }
                     }
@@ -2335,6 +2380,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         agentRunning = false,
                         agentStatus = null,
                         agentRequestStartedAt = null,
+                        agentRetry = null,
                         agentCompacting = false,
                         agentCompactionStartedAt = null,
                         agentCompactionBeforeTokens = 0,

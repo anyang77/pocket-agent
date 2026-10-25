@@ -23,6 +23,7 @@ data class StoredMessage(
     val lastRequestAt: Long? = null,
     val plan: List<AgentPlanStep> = emptyList(),
     val error: String? = null,
+    val retryCount: Int = 0,
 )
 
 data class StoredConversation(
@@ -162,6 +163,7 @@ class ConversationStore(context: Context) {
                                     plan = plan,
                                     error = message.optString("error")
                                         .takeIf { it.isNotBlank() },
+                                    retryCount = message.optInt("retry_count", 0),
                                 ),
                             )
                         }
@@ -196,6 +198,9 @@ class ConversationStore(context: Context) {
                         put("content", message.content)
                         put("timestamp", message.timestamp)
                         message.error?.let { put("error", it) }
+                        if (message.retryCount > 0) {
+                            put("retry_count", message.retryCount)
+                        }
                         if (message.activities.isNotEmpty()) {
                             put(
                                 "activities",

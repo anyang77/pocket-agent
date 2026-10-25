@@ -77,6 +77,7 @@ class AgentEngine(
         auditLog.append("chat", "用户消息", userText, "received")
 
         var step = 0
+        var lastRetryCount = 0
         try {
             var lastPromptTokens = 0
             while (true) {
@@ -120,6 +121,7 @@ class AgentEngine(
                     ),
                 )
                 val requestStartedAt = System.currentTimeMillis()
+                lastRetryCount = 0
                 var streamedChars = 0
                 var reasoningChars = 0
                 val pendingDelta = StringBuilder()
@@ -153,7 +155,10 @@ class AgentEngine(
                         settings,
                         conversation,
                         TOOLS,
-                        onRetry = { message -> onEvent(AgentEvent.State(message)) },
+                        onRetry = { notice ->
+                            lastRetryCount = notice.attempt
+                            onEvent(AgentEvent.RetryScheduled(notice))
+                        },
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
                     )
@@ -173,7 +178,10 @@ class AgentEngine(
                         settings,
                         conversation,
                         TOOLS,
-                        onRetry = { message -> onEvent(AgentEvent.State(message)) },
+                        onRetry = { notice ->
+                            lastRetryCount = notice.attempt
+                            onEvent(AgentEvent.RetryScheduled(notice))
+                        },
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
                     )
@@ -185,6 +193,7 @@ class AgentEngine(
                         elapsedMs = System.currentTimeMillis() - requestStartedAt,
                         contentChars = turn.content?.length ?: streamedChars,
                         toolCallCount = turn.toolCalls.size,
+                        retryCount = lastRetryCount,
                     ),
                 )
                 auditLog.append(
@@ -264,7 +273,12 @@ class AgentEngine(
             throw error
         } catch (error: Exception) {
             auditLog.append("agent", "任务失败", error.message ?: error.javaClass.simpleName)
-            onEvent(AgentEvent.Failed(error.message ?: "Agent 执行失败"))
+            onEvent(
+                AgentEvent.Failed(
+                    message = error.message ?: "Agent 执行失败",
+                    retryCount = lastRetryCount,
+                ),
+            )
         }
     }
 
@@ -320,7 +334,14 @@ class AgentEngine(
                     settings,
                     conversation,
                     emptyList(),
-                    onRetry = { message -> onEvent(AgentEvent.State("压缩请求：$message")) },
+                    onRetry = { notice ->
+                        onEvent(
+                            AgentEvent.State(
+                                "压缩请求：${notice.reason}，" +
+                                    "${notice.delaySeconds} 秒后重试",
+                            ),
+                        )
+                    },
                 )
             } catch (error: AgentException) {
                 if (!error.message.orEmpty().contains("reasoning_content", ignoreCase = true)) {
@@ -338,7 +359,14 @@ class AgentEngine(
                     settings,
                     conversation,
                     emptyList(),
-                    onRetry = { message -> onEvent(AgentEvent.State("压缩请求：$message")) },
+                    onRetry = { notice ->
+                        onEvent(
+                            AgentEvent.State(
+                                "压缩请求：${notice.reason}，" +
+                                    "${notice.delaySeconds} 秒后重试",
+                            ),
+                        )
+                    },
                 )
             }
         } catch (error: CancellationException) {

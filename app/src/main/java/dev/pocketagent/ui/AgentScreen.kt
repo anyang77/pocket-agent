@@ -1,5 +1,6 @@
 package dev.pocketagent.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -475,6 +476,11 @@ fun AgentScreen(
                         } else {
                             null
                         },
+                        liveRetry = if (entry.id == lastEntry?.id && entry.pending) {
+                            state.agentRetry
+                        } else {
+                            null
+                        },
                     )
                 }
                 item(key = "bottom-anchor") {
@@ -734,6 +740,7 @@ private fun ChatBubble(
     entry: ChatEntry,
     liveStatus: String?,
     liveStartedAt: Long?,
+    liveRetry: AgentRetryState?,
 ) {
     if (entry.role == ChatRole.SYSTEM) {
         Text(
@@ -816,11 +823,13 @@ private fun ChatBubble(
                 PlanCard(entry.plan)
             }
 
-            if (entry.activities.isNotEmpty() && !entry.pending) {
+            if (entry.activities.isNotEmpty()) {
                 ActivityTrace(entry)
             }
 
-            if (liveStatus != null) {
+            if (liveRetry != null) {
+                AgentRetryCard(liveRetry)
+            } else if (liveStatus != null && entry.activities.isEmpty()) {
                 AgentLiveStatus(
                     status = liveStatus,
                     startedAt = liveStartedAt,
@@ -828,7 +837,10 @@ private fun ChatBubble(
             }
 
             entry.error?.let { message ->
-                AgentErrorCard(message)
+                AgentErrorCard(
+                    message = message,
+                    retryCount = entry.retryCount,
+                )
             }
 
             if (entry.content.isNotBlank()) {
@@ -880,34 +892,162 @@ private fun AgentLiveStatus(
 }
 
 @Composable
-private fun AgentErrorCard(message: String) {
+private fun AgentRetryCard(retry: AgentRetryState) {
+    var remainingSeconds by remember(retry.retryAt) {
+        mutableStateOf(((retry.retryAt - System.currentTimeMillis() + 999) / 1_000).coerceAtLeast(0))
+    }
+    LaunchedEffect(retry.retryAt) {
+        while (true) {
+            remainingSeconds = (
+                (retry.retryAt - System.currentTimeMillis() + 999) / 1_000
+                ).coerceAtLeast(0)
+            delay(250)
+        }
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.errorContainer,
-        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f),
+        ),
     ) {
-        Column(
+        Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "模型请求失败",
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontWeight = FontWeight.SemiBold,
+                "↻",
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = FontWeight.Bold,
                 ),
+                color = MaterialTheme.colorScheme.tertiary,
             )
-            SelectionContainer {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
                 Text(
-                    message,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        lineHeight = 17.sp,
+                    "正在重新连接",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
                     ),
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+                Text(
+                    retry.reason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    buildString {
+                        append("第 ")
+                        append(retry.attempt)
+                        append("/")
+                        append(retry.maxAttempts)
+                        append(" 次重试")
+                        if (remainingSeconds > 0) {
+                            append(" · ")
+                            append(remainingSeconds)
+                            append(" 秒后继续")
+                        } else {
+                            append(" · 正在发起请求")
+                        }
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
     }
+}
+
+@Composable
+private fun AgentErrorCard(
+    message: String,
+    retryCount: Int,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.error.copy(alpha = 0.45f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    agentErrorTitle(message),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    color = MaterialTheme.colorScheme.error,
+                )
+                if (retryCount > 0) {
+                    Text(
+                        "已重试 $retryCount 次",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            SelectionContainer {
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            agentErrorHint(message)?.let { hint ->
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                )
+                Text(
+                    hint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private fun agentErrorTitle(message: String): String = when {
+    "401" in message || "403" in message -> "API 鉴权失败"
+    "429" in message -> "请求过于频繁"
+    "30 秒内" in message || "timeout" in message.lowercase() -> "模型响应超时"
+    "HTTP 400" in message -> "接口拒绝了请求"
+    "输出中断" in message -> "模型输出中断"
+    "HTTP 5" in message -> "模型服务异常"
+    else -> "模型请求失败"
+}
+
+private fun agentErrorHint(message: String): String? = when {
+    "401" in message || "403" in message ->
+        "检查 API Key 是否有效、额度是否可用。"
+    "429" in message ->
+        "服务正在限流，稍后再试或切换模型。"
+    "30 秒内" in message || "timeout" in message.lowercase() ->
+        "服务端没有及时返回首个数据包，检查模型是否可用或网络连接。"
+    "HTTP 400" in message ->
+        "检查 Base URL、模型名称以及该接口是否兼容 OpenAI Chat Completions。"
+    "输出中断" in message ->
+        "连接在流式输出过程中断开；已有内容已保留。"
+    "HTTP 5" in message ->
+        "上游模型服务异常，稍后重试或切换模型。"
+    else -> null
 }
 
 @Composable
@@ -969,7 +1109,10 @@ private fun PlanCard(plan: List<AgentPlanStep>) {
 @Composable
 private fun ActivityTrace(entry: ChatEntry) {
     val running = entry.activities.any { it.success == null }
-    var expanded by rememberSaveable(entry.id) { mutableStateOf(false) }
+    var expanded by rememberSaveable(entry.id) { mutableStateOf(running) }
+    LaunchedEffect(running) {
+        if (running) expanded = true
+    }
     val failures = entry.activities.count { it.success == false }
 
     Surface(
@@ -985,9 +1128,9 @@ private fun ActivityTrace(entry: ChatEntry) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (running) {
-                    Text(
-                        "●",
-                        style = MaterialTheme.typography.labelMedium,
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(15.dp),
+                        strokeWidth = 1.8.dp,
                         color = MaterialTheme.colorScheme.tertiary,
                     )
                 } else {

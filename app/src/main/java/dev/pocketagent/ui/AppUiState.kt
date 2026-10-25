@@ -43,6 +43,14 @@ data class ChatEntry(
     val lastRequestAt: Long? = null,
     val plan: List<AgentPlanStep> = emptyList(),
     val error: String? = null,
+    val retryCount: Int = 0,
+)
+
+data class AgentRetryState(
+    val attempt: Int,
+    val maxAttempts: Int,
+    val reason: String,
+    val retryAt: Long,
 )
 
 data class PendingApproval(
@@ -98,6 +106,7 @@ data class AppUiState(
     val agentRunning: Boolean = false,
     val agentStatus: String? = null,
     val agentRequestStartedAt: Long? = null,
+    val agentRetry: AgentRetryState? = null,
     val agentCompacting: Boolean = false,
     val agentCompactionStartedAt: Long? = null,
     val agentCompactionBeforeTokens: Int = 0,
