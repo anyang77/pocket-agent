@@ -819,6 +819,14 @@ private fun ChatBubble(
                 )
             }
 
+            entry.goal?.let { goal ->
+                GoalCard(
+                    goal = goal,
+                    running = entry.pending,
+                    failed = entry.error != null,
+                )
+            }
+
             if (entry.plan.isNotEmpty()) {
                 PlanCard(entry.plan)
             }
@@ -849,6 +857,55 @@ private fun ChatBubble(
                 }
             }
 
+        }
+    }
+}
+
+@Composable
+private fun GoalCard(
+    goal: String,
+    running: Boolean,
+    failed: Boolean,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "目标",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    when {
+                        failed -> "受阻"
+                        running -> "进行中"
+                        else -> "已完成"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when {
+                        failed -> MaterialTheme.colorScheme.error
+                        running -> MaterialTheme.colorScheme.tertiary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+            Text(
+                goal,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

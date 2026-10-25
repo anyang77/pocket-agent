@@ -44,6 +44,7 @@ data class ChatEntry(
     val plan: List<AgentPlanStep> = emptyList(),
     val error: String? = null,
     val retryCount: Int = 0,
+    val goal: String? = null,
 )
 
 data class AgentRetryState(

@@ -80,6 +80,7 @@ class AiClient(
         onRetry: (RetryNotice) -> Unit = {},
         onDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {},
+        onStreamReset: (Int) -> Unit = {},
     ): AssistantTurn = withContext(Dispatchers.IO) {
         if (settings.apiKey.isBlank()) {
             throw AgentException("请先在设置里填写 API Key")
@@ -121,12 +122,16 @@ class AiClient(
 
         var lastError: Exception? = null
         var receivedStreamOutput = false
+        var streamedContentChars = 0
         for (attempt in 1..MAX_TRANSIENT_ATTEMPTS) {
+            receivedStreamOutput = false
+            streamedContentChars = 0
             try {
                 return@withContext executeCompletion(
                     request = request,
                     onDelta = { delta ->
                         receivedStreamOutput = true
+                        streamedContentChars += delta.length
                         onDelta(delta)
                     },
                     onReasoningDelta = { delta ->
@@ -136,13 +141,10 @@ class AiClient(
                 )
             } catch (error: IOException) {
                 lastError = error
-                if (
-                    receivedStreamOutput ||
-                    attempt == MAX_TRANSIENT_ATTEMPTS ||
-                    !error.isTransientNetworkError()
-                ) {
+                val interrupted = receivedStreamOutput
+                if (attempt == MAX_TRANSIENT_ATTEMPTS || !error.isTransientNetworkError()) {
                     throw AgentException(
-                        if (receivedStreamOutput) {
+                        if (interrupted) {
                             "模型输出中断：${error.message ?: "网络连接已断开"}"
                         } else if (error.isTimeout()) {
                             "模型在 ${REQUEST_TIMEOUT_SECONDS} 秒内没有响应，" +
@@ -153,12 +155,17 @@ class AiClient(
                     )
                 }
                 val waitMs = (1_000L shl (attempt - 1)).coerceAtMost(4_000L)
+                if (streamedContentChars > 0) {
+                    onStreamReset(streamedContentChars)
+                }
                 onRetry(
                     RetryNotice(
                         attempt = attempt,
                         maxAttempts = MAX_TRANSIENT_ATTEMPTS - 1,
                         delaySeconds = (waitMs / 1_000).toInt(),
-                        reason = if (error.isTimeout()) {
+                        reason = if (interrupted) {
+                            "模型输出中断，将重新生成"
+                        } else if (error.isTimeout()) {
                             "等待 ${REQUEST_TIMEOUT_SECONDS} 秒没有收到首包"
                         } else {
                             "网络连接中断"
@@ -281,6 +288,7 @@ class AiClient(
         val toolCalls = linkedMapOf<Int, StreamingToolCall>()
         var finishReason: String? = null
         var usage: TokenUsage? = null
+        var sawDone = false
 
         while (true) {
             val line = source.readUtf8Line() ?: break
@@ -288,7 +296,10 @@ class AiClient(
             if (trimmed.isBlank() || trimmed.startsWith(":")) continue
             if (!trimmed.startsWith("data:")) continue
             val data = trimmed.removePrefix("data:").trimStart()
-            if (data == "[DONE]") break
+            if (data == "[DONE]") {
+                sawDone = true
+                break
+            }
             val json = runCatching { JSONObject(data) }.getOrNull() ?: continue
             json.optJSONObject("error")?.let { error ->
                 throw AgentException(
@@ -347,6 +358,9 @@ class AiClient(
                 }
             }
         }
+        if (!sawDone && finishReason == null) {
+            throw IOException("模型流式响应意外中断")
+        }
 
         val parsedToolCalls = toolCalls.entries.map { (index, call) ->
             AgentToolCall(
@@ -387,6 +401,7 @@ class AiClient(
             "connect failed" in message ||
             "software caused connection abort" in message ||
             "connection abort" in message ||
+            "流式响应意外中断" in message ||
             "broken pipe" in message ||
             "unexpected end of stream" in message ||
             "socket closed" in message

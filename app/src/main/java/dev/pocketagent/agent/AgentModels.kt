@@ -174,6 +174,7 @@ sealed interface AgentEvent {
         val retryCount: Int,
     ) : AgentEvent
     data class RetryScheduled(val notice: RetryNotice) : AgentEvent
+    data class StreamOutputReset(val contentChars: Int) : AgentEvent
     data class AssistantDelta(val text: String) : AgentEvent
     data class ModelReasoningProgress(val chars: Int) : AgentEvent
     data class PlanUpdated(val steps: List<AgentPlanStep>) : AgentEvent

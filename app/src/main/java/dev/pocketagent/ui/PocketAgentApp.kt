@@ -222,21 +222,6 @@ fun PocketAgentApp(viewModel: AppViewModel) {
         }
     }
 
-    LaunchedEffect(state.agentRunning) {
-        val intent = Intent(context, AgentForegroundService::class.java)
-        if (state.agentRunning) {
-            runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
-            }
-        } else {
-            context.stopService(intent)
-        }
-    }
-
     if (!state.onboardingCompleted) {
         OnboardingScreen(
             state = state,

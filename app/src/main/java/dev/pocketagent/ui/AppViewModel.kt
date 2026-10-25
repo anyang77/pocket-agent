@@ -43,6 +43,7 @@ import dev.pocketagent.data.WorkspaceRepository
 import dev.pocketagent.data.StoredConversation
 import dev.pocketagent.data.StoredMessage
 import dev.pocketagent.runtime.CommandRunner
+import dev.pocketagent.runtime.AgentForegroundService
 import dev.pocketagent.runtime.RootDetector
 import dev.pocketagent.runtime.RuntimeCapabilities
 import dev.pocketagent.runtime.SystemAccessRepository
@@ -311,6 +312,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 plan = message.plan,
                 error = message.error,
                 retryCount = message.retryCount,
+                goal = message.goal,
             )
         }
         val history = chat.mapNotNull { message ->
@@ -412,6 +414,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         plan = plan,
         error = error,
         retryCount = retryCount,
+        goal = goal,
     )
 
     private data class LoadedState(
@@ -2117,6 +2120,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             role = ChatRole.ASSISTANT,
             content = "",
             pending = true,
+            goal = prompt,
         )
         _state.update {
             it.copy(
@@ -2126,6 +2130,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 agentRequestStartedAt = System.currentTimeMillis(),
                 agentRetry = null,
             )
+        }
+        runCatching {
+            AgentForegroundService.start(appContext)
+        }.onFailure { error ->
+            _state.update {
+                it.copy(notice = error.message ?: "无法启动后台任务服务")
+            }
         }
         persistCurrentConversation()
 
@@ -2153,6 +2164,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                     agentRequestStartedAt = System.currentTimeMillis(),
                                     agentRetry = null,
                                 )
+                            }
+                        }
+                        is AgentEvent.StreamOutputReset -> {
+                            trimChatTail(assistantId, event.contentChars)
+                            updateRunningActivitySummary(
+                                assistantId,
+                                "模型请求",
+                                "输出连接中断，正在清理未完成内容并重新生成",
+                            )
+                            _state.update {
+                                it.copy(agentStatus = "输出中断，正在重新生成")
                             }
                         }
                         is AgentEvent.RetryScheduled -> {
@@ -2405,6 +2427,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 persistCurrentConversation()
                 refreshGit()
+                AgentForegroundService.stop(appContext)
             }
         }
     }
@@ -2458,6 +2481,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 chat = current.chat.map { entry ->
                     if (entry.id == id) {
                         entry.copy(content = entry.content + text)
+                    } else {
+                        entry
+                    }
+                },
+            )
+        }
+    }
+
+    private fun trimChatTail(id: Long, chars: Int) {
+        if (chars <= 0) return
+        _state.update { current ->
+            current.copy(
+                chat = current.chat.map { entry ->
+                    if (entry.id == id) {
+                        entry.copy(
+                            content = entry.content.dropLast(chars.coerceAtMost(entry.content.length)),
+                        )
                     } else {
                         entry
                     }
@@ -2641,6 +2681,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         aiClient.cancel()
         commandRunner.cancel()
         agentJob?.cancel()
+        AgentForegroundService.stop(appContext)
         super.onCleared()
     }
 

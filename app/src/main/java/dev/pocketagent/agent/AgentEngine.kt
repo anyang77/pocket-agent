@@ -127,12 +127,15 @@ class AgentEngine(
                 val requestStartedAt = System.currentTimeMillis()
                 lastRetryCount = 0
                 var streamedChars = 0
+                var emittedStreamChars = 0
                 var reasoningChars = 0
                 val pendingDelta = StringBuilder()
                 var lastDeltaAt = 0L
                 fun flushStreamText() {
                     if (pendingDelta.isEmpty()) return
-                    onEvent(AgentEvent.AssistantDelta(pendingDelta.toString()))
+                    val text = pendingDelta.toString()
+                    emittedStreamChars += text.length
+                    onEvent(AgentEvent.AssistantDelta(text))
                     pendingDelta.clear()
                     lastDeltaAt = System.nanoTime()
                 }
@@ -154,6 +157,14 @@ class AgentEngine(
                         onEvent(AgentEvent.ModelReasoningProgress(reasoningChars))
                     }
                 }
+                val onStreamReset: (Int) -> Unit = { contentChars ->
+                    pendingDelta.clear()
+                    val visibleChars = minOf(contentChars, emittedStreamChars)
+                    streamedChars = 0
+                    emittedStreamChars = 0
+                    reasoningChars = 0
+                    onEvent(AgentEvent.StreamOutputReset(visibleChars))
+                }
                 val turn = try {
                     aiClient.complete(
                         settings,
@@ -165,6 +176,7 @@ class AgentEngine(
                         },
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
+                        onStreamReset = onStreamReset,
                     )
                 } catch (error: AgentException) {
                     currentCoroutineContext().ensureActive()
@@ -189,6 +201,7 @@ class AgentEngine(
                         },
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
+                        onStreamReset = onStreamReset,
                     )
                 }
                 flushStreamText()
@@ -946,6 +959,9 @@ class AgentEngine(
     private fun buildSystemPrompt(): String {
         return """
             You are Pocket Agent, a coding and device-inspection agent running on an Android phone.
+            Treat the latest user request as the active task goal. Keep work aligned with that goal,
+            mark plan steps accurately as you progress, and verify the result against the goal before
+            claiming completion.
             Inspect relevant files before editing. Use write_file for workspace changes and
             prefer edit_file for focused changes. Use search_files to locate code before reading
             many files. Use update_plan only for a genuinely multi-phase task or when the user
