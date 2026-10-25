@@ -24,7 +24,8 @@ import java.util.concurrent.TimeUnit
  */
 class TermuxRuntime(context: Context) {
     private val appContext = context.applicationContext
-    private val root = File(appContext.filesDir, "termux")
+    val runtimeRoot = File(appContext.filesDir, "termux")
+    private val root = runtimeRoot
     val prefix = File(root, "usr")
     val home = File(root, "home")
     val bash = File(prefix, "bin/bash")
@@ -49,11 +50,10 @@ class TermuxRuntime(context: Context) {
             marker.readText().trim().let {
                 it == RUNTIME_VERSION || it.startsWith(LEGACY_RUNTIME_PREFIX)
             } &&
-            bash.isFile &&
-            bash.canExecute()
+            isUsableProgram(bash)
 
     fun isToolchainsReady(): Boolean =
-        isBaseReady() && requiredToolchains().all { it.isFile && it.canExecute() }
+        isBaseReady() && requiredToolchains().all(::isUsableProgram)
 
     fun isReady(): Boolean = isBaseReady() && isToolchainsReady()
 
@@ -496,6 +496,9 @@ class TermuxRuntime(context: Context) {
     private fun chmod(file: File, mode: Int) {
         runCatching { Os.chmod(file.absolutePath, mode and 0x1FF) }
     }
+
+    private fun isUsableProgram(file: File): Boolean =
+        file.isFile && file.length() > 0
 
     private fun shellQuote(value: String): String =
         "'" + value.replace("'", "'\"'\"'") + "'"

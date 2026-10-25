@@ -207,7 +207,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (settings.apiKey.isNotBlank()) {
                 refreshModels()
             }
-            installInternalRuntime()
             probeRoot(announce = false)
             refreshFiles()
         }
@@ -842,7 +841,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     },
                 )
             }
+            if (probe.granted) {
+                repairRuntimeOwnership()
+            }
+            installInternalRuntime()
         }
+    }
+
+    private suspend fun repairRuntimeOwnership() {
+        val owner = appContext.applicationInfo.uid
+        val path = shellQuote(internalRuntime.runtimeRoot.absolutePath)
+        val result = commandRunner.run(
+            command = "chown -R $owner:$owner -- $path",
+            workingDir = File("/"),
+            asRoot = true,
+            timeoutMs = 60_000,
+        )
+        auditLog.append(
+            "runtime",
+            "修复运行环境所有权",
+            result.output.ifBlank { result.error ?: "owner=$owner path=$path" },
+            if (result.exitCode == 0) "success" else "failed",
+        )
     }
 
     fun installInternalRuntime() {
