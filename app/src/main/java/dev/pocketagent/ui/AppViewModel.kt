@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.app.NotificationManager
 import android.os.Build
 import android.os.Environment
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.pocketagent.agent.AgentEngine
@@ -1583,17 +1584,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             lintDir.mkdirs()
             lintFile.writeText(content)
             val command = commandFor(lintFile.absolutePath) ?: return emptyList()
-            val result = commandRunner.run(
+            val result = internalRuntime.run(
                 command = command,
                 workingDir = lintDir,
                 timeoutMs = 30_000,
+            )
+            Log.d(
+                EDITOR_LINT_TAG,
+                "check=$extension exit=${result.exitCode} error=${result.error.orEmpty()} " +
+                    "output=${result.output.take(500)}",
             )
             if (result.exitCode == 0) {
                 emptyList()
             } else {
                 EditorDiagnosticParser.parse(result.output, lintFile.absolutePath)
             }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            Log.w(EDITOR_LINT_TAG, "Unable to check $path", error)
             emptyList()
         } finally {
             lintDir.deleteRecursively()
@@ -2165,6 +2172,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
 
     companion object {
+        private const val EDITOR_LINT_TAG = "PocketEditorLint"
         private const val MAX_TERMINAL_CHARS = 180_000
         private const val APPROVAL_TIMEOUT_MS = 5 * 60 * 1000L
     }
