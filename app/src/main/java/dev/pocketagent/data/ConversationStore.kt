@@ -25,6 +25,7 @@ data class StoredMessage(
     val error: String? = null,
     val retryCount: Int = 0,
     val goal: String? = null,
+    val phase: String = "",
 )
 
 data class StoredConversation(
@@ -167,6 +168,7 @@ class ConversationStore(context: Context) {
                                     retryCount = message.optInt("retry_count", 0),
                                     goal = message.optString("goal")
                                         .takeIf { it.isNotBlank() },
+                                    phase = message.optString("phase"),
                                 ),
                             )
                         }
@@ -202,6 +204,9 @@ class ConversationStore(context: Context) {
                         put("timestamp", message.timestamp)
                         message.error?.let { put("error", it) }
                         message.goal?.let { put("goal", it) }
+                        if (message.phase.isNotBlank()) {
+                            put("phase", message.phase)
+                        }
                         if (message.retryCount > 0) {
                             put("retry_count", message.retryCount)
                         }

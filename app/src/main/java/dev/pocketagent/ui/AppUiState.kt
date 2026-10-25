@@ -31,6 +31,19 @@ enum class ChatRole {
     SYSTEM,
 }
 
+enum class AgentTurnPhase {
+    IDLE,
+    THINKING,
+    RECEIVING,
+    TOOL_RUNNING,
+    WAITING_APPROVAL,
+    RETRYING,
+    COMPACTING,
+    COMPLETED,
+    FAILED,
+    STOPPED,
+}
+
 data class ChatEntry(
     val id: Long,
     val role: ChatRole,
@@ -45,6 +58,7 @@ data class ChatEntry(
     val error: String? = null,
     val retryCount: Int = 0,
     val goal: String? = null,
+    val phase: AgentTurnPhase = AgentTurnPhase.IDLE,
 )
 
 data class AgentRetryState(

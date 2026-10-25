@@ -125,6 +125,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val nextConversationId = AtomicLong(1)
     private val conversationCache = linkedMapOf<Long, StoredConversation>()
     private var currentConversation: StoredConversation? = null
+    private var activeAssistantId: Long? = null
 
     private val _state = MutableStateFlow(
         AppUiState(
@@ -313,6 +314,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 error = message.error,
                 retryCount = message.retryCount,
                 goal = message.goal,
+                phase = runCatching { AgentTurnPhase.valueOf(message.phase) }
+                    .getOrElse {
+                        if (role == ChatRole.ASSISTANT) {
+                            AgentTurnPhase.COMPLETED
+                        } else {
+                            AgentTurnPhase.IDLE
+                        }
+                    },
             )
         }
         val history = chat.mapNotNull { message ->
@@ -415,6 +424,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         error = error,
         retryCount = retryCount,
         goal = goal,
+        phase = phase.name,
     )
 
     private data class LoadedState(
@@ -704,10 +714,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun approvePending() {
+        activeAssistantId?.let { setTurnPhase(it, AgentTurnPhase.TOOL_RUNNING) }
         pendingApprovalDeferred?.complete(true)
     }
 
     fun denyPending() {
+        activeAssistantId?.let { setTurnPhase(it, AgentTurnPhase.THINKING) }
         pendingApprovalDeferred?.complete(false)
     }
 
@@ -798,6 +810,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val deferred = CompletableDeferred<Boolean>()
         pendingApprovalDeferred = deferred
         val requestId = nextId.getAndIncrement()
+        activeAssistantId?.let { setTurnPhase(it, AgentTurnPhase.WAITING_APPROVAL) }
         auditLog.append(
             "permission",
             "请求授权",
@@ -2121,7 +2134,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             content = "",
             pending = true,
             goal = prompt,
+            phase = AgentTurnPhase.THINKING,
         )
+        activeAssistantId = assistantId
         _state.update {
             it.copy(
                 chat = it.chat + user + assistant,
@@ -2148,10 +2163,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     authorize = ::authorizeAgentAction,
                 ) { event ->
                     when (event) {
-                        is AgentEvent.AssistantText -> appendChat(assistantId, event.text)
-                        is AgentEvent.AssistantDelta -> appendChatDelta(assistantId, event.text)
+                        is AgentEvent.AssistantText -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.RECEIVING)
+                            appendChat(assistantId, event.text)
+                        }
+                        is AgentEvent.AssistantDelta -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.RECEIVING)
+                            appendChatDelta(assistantId, event.text)
+                        }
                         is AgentEvent.Usage -> addUsage(assistantId, event.usage)
                         is AgentEvent.ModelRequestStarted -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.THINKING)
                             startToolActivity(
                                 assistantId,
                                 "模型请求",
@@ -2167,6 +2189,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                         is AgentEvent.StreamOutputReset -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.RETRYING)
                             trimChatTail(assistantId, event.contentChars)
                             updateRunningActivitySummary(
                                 assistantId,
@@ -2178,6 +2201,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                         is AgentEvent.RetryScheduled -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.RETRYING)
                             val notice = event.notice
                             val retry = AgentRetryState(
                                 attempt = notice.attempt,
@@ -2206,6 +2230,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                         is AgentEvent.ModelRequestFinished -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.THINKING)
                             finishToolActivity(
                                 id = assistantId,
                                 name = "模型请求",
@@ -2224,6 +2249,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                         is AgentEvent.ModelReasoningProgress -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.THINKING)
                             val summary = "模型正在思考 · 已生成 ${event.chars} 字符推理"
                             updateRunningActivitySummary(
                                 assistantId,
@@ -2236,6 +2262,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         is AgentEvent.PlanUpdated -> updatePlan(assistantId, event.steps)
                         is AgentEvent.ContextCompactionStarted -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.COMPACTING)
                             val percent = (
                                 event.beforeTokens.toFloat() /
                                     event.contextLimit.coerceAtLeast(1).toFloat() *
@@ -2279,8 +2306,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 )
                             }
                             persistCurrentConversation()
+                            setTurnPhase(assistantId, AgentTurnPhase.THINKING)
                         }
                         is AgentEvent.ToolStarted -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.TOOL_RUNNING)
                             startToolActivity(
                                 assistantId,
                                 event.name,
@@ -2295,6 +2324,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                         is AgentEvent.ToolFinished -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.THINKING)
                             finishToolActivity(
                                 assistantId,
                                 event.name,
@@ -2317,6 +2347,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             _state.update { it.copy(agentStatus = event.text) }
                         }
                         is AgentEvent.Stopped -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.STOPPED)
                             finishToolActivity(
                                 id = assistantId,
                                 name = "模型请求",
@@ -2345,6 +2376,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                         is AgentEvent.Failed -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.FAILED)
                             finishToolActivity(
                                 id = assistantId,
                                 name = "模型请求",
@@ -2386,6 +2418,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                         AgentEvent.Completed -> {
+                            setTurnPhase(assistantId, AgentTurnPhase.COMPLETED)
                             _state.update {
                                 it.copy(
                                     agentRequestStartedAt = null,
@@ -2397,6 +2430,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } finally {
                 agentJob = null
+                if (activeAssistantId == assistantId) activeAssistantId = null
                 _state.update {
                     it.copy(
                         agentRunning = false,
@@ -2411,6 +2445,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             if (entry.id == assistantId) {
                                 entry.copy(
                                     pending = false,
+                                    phase = when {
+                                        entry.error != null -> AgentTurnPhase.FAILED
+                                        entry.phase == AgentTurnPhase.STOPPED ->
+                                            AgentTurnPhase.STOPPED
+                                        else -> AgentTurnPhase.COMPLETED
+                                    },
                                     content = entry.content.ifBlank {
                                         if (entry.error == null) {
                                             "任务已结束，没有返回文本。"
@@ -2586,6 +2626,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             current.copy(
                 chat = current.chat.map { entry ->
                     if (entry.id == id) entry.copy(plan = plan) else entry
+                },
+            )
+        }
+    }
+
+    private fun setTurnPhase(id: Long, phase: AgentTurnPhase) {
+        _state.update { current ->
+            current.copy(
+                chat = current.chat.map { entry ->
+                    if (entry.id == id) entry.copy(phase = phase) else entry
                 },
             )
         }

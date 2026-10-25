@@ -822,8 +822,7 @@ private fun ChatBubble(
             entry.goal?.let { goal ->
                 GoalCard(
                     goal = goal,
-                    running = entry.pending,
-                    failed = entry.error != null,
+                    phase = entry.phase,
                 )
             }
 
@@ -864,8 +863,7 @@ private fun ChatBubble(
 @Composable
 private fun GoalCard(
     goal: String,
-    running: Boolean,
-    failed: Boolean,
+    phase: AgentTurnPhase,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -886,17 +884,9 @@ private fun GoalCard(
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Text(
-                    when {
-                        failed -> "受阻"
-                        running -> "进行中"
-                        else -> "已完成"
-                    },
+                    agentPhaseLabel(phase),
                     style = MaterialTheme.typography.labelSmall,
-                    color = when {
-                        failed -> MaterialTheme.colorScheme.error
-                        running -> MaterialTheme.colorScheme.tertiary
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
+                    color = agentPhaseColor(phase),
                 )
             }
             Text(
@@ -908,6 +898,27 @@ private fun GoalCard(
             )
         }
     }
+}
+
+private fun agentPhaseLabel(phase: AgentTurnPhase): String = when (phase) {
+    AgentTurnPhase.IDLE -> "待开始"
+    AgentTurnPhase.THINKING -> "思考中"
+    AgentTurnPhase.RECEIVING -> "输出中"
+    AgentTurnPhase.TOOL_RUNNING -> "执行工具"
+    AgentTurnPhase.WAITING_APPROVAL -> "等待确认"
+    AgentTurnPhase.RETRYING -> "重试中"
+    AgentTurnPhase.COMPACTING -> "整理上下文"
+    AgentTurnPhase.COMPLETED -> "已完成"
+    AgentTurnPhase.FAILED -> "受阻"
+    AgentTurnPhase.STOPPED -> "已停止"
+}
+
+@Composable
+private fun agentPhaseColor(phase: AgentTurnPhase): Color = when (phase) {
+    AgentTurnPhase.FAILED -> MaterialTheme.colorScheme.error
+    AgentTurnPhase.COMPLETED, AgentTurnPhase.STOPPED ->
+        MaterialTheme.colorScheme.onSurfaceVariant
+    else -> MaterialTheme.colorScheme.tertiary
 }
 
 @Composable
