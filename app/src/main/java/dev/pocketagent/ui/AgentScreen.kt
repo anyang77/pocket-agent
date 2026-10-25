@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CheckCircle
@@ -1178,6 +1179,7 @@ private fun PlanCard(plan: List<AgentPlanStep>) {
 private fun ActivityTrace(entry: ChatEntry) {
     val running = entry.activities.any { it.success == null }
     var expanded by rememberSaveable(entry.id) { mutableStateOf(running) }
+    val activityScrollState = rememberScrollState()
     LaunchedEffect(running) {
         if (running) expanded = true
     }
@@ -1239,7 +1241,13 @@ private fun ActivityTrace(entry: ChatEntry) {
                     modifier = Modifier.padding(vertical = 8.dp),
                     color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
                 )
-                Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(activityScrollState),
+                    verticalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
                     entry.activities.forEach { activity ->
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
