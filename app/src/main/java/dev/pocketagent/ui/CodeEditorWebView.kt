@@ -29,6 +29,58 @@ data class EditorDiagnostic(
     val message: String,
 )
 
+object EditorDiagnosticParser {
+    fun parse(output: String, lintPath: String): List<EditorDiagnostic> {
+        val clean = output.replace(lintPath, "当前文件").trim()
+        if (clean.isBlank()) return emptyList()
+        val line = Regex("""line\s+(\d+)""")
+            .find(clean)
+            ?.groupValues
+            ?.get(1)
+            ?.toIntOrNull()
+            ?: Regex(""":\s*(\d+)(?::\s*(\d+))?""")
+                .find(clean)
+                ?.groupValues
+                ?.get(1)
+                ?.toIntOrNull()
+            ?: 1
+        val column = Regex("""column\s+(\d+)""")
+            .find(clean)
+            ?.groupValues
+            ?.get(1)
+            ?.toIntOrNull()
+            ?: Regex(""":\s*\d+:\s*(\d+)""")
+                .find(clean)
+                ?.groupValues
+                ?.get(1)
+                ?.toIntOrNull()
+            ?: 1
+        val rawMessage = clean.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .lastOrNull {
+                it.contains("SyntaxError", ignoreCase = true) ||
+                    it.contains("IndentationError", ignoreCase = true) ||
+                    it.contains("TabError", ignoreCase = true) ||
+                    it.contains("syntax error", ignoreCase = true) ||
+                    it.contains("Unexpected token", ignoreCase = true) ||
+                    it.contains("expected", ignoreCase = true)
+            }
+            ?: clean.lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
+        val message = rawMessage.replace(
+            Regex("""^当前文件:\s*\d+(?::\s*\d+)?:\s*"""),
+            "",
+        )
+        return listOf(
+            EditorDiagnostic(
+                line = line,
+                column = column,
+                message = message.take(500).ifBlank { "语法检查失败" },
+            ),
+        )
+    }
+}
+
 class CodeEditorController internal constructor(
     private val webView: WebView,
 ) {
