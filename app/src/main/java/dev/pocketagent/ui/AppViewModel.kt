@@ -1945,17 +1945,51 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         is AgentEvent.AssistantText -> appendChat(assistantId, event.text)
                         is AgentEvent.Usage -> addUsage(assistantId, event.usage)
                         is AgentEvent.PlanUpdated -> updatePlan(assistantId, event.steps)
-                        is AgentEvent.ContextCompacted -> addActivity(
-                            assistantId,
-                            ToolActivity(
-                                name = "上下文压缩",
-                                summary = "已自动压缩并继续任务",
-                                success = true,
-                                result = "上下文 ${formatKTokens(event.beforeTokens)} / " +
-                                    "${formatKTokens(event.contextLimit)} · " +
-                                    "检查点 ${event.summaryChars} 字符",
-                            ),
-                        )
+                        is AgentEvent.ContextCompactionStarted -> {
+                            val percent = (
+                                event.beforeTokens.toFloat() /
+                                    event.contextLimit.coerceAtLeast(1).toFloat() *
+                                    100f
+                                ).toInt().coerceIn(0, 100)
+                            startToolActivity(
+                                assistantId,
+                                "上下文压缩",
+                                "上下文 $percent% · 已超过自动压缩线，正在生成检查点以继续任务",
+                            )
+                            _state.update {
+                                it.copy(
+                                    agentStatus = "正在压缩上下文 · $percent% · 可随时停止",
+                                    agentCompacting = true,
+                                    agentCompactionStartedAt = System.currentTimeMillis(),
+                                    agentCompactionBeforeTokens = event.beforeTokens,
+                                    agentCompactionLimit = event.contextLimit,
+                                )
+                            }
+                        }
+                        is AgentEvent.ContextCompacted -> finishToolActivity(
+                            id = assistantId,
+                            name = "上下文压缩",
+                            summary = "${formatKTokens(event.beforeTokens)} → " +
+                                "${formatKTokens(event.afterTokens)} · " +
+                                "${event.elapsedMs / 1_000.0}s · " +
+                                "检查点 ${event.summaryChars} 字符",
+                            success = true,
+                            activitySummary = if (event.fallback) {
+                                "模型压缩不可用，已使用本地兜底检查点继续"
+                            } else {
+                                "上下文压缩完成，任务已继续"
+                            },
+                        ).also {
+                            _state.update {
+                                it.copy(
+                                    agentCompacting = false,
+                                    agentCompactionStartedAt = null,
+                                    agentCompactionBeforeTokens = 0,
+                                    agentCompactionLimit = 0,
+                                )
+                            }
+                            persistCurrentConversation()
+                        }
                         is AgentEvent.ToolStarted -> startToolActivity(
                             assistantId,
                             event.name,
@@ -1969,12 +2003,42 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         ).also { persistCurrentConversation() }
                         is AgentEvent.State -> _state.update { it.copy(agentStatus = event.text) }
                         is AgentEvent.Stopped -> {
+                            if (_state.value.agentCompacting) {
+                                finishToolActivity(
+                                    id = assistantId,
+                                    name = "上下文压缩",
+                                    summary = event.message,
+                                    success = false,
+                                    activitySummary = "上下文压缩已停止",
+                                )
+                            }
                             appendChat(assistantId, "\n\n■ ${event.message}\n")
-                            _state.update { it.copy(notice = event.message) }
+                            _state.update {
+                                it.copy(
+                                    notice = event.message,
+                                    agentCompacting = false,
+                                    agentCompactionStartedAt = null,
+                                )
+                            }
                         }
                         is AgentEvent.Failed -> {
+                            if (_state.value.agentCompacting) {
+                                finishToolActivity(
+                                    id = assistantId,
+                                    name = "上下文压缩",
+                                    summary = event.message,
+                                    success = false,
+                                    activitySummary = "上下文压缩失败",
+                                )
+                            }
                             appendChat(assistantId, "\n\n⚠ ${event.message}\n")
-                            _state.update { it.copy(notice = event.message) }
+                            _state.update {
+                                it.copy(
+                                    notice = event.message,
+                                    agentCompacting = false,
+                                    agentCompactionStartedAt = null,
+                                )
+                            }
                         }
                         AgentEvent.Completed -> Unit
                     }
@@ -1985,6 +2049,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         agentRunning = false,
                         agentStatus = null,
+                        agentCompacting = false,
+                        agentCompactionStartedAt = null,
+                        agentCompactionBeforeTokens = 0,
+                        agentCompactionLimit = 0,
                         chat = it.chat.map { entry ->
                             if (entry.id == assistantId) {
                                 entry.copy(
@@ -2095,6 +2163,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             activities = entry.activities + ToolActivity(
                                 name = name,
                                 summary = summary,
+                                startedAt = System.currentTimeMillis(),
                             ),
                         )
                     } else {
@@ -2134,6 +2203,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         name: String,
         summary: String,
         success: Boolean,
+        activitySummary: String? = null,
     ) {
         _state.update { current ->
             current.copy(
@@ -2146,7 +2216,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     entry.copy(
                         activities = entry.activities.mapIndexed { activityIndex, activity ->
                             if (activityIndex == index) {
-                                activity.copy(result = summary, success = success)
+                                val finishedAt = System.currentTimeMillis()
+                                activity.copy(
+                                    summary = activitySummary ?: activity.summary,
+                                    result = summary,
+                                    success = success,
+                                    durationMs = activity.startedAt
+                                        ?.let { (finishedAt - it).coerceAtLeast(0) },
+                                )
                             } else {
                                 activity
                             }

@@ -113,7 +113,12 @@ class AgentEngine(
                     "model=${settings.model} step=$step messages=${conversation.size}",
                 )
                 val turn = try {
-                    aiClient.complete(settings, conversation, TOOLS)
+                    aiClient.complete(
+                        settings,
+                        conversation,
+                        TOOLS,
+                        onRetry = { message -> onEvent(AgentEvent.State(message)) },
+                    )
                 } catch (error: AgentException) {
                     if (!error.message.orEmpty().contains("reasoning_content", ignoreCase = true)) {
                         throw error
@@ -125,7 +130,12 @@ class AgentEngine(
                         "retry",
                     )
                     sanitizeLegacyReasoningHistory()
-                    aiClient.complete(settings, conversation, TOOLS)
+                    aiClient.complete(
+                        settings,
+                        conversation,
+                        TOOLS,
+                        onRetry = { message -> onEvent(AgentEvent.State(message)) },
+                    )
                 }
                 auditLog.append(
                     "model",
@@ -213,6 +223,7 @@ class AgentEngine(
         contextLimit: Int,
         onEvent: (AgentEvent) -> Unit,
     ): TokenUsage? {
+        val startedAt = System.currentTimeMillis()
         auditLog.append(
             "agent",
             "自动压缩上下文",
@@ -220,8 +231,15 @@ class AgentEngine(
             "started",
         )
         onEvent(
+            AgentEvent.ContextCompactionStarted(
+                beforeTokens = beforeTokens,
+                contextLimit = contextLimit,
+                messageCount = conversation.size,
+            ),
+        )
+        onEvent(
             AgentEvent.State(
-                "上下文 ${contextPercent(beforeTokens, contextLimit)}% · 正在压缩并继续",
+                "正在压缩上下文 · ${contextPercent(beforeTokens, contextLimit)}% · 可随时停止",
             ),
         )
         val compactionRequest = AgentMessage(
@@ -246,7 +264,12 @@ class AgentEngine(
         conversation += compactionRequest
         val turn = try {
             try {
-                aiClient.complete(settings, conversation, emptyList())
+                aiClient.complete(
+                    settings,
+                    conversation,
+                    emptyList(),
+                    onRetry = { message -> onEvent(AgentEvent.State("压缩请求：$message")) },
+                )
             } catch (error: AgentException) {
                 if (!error.message.orEmpty().contains("reasoning_content", ignoreCase = true)) {
                     throw error
@@ -259,26 +282,42 @@ class AgentEngine(
                 )
                 sanitizeLegacyReasoningHistory()
                 conversation += compactionRequest
-                aiClient.complete(settings, conversation, emptyList())
+                aiClient.complete(
+                    settings,
+                    conversation,
+                    emptyList(),
+                    onRetry = { message -> onEvent(AgentEvent.State("压缩请求：$message")) },
+                )
             }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            auditLog.append(
+                "agent",
+                "自动压缩降级",
+                error.message ?: error.javaClass.simpleName,
+                "fallback",
+            )
+            null
         } finally {
             conversation.removeAll { it == compactionRequest }
         }
+        val fallback = turn?.content.isNullOrBlank()
+        val checkpoint = turn?.content?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: buildLocalCheckpoint(originalUserText, contextSnapshot)
         auditLog.append(
             "model",
-            "生成上下文检查点",
-            "chars=${turn.content?.length ?: 0}",
+            if (fallback) "生成本地兜底检查点" else "生成上下文检查点",
+            "chars=${checkpoint.length}",
             buildString {
-                turn.usage?.let {
+                turn?.usage?.let {
                     append("prompt=${it.promptTokens}")
                     append(" cache_hit=${it.cacheHitTokens}")
                     append(" completion=${it.completionTokens}")
                 }
             },
         )
-        val checkpoint = turn.content?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: throw AgentException("上下文压缩失败：模型没有返回检查点")
 
         val systemMessage = contextSnapshot.firstOrNull { it.role == "system" }
             ?: AgentMessage(role = "system", content = buildSystemPrompt())
@@ -298,21 +337,67 @@ class AgentEngine(
                 $checkpoint
             """.trimIndent(),
         )
+        val afterTokens = estimateConversationTokens()
+        val elapsedMs = System.currentTimeMillis() - startedAt
         auditLog.append(
             "agent",
             "上下文压缩完成",
-            "before=$beforeTokens after_estimate=${estimateConversationTokens()} " +
-                "checkpoint_chars=${checkpoint.length}",
-            "success",
+            "before=$beforeTokens after_estimate=$afterTokens " +
+                "checkpoint_chars=${checkpoint.length} fallback=$fallback " +
+                "elapsed_ms=$elapsedMs",
+            if (fallback) "fallback" else "success",
         )
         onEvent(
             AgentEvent.ContextCompacted(
                 beforeTokens = beforeTokens,
+                afterTokens = afterTokens,
                 contextLimit = contextLimit,
                 summaryChars = checkpoint.length,
+                elapsedMs = elapsedMs,
+                fallback = fallback,
             ),
         )
-        return turn.usage
+        return turn?.usage
+    }
+
+    private fun buildLocalCheckpoint(
+        originalUserText: String,
+        snapshot: List<AgentMessage>,
+    ): String {
+        val transcript = snapshot
+            .asSequence()
+            .filter { it.role != "system" }
+            .toList()
+            .takeLast(LOCAL_CHECKPOINT_MESSAGES)
+            .joinToString("\n\n") { message ->
+                val body = message.content.orEmpty()
+                    .replace("\r\n", "\n")
+                    .take(LOCAL_CHECKPOINT_MESSAGE_CHARS)
+                buildString {
+                    append("[${message.role.uppercase()}]")
+                    message.name?.let { append(" $it") }
+                    append('\n')
+                    append(body)
+                    if (message.toolCalls.isNotEmpty()) {
+                        append("\nTool calls: ")
+                        append(
+                            message.toolCalls.joinToString { call ->
+                                "${call.name}(${call.arguments.take(600)})"
+                            },
+                        )
+                    }
+                }
+            }
+        return """
+            The model-generated checkpoint was unavailable. This is a deterministic fallback
+            containing the original request and the most recent task transcript.
+
+            Original request:
+            ${originalUserText.take(8_000)}
+
+            Recent transcript:
+            ${transcript.take(LOCAL_CHECKPOINT_MAX_CHARS)}
+        """.trimIndent()
     }
 
     private fun sanitizeLegacyReasoningHistory() {
@@ -833,6 +918,9 @@ class AgentEngine(
 
     companion object {
         private const val CONTEXT_COMPACT_RATIO = 0.72
+        private const val LOCAL_CHECKPOINT_MESSAGES = 18
+        private const val LOCAL_CHECKPOINT_MESSAGE_CHARS = 3_000
+        private const val LOCAL_CHECKPOINT_MAX_CHARS = 36_000
         private const val MAX_TOOL_RESULT_CHARS = 30_000
         private const val MAX_HISTORY_MESSAGES = 80
 

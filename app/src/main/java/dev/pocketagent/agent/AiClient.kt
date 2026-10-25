@@ -75,6 +75,7 @@ class AiClient(
         settings: AiSettings,
         messages: List<AgentMessage>,
         tools: List<ToolDefinition>,
+        onRetry: (String) -> Unit = {},
     ): AssistantTurn = withContext(Dispatchers.IO) {
         if (settings.apiKey.isBlank()) {
             throw AgentException("请先在设置里填写 API Key")
@@ -108,7 +109,7 @@ class AiClient(
             )
             .build()
 
-        var lastError: IOException? = null
+        var lastError: Exception? = null
         for (attempt in 1..MAX_TRANSIENT_ATTEMPTS) {
             try {
                 return@withContext executeCompletion(request)
@@ -117,7 +118,23 @@ class AiClient(
                 if (attempt == MAX_TRANSIENT_ATTEMPTS || !error.isTransientNetworkError()) {
                     throw AgentException(error.message ?: "模型网络请求失败")
                 }
-                delay(750L * attempt)
+                val waitMs = 750L * attempt
+                onRetry("连接中断，${waitMs / 1_000} 秒后重试 $attempt/${MAX_TRANSIENT_ATTEMPTS - 1}")
+                delay(waitMs)
+            } catch (error: AgentHttpException) {
+                lastError = error
+                if (attempt == MAX_TRANSIENT_ATTEMPTS || !error.isRetryable()) {
+                    throw error
+                }
+                val waitMs = error.retryAfterSeconds
+                    ?.times(1_000)
+                    ?.coerceIn(1_000, 30_000)
+                    ?: (1_000L shl (attempt - 1)).coerceAtMost(8_000)
+                onRetry(
+                    "服务暂时不可用 HTTP ${error.statusCode}，" +
+                        "${waitMs / 1_000} 秒后重试 $attempt/${MAX_TRANSIENT_ATTEMPTS - 1}",
+                )
+                delay(waitMs)
             }
         }
         throw AgentException(lastError?.message ?: "模型网络请求失败")
@@ -130,7 +147,13 @@ class AiClient(
             call.execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    throw AgentException("模型请求失败 HTTP ${response.code}: ${body.take(1_000)}")
+                    throw AgentHttpException(
+                        statusCode = response.code,
+                        body = body,
+                        retryAfterSeconds = response.header("Retry-After")
+                            ?.trim()
+                            ?.toLongOrNull(),
+                    )
                 }
 
                 val json = runCatching { JSONObject(body) }
@@ -349,3 +372,10 @@ class AiClient(
         private const val MAX_TRANSIENT_ATTEMPTS = 4
     }
 }
+
+internal fun AgentHttpException.isRetryable(): Boolean =
+    statusCode == 408 ||
+        statusCode == 409 ||
+        statusCode == 425 ||
+        statusCode == 429 ||
+        statusCode >= 500

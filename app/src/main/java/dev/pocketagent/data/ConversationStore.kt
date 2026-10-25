@@ -117,6 +117,10 @@ class ConversationStore(context: Context) {
                                             },
                                             result = activity.optString("result")
                                                 .takeIf { it.isNotBlank() },
+                                            startedAt = activity.optLong("started_at")
+                                                .takeIf { it > 0 },
+                                            durationMs = activity.optLong("duration_ms")
+                                                .takeIf { it >= 0 && activity.has("duration_ms") },
                                         ),
                                     )
                                 }
@@ -201,6 +205,8 @@ class ConversationStore(context: Context) {
                                                     put("success", it)
                                                 }
                                                 activity.result?.let { put("result", it) }
+                                                activity.startedAt?.let { put("started_at", it) }
+                                                activity.durationMs?.let { put("duration_ms", it) }
                                             },
                                         )
                                     }

@@ -89,6 +89,7 @@ import dev.pocketagent.agent.AgentPlanStatus
 import dev.pocketagent.agent.AgentPlanStep
 import dev.pocketagent.data.ConversationSummary
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -438,6 +439,16 @@ fun AgentScreen(
             lastRequestAt = latestUsageEntry?.lastRequestAt,
         )
 
+        if (state.agentCompacting) {
+            CompactionProgressBanner(
+                startedAt = state.agentCompactionStartedAt,
+                beforeTokens = state.agentCompactionBeforeTokens,
+                contextLimit = state.agentCompactionLimit,
+                status = state.agentStatus,
+                onStop = onStopAgent,
+            )
+        }
+
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -479,7 +490,7 @@ fun AgentScreen(
             }
         }
 
-        if (state.agentRunning) {
+        if (state.agentRunning && !state.agentCompacting) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -567,6 +578,78 @@ fun AgentScreen(
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun CompactionProgressBanner(
+    startedAt: Long?,
+    beforeTokens: Int,
+    contextLimit: Int,
+    status: String?,
+    onStop: () -> Unit,
+) {
+    var elapsedSeconds by remember(startedAt) { mutableStateOf(0L) }
+    LaunchedEffect(startedAt) {
+        while (true) {
+            elapsedSeconds = startedAt
+                ?.let { ((System.currentTimeMillis() - it) / 1_000).coerceAtLeast(0) }
+                ?: 0L
+            delay(1_000)
+        }
+    }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 7.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "正在压缩上下文",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                    )
+                    Text(
+                        "${formatTokenCount(beforeTokens)} / " +
+                            "${formatTokenCount(contextLimit)} · 已等待 ${elapsedSeconds}s",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+                }
+                TextButton(onClick = onStop) {
+                    Text("停止")
+                }
+            }
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp),
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                trackColor = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.16f),
+            )
+            Text(
+                status ?: "正在生成可继续任务所需的检查点，完成后会自动继续",
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
     }
 }
 
@@ -926,8 +1009,13 @@ private fun ActivityTrace(entry: ChatEntry) {
                                     color = MaterialTheme.colorScheme.onSurface,
                                 )
                                 activity.result?.let {
+                                    val timing = activity.durationMs
+                                        ?.takeIf { duration -> activity.name != "上下文压缩" }
+                                        ?.let(::formatActivityDuration)
+                                        ?.let { duration -> " · $duration" }
+                                        .orEmpty()
                                     Text(
-                                        "↳ $it",
+                                        "↳ $it$timing",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -940,6 +1028,13 @@ private fun ActivityTrace(entry: ChatEntry) {
         }
     }
 }
+
+private fun formatActivityDuration(durationMs: Long): String =
+    if (durationMs < 1_000) {
+        "${durationMs}ms"
+    } else {
+        String.format(Locale.US, "%.1fs", durationMs / 1_000.0)
+    }
 
 @Composable
 private fun ContextProgress(

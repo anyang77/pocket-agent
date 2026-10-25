@@ -69,6 +69,8 @@ data class ToolActivity(
     val summary: String,
     val success: Boolean? = null,
     val result: String? = null,
+    val startedAt: Long? = null,
+    val durationMs: Long? = null,
 )
 
 enum class AgentPlanStatus {
@@ -138,10 +140,18 @@ data class ToolDefinition(
 sealed interface AgentEvent {
     data class AssistantText(val text: String) : AgentEvent
     data class Usage(val usage: TokenUsage) : AgentEvent
-    data class ContextCompacted(
+    data class ContextCompactionStarted(
         val beforeTokens: Int,
         val contextLimit: Int,
+        val messageCount: Int,
+    ) : AgentEvent
+    data class ContextCompacted(
+        val beforeTokens: Int,
+        val afterTokens: Int,
+        val contextLimit: Int,
         val summaryChars: Int,
+        val elapsedMs: Long,
+        val fallback: Boolean,
     ) : AgentEvent
     data class PlanUpdated(val steps: List<AgentPlanStep>) : AgentEvent
     data class ToolStarted(val name: String, val summary: String) : AgentEvent
@@ -152,4 +162,10 @@ sealed interface AgentEvent {
     data class Failed(val message: String) : AgentEvent
 }
 
-class AgentException(message: String) : Exception(message)
+open class AgentException(message: String) : Exception(message)
+
+class AgentHttpException(
+    val statusCode: Int,
+    body: String,
+    val retryAfterSeconds: Long? = null,
+) : AgentException("模型请求失败 HTTP $statusCode: ${body.take(1_000)}")
