@@ -801,19 +801,16 @@ private fun ChatBubble(entry: ChatEntry) {
                     ),
                     color = MaterialTheme.colorScheme.primary,
                 )
-                if (entry.pending) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(11.dp),
-                        strokeWidth = 1.5.dp,
-                    )
-                }
             }
 
             if (entry.plan.isNotEmpty()) {
                 PlanCard(entry.plan)
             }
 
-            if (entry.activities.isNotEmpty()) {
+            if (
+                entry.activities.isNotEmpty() &&
+                (entry.activities.any { it.success != null } || !entry.pending)
+            ) {
                 ActivityTrace(entry)
             }
 
@@ -821,18 +818,9 @@ private fun ChatBubble(entry: ChatEntry) {
                 AgentErrorCard(message)
             }
 
-            when {
-                entry.content.isNotBlank() -> {
-                    SelectionContainer {
-                        MarkdownContent(entry.content)
-                    }
-                }
-                entry.pending && entry.activities.isEmpty() && entry.error == null -> {
-                    Text(
-                        "正在处理…",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+            if (entry.content.isNotBlank()) {
+                SelectionContainer {
+                    MarkdownContent(entry.content)
                 }
             }
 
@@ -877,11 +865,6 @@ private fun AgentStatusStrip(
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            "首包等待 30 秒",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.tertiary,
         )
     }
 }
@@ -976,10 +959,7 @@ private fun PlanCard(plan: List<AgentPlanStep>) {
 @Composable
 private fun ActivityTrace(entry: ChatEntry) {
     val running = entry.activities.any { it.success == null }
-    var expanded by rememberSaveable(entry.id) { mutableStateOf(running) }
-    LaunchedEffect(running) {
-        expanded = running
-    }
+    var expanded by rememberSaveable(entry.id) { mutableStateOf(false) }
     val failures = entry.activities.count { it.success == false }
 
     Surface(
@@ -995,9 +975,10 @@ private fun ActivityTrace(entry: ChatEntry) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (running) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(15.dp),
-                        strokeWidth = 1.8.dp,
+                    Text(
+                        "●",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.tertiary,
                     )
                 } else {
                     Icon(
