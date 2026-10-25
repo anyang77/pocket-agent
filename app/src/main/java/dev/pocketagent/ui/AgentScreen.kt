@@ -78,12 +78,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -541,13 +541,13 @@ fun AgentScreen(
         }
 
         val flowTransition = rememberInfiniteTransition(label = "agent-input-flow")
-        val flowAngle by flowTransition.animateFloat(
+        val flowProgress by flowTransition.animateFloat(
             initialValue = 0f,
-            targetValue = 360f,
+            targetValue = 1f,
             animationSpec = infiniteRepeatable(
                 animation = tween(durationMillis = 1_800, easing = LinearEasing),
             ),
-            label = "agent-input-flow-angle",
+            label = "agent-input-flow-progress",
         )
         val flowPrimary = MaterialTheme.colorScheme.primary
         val flowSecondary = MaterialTheme.colorScheme.tertiary
@@ -617,24 +617,48 @@ fun AgentScreen(
             if (state.agentRunning) {
                 Canvas(Modifier.matchParentSize()) {
                     val strokeWidth = 2.dp.toPx()
-                    rotate(flowAngle) {
-                        drawRoundRect(
-                            brush = Brush.sweepGradient(
-                                0f to flowPrimary.copy(alpha = 0.12f),
-                                0.20f to flowPrimary,
-                                0.28f to flowSecondary,
-                                0.38f to flowPrimary.copy(alpha = 0.12f),
-                                0.64f to flowSecondary.copy(alpha = 0.75f),
-                                0.74f to flowPrimary.copy(alpha = 0.12f),
-                                1f to flowPrimary.copy(alpha = 0.12f),
-                                center = Offset(size.width / 2f, size.height / 2f),
+                    val inset = strokeWidth / 2f
+                    val ring = Path().apply {
+                        addRoundRect(
+                            RoundRect(
+                                rect = Rect(
+                                    inset,
+                                    inset,
+                                    size.width - inset,
+                                    size.height - inset,
+                                ),
+                                radiusX = 24.dp.toPx(),
+                                radiusY = 24.dp.toPx(),
                             ),
-                            topLeft = Offset(strokeWidth / 2f, strokeWidth / 2f),
-                            size = androidx.compose.ui.geometry.Size(
-                                size.width - strokeWidth,
-                                size.height - strokeWidth,
-                            ),
-                            cornerRadius = CornerRadius(24.dp.toPx()),
+                        )
+                    }
+                    drawPath(
+                        path = ring,
+                        color = flowPrimary.copy(alpha = 0.16f),
+                        style = Stroke(width = strokeWidth),
+                    )
+                    val measure = PathMeasure().apply { setPath(ring, false) }
+                    val totalLength = measure.length
+                    if (totalLength <= 0f) return@Canvas
+                    val dashLength = totalLength * 0.12f
+                    listOf(0f, 0.34f, 0.67f).forEach { offset ->
+                        val segment = Path()
+                        var start = ((flowProgress + offset) % 1f) * totalLength
+                        var remaining = dashLength
+                        while (remaining > 0f) {
+                            val end = (start + remaining).coerceAtMost(totalLength)
+                            measure.getSegment(start, end, segment, true)
+                            remaining -= end - start
+                            start = 0f
+                        }
+                        drawPath(
+                            path = segment,
+                            color = flowSecondary.copy(alpha = 0.16f),
+                            style = Stroke(width = strokeWidth * 4f),
+                        )
+                        drawPath(
+                            path = segment,
+                            color = flowPrimary,
                             style = Stroke(width = strokeWidth),
                         )
                     }
