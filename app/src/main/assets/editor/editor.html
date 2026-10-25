@@ -446,7 +446,8 @@
     let suppressEvents = false;
     let contentTimer = 0;
     let positionTimer = 0;
-    let lastHintWord = "";
+    let completionTimer = 0;
+    let lastAutoCompletionKey = "";
     let searchMarks = [];
     let activeSearchMatch = null;
     let serverDiagnostics = [];
@@ -953,7 +954,7 @@
       }
     }
 
-    editor.on("change", () => {
+    editor.on("change", (cm, change) => {
       if (suppressEvents) return;
       currentDirty = true;
       activeSearchMatch = null;
@@ -964,25 +965,27 @@
       if (findPanel.classList.contains("visible")) {
         setTimeout(() => updateFindStatus(), 0);
       }
+      if (!cm.state.completionActive) {
+        const inserted = (change.text || []).join("\n");
+        if (inserted && /[A-Za-z0-9_$\.]$/.test(inserted)) {
+          clearTimeout(completionTimer);
+          completionTimer = setTimeout(() => {
+            if (cm.state.completionActive) return;
+            const cursor = cm.getCursor();
+            const before = cm.getRange({line: cursor.line, ch: 0}, cursor);
+            const wordMatch = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
+            const trigger = /(?:\$|\.[A-Za-z0-9_]*)$/.test(before);
+            if (!wordMatch && !trigger) return;
+            const key = `${currentMode}:${cursor.line}:${cursor.ch}:${wordMatch ? wordMatch[1] : ""}`;
+            if (key === lastAutoCompletionKey) return;
+            lastAutoCompletionKey = key;
+            showCompletions(cm, false);
+          }, 50);
+        }
+      }
     });
     editor.on("cursorActivity", sendPosition);
     editor.on("blur", flushContent);
-    editor.on("inputRead", (cm, change) => {
-      if (!change.origin || !change.origin.startsWith("+")) return;
-      const cursor = cm.getCursor();
-      const before = cm.getRange({line: cursor.line, ch: 0}, cursor);
-      const match = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
-      const word = match ? match[1] : "";
-      const trigger = /(?:\$|\.[A-Za-z0-9_]*)$/.test(before) ||
-        (change.text || []).join("").match(/[\$.]/);
-      if ((word.length >= 1 || trigger) && word !== lastHintWord) {
-        lastHintWord = word || (change.text || []).join("");
-        clearTimeout(window.hintTimer);
-        window.hintTimer = setTimeout(() => {
-          showCompletions(cm, false);
-        }, 80);
-      }
-    });
 
     window.PocketEditor = {
       setValue(text) {
