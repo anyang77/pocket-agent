@@ -13,11 +13,30 @@ data class GitChange(
 )
 
 data class GitCommit(
+    val fullHash: String,
     val hash: String,
     val author: String,
     val date: String,
     val subject: String,
-    val isAheadOfRemote: Boolean = false,
+    val graph: String = "",
+    val refs: List<GitRef> = emptyList(),
+)
+
+enum class GitRefType {
+    HEAD,
+    LOCAL,
+    REMOTE,
+    TAG,
+}
+
+data class GitRef(
+    val name: String,
+    val type: GitRefType,
+)
+
+data class GitHistoryLine(
+    val graph: String,
+    val commit: GitCommit? = null,
 )
 
 data class GitCommitDetail(
@@ -41,6 +60,7 @@ data class GitState(
     val staged: List<GitChange> = emptyList(),
     val changes: List<GitChange> = emptyList(),
     val commits: List<GitCommit> = emptyList(),
+    val history: List<GitHistoryLine> = emptyList(),
     val branches: List<String> = emptyList(),
     val error: String? = null,
 )
@@ -194,6 +214,69 @@ object GitNameStatusParser {
     }
 }
 
+object GitHistoryParser {
+    fun parse(
+        output: String,
+        remoteNames: Set<String>,
+    ): List<GitHistoryLine> =
+        output.lineSequence()
+            .filter { it.isNotBlank() }
+            .map { line ->
+                val marker = line.indexOf('\u001e')
+                if (marker < 0) {
+                    GitHistoryLine(graph = line.trimEnd())
+                } else {
+                    val graph = line.substring(0, marker)
+                    val fields = line.substring(marker + 1)
+                        .split('\u001f', limit = 6)
+                    if (fields.size < 6) {
+                        GitHistoryLine(graph = line)
+                    } else {
+                        GitHistoryLine(
+                            graph = graph,
+                            commit = GitCommit(
+                                fullHash = fields[0],
+                                hash = fields[1],
+                                author = fields[2],
+                                date = fields[3],
+                                subject = fields[5],
+                                graph = graph,
+                                refs = parseRefs(fields[4], remoteNames),
+                            ),
+                        )
+                    }
+                }
+            }
+            .toList()
+
+    internal fun parseRefs(
+        decorations: String,
+        remoteNames: Set<String>,
+    ): List<GitRef> {
+        if (decorations.isBlank()) return emptyList()
+        val refs = mutableListOf<GitRef>()
+        decorations.split(',').map { it.trim() }.filter { it.isNotBlank() }.forEach { raw ->
+            when {
+                raw.startsWith("HEAD -> ") -> {
+                    refs += GitRef("HEAD", GitRefType.HEAD)
+                    refs += GitRef(raw.removePrefix("HEAD -> "), GitRefType.LOCAL)
+                }
+                raw.startsWith("HEAD") -> refs += GitRef("HEAD", GitRefType.HEAD)
+                raw.startsWith("tag: ") ->
+                    refs += GitRef(raw.removePrefix("tag: "), GitRefType.TAG)
+                raw.contains("HEAD -> ") -> {
+                    val remoteBranch = raw.substringAfter("HEAD -> ")
+                    refs += GitRef(remoteBranch, GitRefType.REMOTE)
+                }
+                raw.substringBefore('/') in remoteNames ->
+                    refs += GitRef(raw, GitRefType.REMOTE)
+                else -> refs += GitRef(raw, GitRefType.LOCAL)
+            }
+        }
+        return refs.distinctBy { it.type to it.name }
+    }
+}
+
 class GitRepository(
     context: Context,
     private val workspace: WorkspaceRepository,
@@ -278,25 +361,25 @@ class GitRepository(
             .distinctBy { it.path to it.status }
         val workingChanges = (parsed.changes + fallbackUnstaged + untracked)
             .distinctBy { it.path to it.status }
+        val remoteNames = run("git remote", 20_000)
+            .takeIf { it.exitCode == 0 }
+            ?.output
+            ?.lineSequence()
+            ?.filter { it.isNotBlank() }
+            ?.toSet()
+            .orEmpty()
         val log = run(
-            "git log -n 40 --date=format:%m-%d%20%H:%M " +
-                "--pretty=format:%h%x1f%an%x1f%ad%x1f%s",
+            "git -c color.ui=false log --all --graph --decorate=short -n 80 " +
+                "--date=${shellQuote("format:%m-%d %H:%M")} " +
+                "--pretty=format:%x1e%H%x1f%h%x1f%an%x1f%ad%x1f%D%x1f%s",
             30_000,
         )
-        val commits = if (log.exitCode == 0) {
-            log.output.lineSequence().mapIndexedNotNull { index, line ->
-                val parts = line.split('\u001f', limit = 4)
-                if (parts.size < 4) null else GitCommit(
-                    hash = parts[0],
-                    author = parts[1],
-                    date = parts[2],
-                    subject = parts[3],
-                    isAheadOfRemote = parsed.ahead > 0 && index < parsed.ahead,
-                )
-            }.toList()
+        val history = if (log.exitCode == 0) {
+            GitHistoryParser.parse(log.output, remoteNames)
         } else {
             emptyList()
         }
+        val commits = history.mapNotNull { it.commit }
         val branchResult = run(
             "git branch --no-color --format=${shellQuote("%(refname:short)")}",
             20_000,
@@ -316,6 +399,7 @@ class GitRepository(
             staged = stagedChanges,
             changes = workingChanges,
             commits = commits,
+            history = history,
             branches = branches,
         )
     }

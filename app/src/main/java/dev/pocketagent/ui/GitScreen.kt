@@ -4,7 +4,10 @@ import android.content.Intent
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -45,19 +49,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.pocketagent.data.GitChange
 import dev.pocketagent.data.GitCommit
 import dev.pocketagent.data.GitCommitDetail
+import dev.pocketagent.data.GitRefType
 import dev.pocketagent.data.GitHubRepository
 
 private enum class GitSection {
@@ -100,6 +109,7 @@ fun GitScreen(
     var section by rememberSaveable { mutableStateOf(GitSection.LOCAL) }
     var historyVisible by rememberSaveable { mutableStateOf(false) }
     var expandedCommit by rememberSaveable { mutableStateOf<String?>(null) }
+    var actionCommit by remember { mutableStateOf<GitCommit?>(null) }
     var openedLoginCode by rememberSaveable { mutableStateOf("") }
     var githubClientId by rememberSaveable { mutableStateOf("") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -108,6 +118,19 @@ fun GitScreen(
         it.id == state.activeGitAccountId
     }
     val context = LocalContext.current
+
+    actionCommit?.let { commit ->
+        CommitActionsDialog(
+            commit = commit,
+            onCopy = { label, value ->
+                context.getSystemService(ClipboardManager::class.java)
+                    .setPrimaryClip(ClipData.newPlainText(label, value))
+                Toast.makeText(context, "已复制$label", Toast.LENGTH_SHORT).show()
+                actionCommit = null
+            },
+            onDismiss = { actionCommit = null },
+        )
+    }
 
     LaunchedEffect(state.githubLogin?.userCode) {
         val login = state.githubLogin ?: return@LaunchedEffect
@@ -211,6 +234,7 @@ fun GitScreen(
     val closeHistory = {
         historyVisible = false
         expandedCommit = null
+        actionCommit = null
         onCloseCommitDetail()
     }
     if (historyVisible) {
@@ -230,41 +254,57 @@ fun GitScreen(
                         .padding(horizontal = 16.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        if (git.hasUpstream) {
-                            "提交历史 · ${git.upstream}"
-                        } else {
-                            "提交历史 · 仅本地"
-                        },
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleMedium,
-                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "提交图谱",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            "本地与远程统一显示 · 长按提交可复制 ID",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     TextButton(onClick = closeHistory) { Text("关闭") }
                 }
                 HorizontalDivider()
-                LazyColumn(contentPadding = PaddingValues(16.dp)) {
-                    items(git.commits, key = { "history-${it.hash}" }) { commit ->
-                        val expanded = expandedCommit == commit.hash
-                        CommitRow(
-                            commit = commit,
-                            hasUpstream = git.hasUpstream,
-                            expanded = expanded,
-                            loading = expanded && state.gitCommitDetailLoading,
-                            detail = state.gitCommitDetail?.takeIf {
-                                expanded && it.hash.startsWith(commit.hash)
-                            },
-                            onToggle = {
-                                if (expanded) {
-                                    expandedCommit = null
-                                    onCloseCommitDetail()
-                                } else {
-                                    expandedCommit = commit.hash
-                                    onOpenCommitDetail(commit.hash)
-                                }
-                            },
-                        )
+                LazyColumn(
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    itemsIndexed(
+                        git.history,
+                        key = { index, line ->
+                            line.commit?.let { "commit-${it.fullHash}" } ?: "graph-$index"
+                        },
+                    ) { _, line ->
+                        val commit = line.commit
+                        if (commit == null) {
+                            GraphOnlyRow(line.graph)
+                        } else {
+                            val expanded = expandedCommit == commit.hash
+                            CommitRow(
+                                commit = commit,
+                                graph = line.graph,
+                                expanded = expanded,
+                                loading = expanded && state.gitCommitDetailLoading,
+                                detail = state.gitCommitDetail?.takeIf {
+                                    expanded && it.hash.startsWith(commit.hash)
+                                },
+                                onToggle = {
+                                    if (expanded) {
+                                        expandedCommit = null
+                                        onCloseCommitDetail()
+                                    } else {
+                                        expandedCommit = commit.hash
+                                        onOpenCommitDetail(commit.hash)
+                                    }
+                                },
+                                onLongPress = { actionCommit = commit },
+                            )
+                        }
                     }
-                    if (git.commits.isEmpty()) {
+                    if (git.history.isEmpty() && git.commits.isEmpty()) {
                         item {
                             Text(
                                 "还没有提交记录",
@@ -829,19 +869,110 @@ private fun GitChange.displayStatus(): String = when (status) {
 }
 
 @Composable
+private fun GraphText(
+    graph: String,
+    modifier: Modifier = Modifier,
+) {
+    val palette = listOf(
+        MaterialTheme.colorScheme.primary,
+        TermuxEditorColors.string,
+        TermuxEditorColors.type,
+        TermuxEditorColors.number,
+    )
+    Text(
+        text = buildAnnotatedString {
+            graph.forEachIndexed { index, char ->
+                if (char == ' ') {
+                    append(char)
+                } else {
+                    withStyle(SpanStyle(color = palette[index % palette.size])) {
+                        append(char)
+                    }
+                }
+            }
+        },
+        modifier = modifier,
+        style = MaterialTheme.typography.bodySmall.copy(
+            fontFamily = FontFamily.Monospace,
+            lineHeight = 17.sp,
+        ),
+        softWrap = false,
+        maxLines = 1,
+    )
+}
+
+@Composable
+private fun GraphOnlyRow(graph: String) {
+    GraphText(
+        graph = graph,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp),
+    )
+}
+
+@Composable
+private fun CommitActionsDialog(
+    commit: GitCommit,
+    onCopy: (String, String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("提交操作") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    commit.subject,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = { onCopy("完整提交 ID", commit.fullHash) }) {
+                    Text("复制完整 ID")
+                }
+                TextButton(onClick = { onCopy("短提交 ID", commit.hash) }) {
+                    Text("复制短 ID")
+                }
+                TextButton(onClick = { onCopy("提交说明", commit.subject) }) {
+                    Text("复制提交说明")
+                }
+                TextButton(
+                    onClick = {
+                        onCopy(
+                            "完整提交信息",
+                            "${commit.fullHash}\n${commit.subject}\n" +
+                                "${commit.author} · ${commit.date}",
+                        )
+                    },
+                ) {
+                    Text("复制完整信息")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        },
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 private fun CommitRow(
     commit: GitCommit,
-    hasUpstream: Boolean,
+    graph: String,
     expanded: Boolean,
     loading: Boolean,
     detail: GitCommitDetail?,
     onToggle: () -> Unit,
+    onLongPress: () -> Unit,
 ) {
-    val localOnly = !hasUpstream || commit.isAheadOfRemote
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onToggle),
+            .combinedClickable(
+                onClick = onToggle,
+                onLongClick = onLongPress,
+            ),
         shape = RoundedCornerShape(12.dp),
         color = if (expanded) {
             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
@@ -850,16 +981,8 @@ private fun CommitRow(
         },
     ) {
         Column(Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.Top) {
-                Text(
-                    "●",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (localOnly) {
-                        MaterialTheme.colorScheme.tertiary
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    },
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                GraphText(graph.ifBlank { "* " })
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -876,21 +999,32 @@ private fun CommitRow(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (commit.refs.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(top = 5.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            commit.refs.forEach { ref ->
+                                Text(
+                                    ref.name,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.SemiBold,
+                                    ),
+                                    color = when (ref.type) {
+                                        GitRefType.HEAD -> MaterialTheme.colorScheme.primary
+                                        GitRefType.LOCAL -> TermuxEditorColors.string
+                                        GitRefType.REMOTE -> TermuxEditorColors.type
+                                        GitRefType.TAG -> TermuxEditorColors.number
+                                    },
+                                )
+                            }
+                        }
+                    }
                 }
-                Text(
-                    when {
-                        !hasUpstream -> "仅本地"
-                        commit.isAheadOfRemote -> "本地未推送"
-                        else -> "远程已同步"
-                    },
-                    modifier = Modifier.padding(start = 8.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (localOnly) {
-                        MaterialTheme.colorScheme.tertiary
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    },
-                )
                 Text(
                     if (expanded) "⌃" else "⌄",
                     modifier = Modifier.padding(start = 8.dp),
