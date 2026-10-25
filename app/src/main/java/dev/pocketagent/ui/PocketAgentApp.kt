@@ -1,8 +1,8 @@
 package dev.pocketagent.ui
 
 import android.Manifest
-import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -72,61 +72,83 @@ fun PocketAgentApp(viewModel: AppViewModel) {
     ) { viewModel.refreshSystemPermissions() }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        viewModel.refreshSystemPermissions()
-        if (!granted) openNotificationSettings(context)
-    }
+    ) { viewModel.refreshSystemPermissions() }
 
-    val launchStorageSettings: (Intent) -> Boolean = { intent ->
-        runCatching { storageActivityLauncher.launch(intent) }.isSuccess
+    val launchFirstAvailable: (List<Intent>) -> Boolean = { intents ->
+        var opened = false
+        if (
+            lifecycleOwner.lifecycle.currentState.isAtLeast(
+                Lifecycle.State.RESUMED,
+            )
+        ) {
+            for (intent in intents) {
+                if (runCatching { storageActivityLauncher.launch(intent) }.isSuccess) {
+                    opened = true
+                    break
+                }
+            }
+        }
+        opened
     }
-    val openStorageSettings: () -> Unit = {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val appPermissionIntent = Intent(
-                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                Uri.parse("package:${context.packageName}"),
+    val openStorageSettings: () -> Boolean = {
+        val packageUri = Uri.parse("package:${context.packageName}")
+        val opened = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            launchFirstAvailable(
+                listOf(
+                    Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        packageUri,
+                    ),
+                    Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri),
+                ),
             )
-            val allPermissionIntent =
-                Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-            val appDetailsIntent = Intent(
-                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                Uri.parse("package:${context.packageName}"),
-            )
-            val target = listOf(
-                appPermissionIntent,
-                allPermissionIntent,
-                appDetailsIntent,
-            ).firstOrNull { intent ->
-                context.packageManager.resolveActivity(intent, 0) != null
-            }
-            val opened = target?.let(launchStorageSettings) == true
-            if (!opened) {
-                Toast.makeText(
-                    context,
-                    "系统没有可用的文件权限页面，请在应用详情中开启存储权限",
-                    Toast.LENGTH_LONG,
-                ).show()
-            }
         } else {
-            launchStorageSettings(
-                Intent(
-                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.parse("package:${context.packageName}"),
+            launchFirstAvailable(
+                listOf(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri),
                 ),
             )
         }
-        Unit
+        if (!opened) {
+            Toast.makeText(
+                context,
+                "无法打开系统权限页，请在“设置 > 应用 > Pocket Agent”中授权",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+        opened
+    }
+    val openNotificationSettings: () -> Unit = {
+        val packageUri = Uri.parse("package:${context.packageName}")
+        val opened = launchFirstAvailable(
+            listOf(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri),
+            ),
+        )
+        if (!opened) {
+            Toast.makeText(
+                context,
+                "无法打开通知设置，请手动进入系统“应用通知”页开启",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
     }
     val requestStorageAccess: () -> Unit = {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             openStorageSettings()
         } else {
-            storagePermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.READ_EXTERNAL_STORAGE,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                ),
-            )
+            val launched = runCatching {
+                storagePermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.READ_EXTERNAL_STORAGE,
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    ),
+                )
+            }.isSuccess
+            if (!launched) openStorageSettings()
         }
         Unit
     }
@@ -137,11 +159,16 @@ fun PocketAgentApp(viewModel: AppViewModel) {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             targetSdk >= Build.VERSION_CODES.TIRAMISU &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
+            PackageManager.PERMISSION_GRANTED
         ) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            val launched = runCatching {
+                notificationPermissionLauncher.launch(
+                    Manifest.permission.POST_NOTIFICATIONS,
+                )
+            }.isSuccess
+            if (!launched) openNotificationSettings()
         } else {
-            openNotificationSettings(context)
+            openNotificationSettings()
         }
         Unit
     }
@@ -155,6 +182,13 @@ fun PocketAgentApp(viewModel: AppViewModel) {
     ) {
         if (state.rootProbing) return@LaunchedEffect
         // Let the asynchronous root probe finish before showing an unnecessary prompt.
+        while (
+            !lifecycleOwner.lifecycle.currentState.isAtLeast(
+                Lifecycle.State.RESUMED,
+            )
+        ) {
+            delay(100)
+        }
         delay(300)
         val fileAccessGranted =
             state.storageAccessGranted || state.capabilities.rootGranted
@@ -226,7 +260,7 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 state.capabilities.rootGranted,
             notificationGranted = state.notificationPermissionGranted,
             onRequestAccess = requestStorageAccess,
-            onOpenStorageSettings = openStorageSettings,
+            onOpenStorageSettings = { openStorageSettings() },
             onRequestNotifications = requestNotificationAccess,
             onRefresh = viewModel::refreshSystemPermissions,
         )
@@ -406,14 +440,14 @@ private fun FileAccessPermissionGate(
             Text("首次运行需要系统权限", style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.padding(top = 8.dp))
             Text(
-                "以下权限全部完成后才能继续。文件权限使用系统运行时授权弹窗，" +
-                    "通知权限需要进入系统通知设置开启。",
+                "以下权限全部完成后才能继续。应用会打开系统授权的标准页面，" +
+                    "不同品牌可能将其显示在“权限”或“特殊应用权限”中。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "首次会弹出系统读写授权。若系统未弹出，请前往 " +
-                    "设置 > 应用 > Pocket Agent > 权限 > 所有文件访问",
+                "若没有自动进入“所有文件访问”，请前往 " +
+                    "设置 > 应用 > Pocket Agent > 权限",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
             )
@@ -427,7 +461,7 @@ private fun FileAccessPermissionGate(
                     Text("打开所有文件访问")
                 }
                 OutlinedButton(onClick = onOpenStorageSettings) {
-                    Text("旧版存储权限")
+                    Text("打开应用设置")
                 }
             }
             Text(
@@ -442,22 +476,6 @@ private fun FileAccessPermissionGate(
             OutlinedButton(onClick = onRefresh) {
                 Text("重新检测权限")
             }
-        }
-    }
-}
-
-private fun openNotificationSettings(context: Context) {
-    val packageUri = Uri.parse("package:${context.packageName}")
-    runCatching {
-        context.startActivity(
-            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
-        )
-    }.onFailure {
-        runCatching {
-            context.startActivity(
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri),
-            )
         }
     }
 }
