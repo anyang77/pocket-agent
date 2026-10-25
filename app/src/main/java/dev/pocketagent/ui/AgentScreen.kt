@@ -463,7 +463,19 @@ fun AgentScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(state.chat, key = { it.id }) { entry ->
-                    ChatBubble(entry)
+                    ChatBubble(
+                        entry = entry,
+                        liveStatus = if (entry.id == lastEntry?.id && entry.pending) {
+                            state.agentStatus
+                        } else {
+                            null
+                        },
+                        liveStartedAt = if (entry.id == lastEntry?.id && entry.pending) {
+                            state.agentRequestStartedAt
+                        } else {
+                            null
+                        },
+                    )
                 }
                 item(key = "bottom-anchor") {
                     Spacer(Modifier.height(1.dp))
@@ -488,13 +500,6 @@ fun AgentScreen(
                     )
                 }
             }
-        }
-
-        if (state.agentRunning && !state.agentCompacting) {
-            AgentStatusStrip(
-                status = state.agentStatus,
-                startedAt = state.agentRequestStartedAt,
-            )
         }
 
         if (state.chat.none { it.role == ChatRole.USER }) {
@@ -725,7 +730,11 @@ private fun ConversationHistory(
 }
 
 @Composable
-private fun ChatBubble(entry: ChatEntry) {
+private fun ChatBubble(
+    entry: ChatEntry,
+    liveStatus: String?,
+    liveStartedAt: Long?,
+) {
     if (entry.role == ChatRole.SYSTEM) {
         Text(
             entry.content,
@@ -807,11 +816,15 @@ private fun ChatBubble(entry: ChatEntry) {
                 PlanCard(entry.plan)
             }
 
-            if (
-                entry.activities.isNotEmpty() &&
-                (entry.activities.any { it.success != null } || !entry.pending)
-            ) {
+            if (entry.activities.isNotEmpty() && !entry.pending) {
                 ActivityTrace(entry)
+            }
+
+            if (liveStatus != null) {
+                AgentLiveStatus(
+                    status = liveStatus,
+                    startedAt = liveStartedAt,
+                )
             }
 
             entry.error?.let { message ->
@@ -829,7 +842,7 @@ private fun ChatBubble(entry: ChatEntry) {
 }
 
 @Composable
-private fun AgentStatusStrip(
+private fun AgentLiveStatus(
     status: String?,
     startedAt: Long?,
 ) {
@@ -843,27 +856,24 @@ private fun AgentStatusStrip(
         }
     }
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         CircularProgressIndicator(
-            modifier = Modifier.size(14.dp),
-            strokeWidth = 2.dp,
+            modifier = Modifier.size(13.dp),
+            strokeWidth = 1.8.dp,
         )
         Text(
             text = buildString {
                 append(status ?: "正在执行")
                 if (startedAt != null) {
-                    append(" · 已等待 ")
+                    append(" · ")
                     append(elapsedSeconds)
-                    append(" 秒")
+                    append("s")
                 }
             },
             modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
