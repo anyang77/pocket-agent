@@ -594,7 +594,12 @@ private fun Editor(
                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
             ) {
                 Text(
-                    text = "第 ${diagnostic.line} 行：${diagnostic.message}",
+                    text = buildString {
+                        append("第 ${diagnostic.line} 行：${diagnostic.message}")
+                        if (diagnostics.size > 1) {
+                            append("（另有 ${diagnostics.size - 1} 个错误）")
+                        }
+                    },
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 3,

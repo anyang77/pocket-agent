@@ -38,4 +38,34 @@ class EditorDiagnosticParserTest {
         assertEquals(3, diagnostic.line)
         assertEquals(9, diagnostic.column)
     }
+
+    @Test
+    fun parsesAllShellCheckErrors() {
+        val diagnostics = EditorDiagnosticParser.parse(
+            """
+            /tmp/source.sh:2:1: error: Couldn't parse this if expression. [SC1073]
+            /tmp/source.sh:2:8: error: Unexpected keyword/token. [SC1072]
+            """.trimIndent(),
+            "/tmp/source.sh",
+        )
+
+        assertEquals(2, diagnostics.size)
+        assertEquals(2, diagnostics[0].line)
+        assertEquals(1, diagnostics[0].column)
+        assertEquals(8, diagnostics[1].column)
+    }
+
+    @Test
+    fun parsesShellMissingThenAtReportedLine() {
+        val diagnostic = EditorDiagnosticParser.parse(
+            "/tmp/source.sh: 4: Syntax error: \"fi\" unexpected (expecting \"then\")",
+            "/tmp/source.sh",
+        ).single()
+
+        assertEquals(4, diagnostic.line)
+        assertEquals(
+            "Syntax error: \"fi\" unexpected (expecting \"then\")",
+            diagnostic.message,
+        )
+    }
 }

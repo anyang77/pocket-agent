@@ -99,7 +99,7 @@ class TermuxRuntime(context: Context) {
         ensureAptConfig()
         if (!force && isToolchainsReady()) {
             toolchainsMarker.writeText(TOOLCHAIN_VERSION)
-            onProgress("Python、Node、clang 已就绪", 1f)
+            onProgress("Python、Node、clang、ShellCheck 已就绪", 1f)
             return@withContext true
         }
 
@@ -131,7 +131,7 @@ class TermuxRuntime(context: Context) {
                     echo "所有软件源均连接失败" >&2
                     exit 1
                 }
-                apt-get install --download-only -y --no-install-recommends python python-pip npm nodejs clang make git openssh
+                apt-get install --download-only -y --no-install-recommends python python-pip npm nodejs clang make git openssh shellcheck
                 total=${'$'}(ls ${prefix.absolutePath}/var/cache/apt/archives/*.deb | wc -l)
                 index=0
                 for deb in ${prefix.absolutePath}/var/cache/apt/archives/*.deb; do
@@ -196,9 +196,9 @@ class TermuxRuntime(context: Context) {
         }
         onProgress("迁移工具链运行路径", 0.94f)
         relocateTextAndSymlinks(prefix)
-        onProgress("验证 Python、Node、clang", 0.98f)
+        onProgress("验证 Python、Node、clang、ShellCheck", 0.98f)
         toolchainsMarker.writeText(TOOLCHAIN_VERSION)
-        onProgress("Python、Node、clang、make 和 git 已安装", 1f)
+        onProgress("Python、Node、clang、ShellCheck、make 和 git 已安装", 1f)
         true
         }
     }
@@ -527,6 +527,7 @@ class TermuxRuntime(context: Context) {
         File(prefix, "bin/node"),
         File(prefix, "bin/npm"),
         File(prefix, "bin/clang"),
+        File(prefix, "bin/shellcheck"),
         File(prefix, "bin/make"),
         File(prefix, "bin/git"),
         File(prefix, "bin/ssh"),
@@ -538,7 +539,7 @@ class TermuxRuntime(context: Context) {
         private const val MAX_CAPTURE_CHARS = 256_000
         private const val RUNTIME_VERSION = "termux-bootstrap-dynamic-v6"
         private const val LEGACY_RUNTIME_PREFIX = "termux-bootstrap-python-pip-node-clang"
-        private const val TOOLCHAIN_VERSION = "apt-python-node-clang-make-v1"
+        private const val TOOLCHAIN_VERSION = "apt-python-node-clang-shellcheck-v2"
         private data class AptMirror(val label: String, val url: String)
 
         private val APT_MIRRORS = listOf(

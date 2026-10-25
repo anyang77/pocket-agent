@@ -33,6 +33,62 @@ object EditorDiagnosticParser {
     fun parse(output: String, lintPath: String): List<EditorDiagnostic> {
         val clean = output.replace(lintPath, "当前文件").trim()
         if (clean.isBlank()) return emptyList()
+        val lines = clean.lines()
+        val diagnostics = mutableListOf<EditorDiagnostic>()
+
+        val compilerPattern = Regex(
+            """^当前文件:(\d+):(\d+):\s*(?:error|warning|note):\s*(.+)$""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
+        )
+        compilerPattern.findAll(clean).forEach { match ->
+            diagnostics += EditorDiagnostic(
+                line = match.groupValues[1].toIntOrNull() ?: 1,
+                column = match.groupValues[2].toIntOrNull() ?: 1,
+                message = match.groupValues[3].trim().take(500),
+            )
+        }
+
+        val pythonStart = Regex(
+            """^File ["']当前文件["'], line (\d+)(?:, column (\d+))?""",
+            RegexOption.IGNORE_CASE,
+        )
+        lines.forEachIndexed { index, raw ->
+            val match = pythonStart.find(raw.trim()) ?: return@forEachIndexed
+            diagnostics += EditorDiagnostic(
+                line = match.groupValues[1].toIntOrNull() ?: 1,
+                column = match.groupValues[2].toIntOrNull() ?: 1,
+                message = relevantMessageAfter(lines, index),
+            )
+        }
+
+        val bareLocation = Regex("""^当前文件:(\d+):(\d+)\s*$""")
+        lines.forEachIndexed { index, raw ->
+            val match = bareLocation.find(raw.trim()) ?: return@forEachIndexed
+            diagnostics += EditorDiagnostic(
+                line = match.groupValues[1].toIntOrNull() ?: 1,
+                column = match.groupValues[2].toIntOrNull() ?: 1,
+                message = relevantMessageAfter(lines, index),
+            )
+        }
+
+        val shellMessage = Regex(
+            """^当前文件:\s*(\d+):\s*(?!(?:\d+:|\d+\s*$))(.+)$""",
+            RegexOption.MULTILINE,
+        )
+        shellMessage.findAll(clean).forEach { match ->
+            diagnostics += EditorDiagnostic(
+                line = match.groupValues[1].toIntOrNull() ?: 1,
+                column = 1,
+                message = match.groupValues[2].trim().take(500),
+            )
+        }
+
+        val distinct = diagnostics
+            .filter { it.message.isNotBlank() }
+            .distinctBy { it.line to it.column to it.message }
+            .take(50)
+        if (distinct.isNotEmpty()) return distinct
+
         val line = Regex("""line\s+(\d+)""")
             .find(clean)
             ?.groupValues
@@ -55,7 +111,7 @@ object EditorDiagnosticParser {
                 ?.get(1)
                 ?.toIntOrNull()
             ?: 1
-        val rawMessage = clean.lineSequence()
+        val rawMessage = lines
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .lastOrNull {
@@ -66,7 +122,7 @@ object EditorDiagnosticParser {
                     it.contains("Unexpected token", ignoreCase = true) ||
                     it.contains("expected", ignoreCase = true)
             }
-            ?: clean.lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
+            ?: lines.lastOrNull { it.isNotBlank() }.orEmpty()
         val message = rawMessage.replace(
             Regex("""^当前文件:\s*\d+(?::\s*\d+)?:\s*"""),
             "",
@@ -78,6 +134,24 @@ object EditorDiagnosticParser {
                 message = message.take(500).ifBlank { "语法检查失败" },
             ),
         )
+    }
+
+    private fun relevantMessageAfter(lines: List<String>, startIndex: Int): String {
+        val following = lines.drop(startIndex + 1).map { it.trim() }.filter { it.isNotEmpty() }
+        val syntaxError = following.firstOrNull {
+            it.contains("SyntaxError", ignoreCase = true) ||
+                it.contains("IndentationError", ignoreCase = true) ||
+                it.contains("TabError", ignoreCase = true)
+        }
+        val preferred = syntaxError ?: following.firstOrNull {
+            it.contains("error", ignoreCase = true) ||
+                it.contains("expected", ignoreCase = true) ||
+                it.contains("unexpected", ignoreCase = true)
+        }
+        return (preferred ?: following.firstOrNull { it != "^" })
+            ?.take(500)
+            .orEmpty()
+            .ifBlank { "语法检查失败" }
     }
 }
 

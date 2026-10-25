@@ -1527,6 +1527,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { workspace.writeText(path, editorContent) }
                 .onSuccess {
                     _state.update { it.copy(editorDirty = false, notice = "已保存 $path") }
+                    scheduleEditorLint(path, editorContent, delayMs = 0)
                     refreshFiles()
                     refreshGit()
                 }
@@ -1536,10 +1537,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun scheduleEditorLint(path: String, content: String) {
+    private fun scheduleEditorLint(
+        path: String,
+        content: String,
+        delayMs: Long = 450,
+    ) {
         editorLintJob?.cancel()
         editorLintJob = viewModelScope.launch(Dispatchers.IO) {
-            delay(450)
+            delay(delayMs)
             if (
                 _state.value.activeFile != path ||
                 _state.value.editorContent != content
@@ -1557,33 +1562,65 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         path: String,
         content: String,
     ): List<EditorDiagnostic> {
-        if (content.length > 500_000 || !internalRuntime.isToolchainsReady()) {
+        if (content.length > 500_000) {
             return emptyList()
         }
-        val extension = path.substringAfterLast('.', "").lowercase()
-        val commandFor: (String) -> String? = when (extension) {
-            "py", "python" -> { file -> "python3 -m py_compile ${shellQuote(file)}" }
-            "js", "mjs", "cjs" -> { file -> "node --check ${shellQuote(file)}" }
-            "sh", "shell" -> { file -> "sh -n ${shellQuote(file)}" }
-            "bash" -> { file -> "bash -n ${shellQuote(file)}" }
-            "json" -> { file -> "python3 -m json.tool ${shellQuote(file)} >/dev/null" }
-            "c", "h" -> { file ->
+        val language = EditorLintLanguageResolver.resolve(path, content) ?: return emptyList()
+        val characterDiagnostics = if (
+            language == EditorLintLanguage.SHELL ||
+            language == EditorLintLanguage.BASH
+        ) {
+            ShellCharacterChecker.check(content)
+        } else {
+            emptyList()
+        }
+        if (!internalRuntime.isBaseReady()) {
+            return characterDiagnostics
+        }
+        if (
+            language !in setOf(EditorLintLanguage.SHELL, EditorLintLanguage.BASH) &&
+            !internalRuntime.isToolchainsReady()
+        ) {
+            return emptyList()
+        }
+        val commandFor: (String) -> String = when (language) {
+            EditorLintLanguage.PYTHON -> { file ->
+                "python3 -m py_compile ${shellQuote(file)}"
+            }
+            EditorLintLanguage.JAVASCRIPT -> { file ->
+                "node --check ${shellQuote(file)}"
+            }
+            EditorLintLanguage.SHELL, EditorLintLanguage.BASH -> { file ->
+                val dialect = language.shellDialect ?: "sh"
+                val fallback = if (language == EditorLintLanguage.BASH) "bash -n" else "sh -n"
+                "if command -v shellcheck >/dev/null 2>&1; then " +
+                    "out=${'$'}(shellcheck -s $dialect -S error -f gcc ${shellQuote(file)} 2>&1); " +
+                    "status=${'$'}?; " +
+                    "case \"${'$'}out\" in " +
+                    "*'CANNOT LINK EXECUTABLE'*|*'Permission denied'*|*'not found'*) " +
+                    "$fallback ${shellQuote(file)}; exit ${'$'}? ;; " +
+                    "*) printf '%s\\n' \"${'$'}out\"; exit ${'$'}status ;; esac; " +
+                    "else $fallback ${shellQuote(file)}; fi"
+            }
+            EditorLintLanguage.JSON -> { file ->
+                "python3 -m json.tool ${shellQuote(file)} >/dev/null"
+            }
+            EditorLintLanguage.C -> { file ->
                 "clang -fsyntax-only -x c ${shellQuote(file)}"
             }
-            "cc", "cpp", "cxx", "hpp" -> { file ->
+            EditorLintLanguage.CPP -> { file ->
                 "clang --driver-mode=g++ -fsyntax-only -x c++ ${shellQuote(file)}"
             }
-            else -> return emptyList()
         }
         val lintDir = File(
             appContext.cacheDir,
             "editor-lint/${UUID.randomUUID()}",
         )
-        val lintFile = File(lintDir, "source.$extension")
+        val lintFile = File(lintDir, "source.${language.sourceExtension}")
         return try {
             lintDir.mkdirs()
             lintFile.writeText(content)
-            val command = commandFor(lintFile.absolutePath) ?: return emptyList()
+            val command = commandFor(lintFile.absolutePath)
             val result = internalRuntime.run(
                 command = command,
                 workingDir = lintDir,
@@ -1591,13 +1628,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
             Log.d(
                 EDITOR_LINT_TAG,
-                "check=$extension exit=${result.exitCode} error=${result.error.orEmpty()} " +
+                "check=${language.name.lowercase()} exit=${result.exitCode} " +
+                    "error=${result.error.orEmpty()} " +
                     "output=${result.output.take(500)}",
             )
             if (result.exitCode == 0) {
-                emptyList()
+                characterDiagnostics
             } else {
-                EditorDiagnosticParser.parse(result.output, lintFile.absolutePath)
+                (
+                    characterDiagnostics +
+                        EditorDiagnosticParser.parse(result.output, lintFile.absolutePath)
+                    ).distinctBy { it.line to it.column to it.message }
             }
         } catch (error: Exception) {
             Log.w(EDITOR_LINT_TAG, "Unable to check $path", error)
