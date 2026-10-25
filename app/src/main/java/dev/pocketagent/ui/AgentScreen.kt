@@ -491,23 +491,10 @@ fun AgentScreen(
         }
 
         if (state.agentRunning && !state.agentCompacting) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(14.dp),
-                    strokeWidth = 2.dp,
-                )
-                Text(
-                    text = state.agentStatus ?: "正在执行",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            AgentStatusStrip(
+                status = state.agentStatus,
+                startedAt = state.agentRequestStartedAt,
+            )
         }
 
         if (state.chat.none { it.role == ChatRole.USER }) {
@@ -830,13 +817,17 @@ private fun ChatBubble(entry: ChatEntry) {
                 ActivityTrace(entry)
             }
 
+            entry.error?.let { message ->
+                AgentErrorCard(message)
+            }
+
             when {
                 entry.content.isNotBlank() -> {
                     SelectionContainer {
                         MarkdownContent(entry.content)
                     }
                 }
-                entry.pending && entry.activities.isEmpty() -> {
+                entry.pending && entry.activities.isEmpty() && entry.error == null -> {
                     Text(
                         "正在处理…",
                         style = MaterialTheme.typography.bodyMedium,
@@ -845,6 +836,83 @@ private fun ChatBubble(entry: ChatEntry) {
                 }
             }
 
+        }
+    }
+}
+
+@Composable
+private fun AgentStatusStrip(
+    status: String?,
+    startedAt: Long?,
+) {
+    var elapsedSeconds by remember(startedAt) { mutableStateOf(0L) }
+    LaunchedEffect(startedAt) {
+        while (startedAt != null) {
+            elapsedSeconds = (
+                (System.currentTimeMillis() - startedAt) / 1_000
+                ).coerceAtLeast(0)
+            delay(1_000)
+        }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(14.dp),
+            strokeWidth = 2.dp,
+        )
+        Text(
+            text = buildString {
+                append(status ?: "正在执行")
+                if (startedAt != null) {
+                    append(" · 已等待 ")
+                    append(elapsedSeconds)
+                    append(" 秒")
+                }
+            },
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "首包等待 30 秒",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.tertiary,
+        )
+    }
+}
+
+@Composable
+private fun AgentErrorCard(message: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                "模型请求失败",
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = FontWeight.SemiBold,
+                ),
+            )
+            SelectionContainer {
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 17.sp,
+                    ),
+                )
+            }
         }
     }
 }
@@ -950,7 +1018,7 @@ private fun ActivityTrace(entry: ChatEntry) {
                     )
                     Text(
                         when {
-                            running -> "工具正在执行"
+                            running -> "正在执行"
                             failures > 0 -> "$failures 步失败，详情可展开"
                             else -> "全部完成"
                         },

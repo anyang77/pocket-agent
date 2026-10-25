@@ -9,6 +9,7 @@ import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSource
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -18,9 +19,10 @@ import java.util.concurrent.TimeUnit
 
 class AiClient(
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(180, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
         .build(),
 ) {
     @Volatile
@@ -76,6 +78,8 @@ class AiClient(
         messages: List<AgentMessage>,
         tools: List<ToolDefinition>,
         onRetry: (String) -> Unit = {},
+        onDelta: (String) -> Unit = {},
+        onReasoningDelta: (String) -> Unit = {},
     ): AssistantTurn = withContext(Dispatchers.IO) {
         if (settings.apiKey.isBlank()) {
             throw AgentException("请先在设置里填写 API Key")
@@ -93,6 +97,11 @@ class AiClient(
             put("model", settings.model.trim())
             put("messages", messages.toMessagesJson(includeReasoningContent))
             put("tool_choice", "auto")
+            put("stream", true)
+            put(
+                "stream_options",
+                JSONObject().put("include_usage", true),
+            )
             if (tools.isNotEmpty()) put("tools", tools.toToolsJson())
             if (settings.reasoningEffort.isNotBlank() && settings.reasoningEffort != "auto") {
                 put("reasoning_effort", settings.reasoningEffort)
@@ -102,7 +111,8 @@ class AiClient(
         val request = Request.Builder()
             .url(chatCompletionsUrl(settings.baseUrl))
             .header("Authorization", "Bearer ${settings.apiKey.trim()}")
-            .header("Accept", "application/json")
+            .header("Accept", "text/event-stream, application/json")
+            .header("Cache-Control", "no-cache")
             .post(
                 requestJson.toString()
                     .toRequestBody("application/json; charset=utf-8".toMediaType()),
@@ -110,16 +120,48 @@ class AiClient(
             .build()
 
         var lastError: Exception? = null
+        var receivedStreamOutput = false
         for (attempt in 1..MAX_TRANSIENT_ATTEMPTS) {
             try {
-                return@withContext executeCompletion(request)
+                return@withContext executeCompletion(
+                    request = request,
+                    onDelta = { delta ->
+                        receivedStreamOutput = true
+                        onDelta(delta)
+                    },
+                    onReasoningDelta = { delta ->
+                        receivedStreamOutput = true
+                        onReasoningDelta(delta)
+                    },
+                )
             } catch (error: IOException) {
                 lastError = error
-                if (attempt == MAX_TRANSIENT_ATTEMPTS || !error.isTransientNetworkError()) {
-                    throw AgentException(error.message ?: "模型网络请求失败")
+                if (
+                    receivedStreamOutput ||
+                    attempt == MAX_TRANSIENT_ATTEMPTS ||
+                    !error.isTransientNetworkError()
+                ) {
+                    throw AgentException(
+                        if (receivedStreamOutput) {
+                            "模型输出中断：${error.message ?: "网络连接已断开"}"
+                        } else if (error.isTimeout()) {
+                            "模型在 ${REQUEST_TIMEOUT_SECONDS} 秒内没有响应，" +
+                                "请检查接口地址、模型状态或网络"
+                        } else {
+                            error.message ?: "模型网络请求失败"
+                        },
+                    )
                 }
-                val waitMs = 750L * attempt
-                onRetry("连接中断，${waitMs / 1_000} 秒后重试 $attempt/${MAX_TRANSIENT_ATTEMPTS - 1}")
+                val waitMs = 1_000L
+                onRetry(
+                    if (error.isTimeout()) {
+                        "第 $attempt/${MAX_TRANSIENT_ATTEMPTS - 1} 次重试：" +
+                            "${REQUEST_TIMEOUT_SECONDS} 秒内没有首包，1 秒后重试"
+                    } else {
+                        "第 $attempt/${MAX_TRANSIENT_ATTEMPTS - 1} 次重试：" +
+                            "连接中断，1 秒后重试"
+                    },
+                )
                 delay(waitMs)
             } catch (error: AgentHttpException) {
                 lastError = error
@@ -132,7 +174,8 @@ class AiClient(
                     ?: (1_000L shl (attempt - 1)).coerceAtMost(8_000)
                 onRetry(
                     "服务暂时不可用 HTTP ${error.statusCode}，" +
-                        "${waitMs / 1_000} 秒后重试 $attempt/${MAX_TRANSIENT_ATTEMPTS - 1}",
+                        "第 $attempt/${MAX_TRANSIENT_ATTEMPTS - 1} 次重试将在 " +
+                        "${waitMs / 1_000} 秒后开始",
                 )
                 delay(waitMs)
             }
@@ -140,13 +183,17 @@ class AiClient(
         throw AgentException(lastError?.message ?: "模型网络请求失败")
     }
 
-    private fun executeCompletion(request: Request): AssistantTurn {
+    private fun executeCompletion(
+        request: Request,
+        onDelta: (String) -> Unit,
+        onReasoningDelta: (String) -> Unit,
+    ): AssistantTurn {
         val call = httpClient.newCall(request)
         activeAgentCall = call
         try {
             call.execute().use { response ->
-                val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
+                    val body = response.body?.string().orEmpty()
                     throw AgentHttpException(
                         statusCode = response.code,
                         body = body,
@@ -155,7 +202,22 @@ class AiClient(
                             ?.toLongOrNull(),
                     )
                 }
+                val responseBody = response.body
+                    ?: throw AgentException("模型返回没有响应体")
+                val contentType = response.header("Content-Type").orEmpty()
+                if (contentType.contains("text/event-stream", ignoreCase = true)) {
+                    call.timeout().timeout(
+                        STREAM_TOTAL_TIMEOUT_SECONDS.toLong(),
+                        TimeUnit.SECONDS,
+                    )
+                    return parseStreamingResponse(
+                        source = responseBody.source(),
+                        onDelta = onDelta,
+                        onReasoningDelta = onReasoningDelta,
+                    )
+                }
 
+                val body = responseBody.string()
                 val json = runCatching { JSONObject(body) }
                     .getOrElse { throw AgentException("模型返回不是有效 JSON") }
                 val choice = json.optJSONArray("choices")?.optJSONObject(0)
@@ -203,9 +265,115 @@ class AiClient(
         }
     }
 
+    private fun parseStreamingResponse(
+        source: BufferedSource,
+        onDelta: (String) -> Unit,
+        onReasoningDelta: (String) -> Unit,
+    ): AssistantTurn {
+        val content = StringBuilder()
+        val reasoning = StringBuilder()
+        val toolCalls = linkedMapOf<Int, StreamingToolCall>()
+        var finishReason: String? = null
+        var usage: TokenUsage? = null
+
+        while (true) {
+            val line = source.readUtf8Line() ?: break
+            val trimmed = line.trim()
+            if (trimmed.isBlank() || trimmed.startsWith(":")) continue
+            if (!trimmed.startsWith("data:")) continue
+            val data = trimmed.removePrefix("data:").trimStart()
+            if (data == "[DONE]") break
+            val json = runCatching { JSONObject(data) }.getOrNull() ?: continue
+            json.optJSONObject("error")?.let { error ->
+                throw AgentException(
+                    "模型流式响应失败: " +
+                        error.optString("message").ifBlank { error.toString() },
+                )
+            }
+            json.optJSONObject("usage")?.let { usage = it.toTokenUsage() }
+            val choice = json.optJSONArray("choices")?.optJSONObject(0) ?: continue
+            choice.optString("finish_reason")
+                .takeIf { it.isNotBlank() }
+                ?.let { finishReason = it }
+            val delta = choice.optJSONObject("delta")
+                ?: choice.optJSONObject("message")
+                ?: continue
+
+            delta.opt("reasoning_content")
+                ?.takeUnless { it == JSONObject.NULL }
+                ?.toString()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let {
+                    reasoning.append(it)
+                    onReasoningDelta(it)
+                }
+            delta.opt("reasoning")
+                ?.takeUnless { it == JSONObject.NULL }
+                ?.toString()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let {
+                    reasoning.append(it)
+                    onReasoningDelta(it)
+                }
+            delta.opt("content")
+                ?.takeUnless { it == JSONObject.NULL }
+                ?.toString()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let {
+                    content.append(it)
+                    onDelta(it)
+                }
+            val calls = delta.optJSONArray("tool_calls")
+            if (calls != null) {
+                for (position in 0 until calls.length()) {
+                    val call = calls.optJSONObject(position) ?: continue
+                    val index = call.optInt("index", position)
+                    val target = toolCalls.getOrPut(index) { StreamingToolCall() }
+                    call.optString("id").takeIf { it.isNotBlank() }?.let { target.id = it }
+                    val function = call.optJSONObject("function")
+                    function?.optString("name")
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { target.name = it }
+                    function?.opt("arguments")
+                        ?.takeUnless { it == JSONObject.NULL }
+                        ?.toString()
+                        ?.let(target.arguments::append)
+                }
+            }
+        }
+
+        val parsedToolCalls = toolCalls.entries.map { (index, call) ->
+            AgentToolCall(
+                id = call.id.ifBlank { "call_$index" },
+                name = call.name,
+                arguments = call.arguments.toString().ifBlank { "{}" },
+            )
+        }
+        val text = content.toString().takeIf { it.isNotBlank() }
+        val reasoningText = reasoning.toString().takeIf { it.isNotBlank() }
+        if (text == null && reasoningText == null && parsedToolCalls.isEmpty()) {
+            throw AgentException("模型流式响应结束，但没有返回内容")
+        }
+        return AssistantTurn(
+            content = text,
+            reasoningContent = reasoningText,
+            toolCalls = parsedToolCalls,
+            finishReason = finishReason,
+            usage = usage,
+            contentWasStreamed = text != null,
+        )
+    }
+
+    private data class StreamingToolCall(
+        var id: String = "",
+        var name: String = "",
+        val arguments: StringBuilder = StringBuilder(),
+    )
+
     private fun IOException.isTransientNetworkError(): Boolean {
         val message = message.orEmpty().lowercase()
         return this is UnknownHostException ||
+            this is java.io.InterruptedIOException ||
             this is SocketTimeoutException ||
             "unable to resolve host" in message ||
             "timed out" in message ||
@@ -217,6 +385,11 @@ class AiClient(
             "unexpected end of stream" in message ||
             "socket closed" in message
     }
+
+    private fun IOException.isTimeout(): Boolean =
+        this is SocketTimeoutException ||
+            this is java.io.InterruptedIOException ||
+            message.orEmpty().contains("timeout", ignoreCase = true)
 
     fun cancel() {
         activeAgentCall?.cancel()
@@ -369,7 +542,9 @@ class AiClient(
     }
 
     companion object {
-        private const val MAX_TRANSIENT_ATTEMPTS = 4
+        private const val MAX_TRANSIENT_ATTEMPTS = 2
+        private const val REQUEST_TIMEOUT_SECONDS = 30
+        private const val STREAM_TOTAL_TIMEOUT_SECONDS = 300
     }
 }
 

@@ -22,6 +22,7 @@ data class StoredMessage(
     val lastRequestUsage: TokenUsage? = null,
     val lastRequestAt: Long? = null,
     val plan: List<AgentPlanStep> = emptyList(),
+    val error: String? = null,
 )
 
 data class StoredConversation(
@@ -159,6 +160,8 @@ class ConversationStore(context: Context) {
                                     lastRequestUsage = lastRequestUsage,
                                     lastRequestAt = lastRequestAt,
                                     plan = plan,
+                                    error = message.optString("error")
+                                        .takeIf { it.isNotBlank() },
                                 ),
                             )
                         }
@@ -192,6 +195,7 @@ class ConversationStore(context: Context) {
                         put("role", message.role)
                         put("content", message.content)
                         put("timestamp", message.timestamp)
+                        message.error?.let { put("error", it) }
                         if (message.activities.isNotEmpty()) {
                             put(
                                 "activities",

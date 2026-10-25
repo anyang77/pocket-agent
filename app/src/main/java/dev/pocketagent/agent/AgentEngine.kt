@@ -112,12 +112,50 @@ class AgentEngine(
                     "请求模型",
                     "model=${settings.model} step=$step messages=${conversation.size}",
                 )
+                onEvent(
+                    AgentEvent.ModelRequestStarted(
+                        model = settings.model,
+                        round = step,
+                        messageCount = conversation.size,
+                    ),
+                )
+                val requestStartedAt = System.currentTimeMillis()
+                var streamedChars = 0
+                var reasoningChars = 0
+                val pendingDelta = StringBuilder()
+                var lastDeltaAt = 0L
+                fun flushStreamText() {
+                    if (pendingDelta.isEmpty()) return
+                    onEvent(AgentEvent.AssistantDelta(pendingDelta.toString()))
+                    pendingDelta.clear()
+                    lastDeltaAt = System.nanoTime()
+                }
+                val onDelta: (String) -> Unit = { delta ->
+                    streamedChars += delta.length
+                    pendingDelta.append(delta)
+                    val now = System.nanoTime()
+                    if (
+                        pendingDelta.length >= 80 ||
+                        now - lastDeltaAt >= 50_000_000L
+                    ) {
+                        flushStreamText()
+                    }
+                }
+                val onReasoningDelta: (String) -> Unit = { delta ->
+                    val before = reasoningChars / 200
+                    reasoningChars += delta.length
+                    if (reasoningChars / 200 != before) {
+                        onEvent(AgentEvent.ModelReasoningProgress(reasoningChars))
+                    }
+                }
                 val turn = try {
                     aiClient.complete(
                         settings,
                         conversation,
                         TOOLS,
                         onRetry = { message -> onEvent(AgentEvent.State(message)) },
+                        onDelta = onDelta,
+                        onReasoningDelta = onReasoningDelta,
                     )
                 } catch (error: AgentException) {
                     if (!error.message.orEmpty().contains("reasoning_content", ignoreCase = true)) {
@@ -130,13 +168,25 @@ class AgentEngine(
                         "retry",
                     )
                     sanitizeLegacyReasoningHistory()
+                    onEvent(AgentEvent.State("思考上下文不兼容，已清理旧记录并重试"))
                     aiClient.complete(
                         settings,
                         conversation,
                         TOOLS,
                         onRetry = { message -> onEvent(AgentEvent.State(message)) },
+                        onDelta = onDelta,
+                        onReasoningDelta = onReasoningDelta,
                     )
                 }
+                flushStreamText()
+                onEvent(
+                    AgentEvent.ModelRequestFinished(
+                        round = step,
+                        elapsedMs = System.currentTimeMillis() - requestStartedAt,
+                        contentChars = turn.content?.length ?: streamedChars,
+                        toolCallCount = turn.toolCalls.size,
+                    ),
+                )
                 auditLog.append(
                     "model",
                     "模型响应",
@@ -159,8 +209,10 @@ class AgentEngine(
                     toolCalls = turn.toolCalls,
                 )
                 if (turn.toolCalls.isEmpty()) {
-                    turn.content?.takeIf { it.isNotBlank() }?.let {
-                        onEvent(AgentEvent.AssistantText(it))
+                    if (!turn.contentWasStreamed) {
+                        turn.content?.takeIf { it.isNotBlank() }?.let {
+                            onEvent(AgentEvent.AssistantText(it))
+                        }
                     }
                     auditLog.append("agent", "任务完成", "模型未再请求工具", "success")
                     onEvent(AgentEvent.Completed)

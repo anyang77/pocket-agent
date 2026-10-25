@@ -90,6 +90,7 @@ data class AssistantTurn(
     val toolCalls: List<AgentToolCall>,
     val finishReason: String?,
     val usage: TokenUsage? = null,
+    val contentWasStreamed: Boolean = false,
 )
 
 data class ModelInfo(
@@ -153,6 +154,19 @@ sealed interface AgentEvent {
         val elapsedMs: Long,
         val fallback: Boolean,
     ) : AgentEvent
+    data class ModelRequestStarted(
+        val model: String,
+        val round: Int,
+        val messageCount: Int,
+    ) : AgentEvent
+    data class ModelRequestFinished(
+        val round: Int,
+        val elapsedMs: Long,
+        val contentChars: Int,
+        val toolCallCount: Int,
+    ) : AgentEvent
+    data class AssistantDelta(val text: String) : AgentEvent
+    data class ModelReasoningProgress(val chars: Int) : AgentEvent
     data class PlanUpdated(val steps: List<AgentPlanStep>) : AgentEvent
     data class ToolStarted(val name: String, val summary: String) : AgentEvent
     data class ToolFinished(val name: String, val summary: String, val success: Boolean) : AgentEvent

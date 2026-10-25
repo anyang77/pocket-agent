@@ -42,6 +42,7 @@ data class ChatEntry(
     val lastRequestUsage: TokenUsage? = null,
     val lastRequestAt: Long? = null,
     val plan: List<AgentPlanStep> = emptyList(),
+    val error: String? = null,
 )
 
 data class PendingApproval(
@@ -96,6 +97,7 @@ data class AppUiState(
     val chat: List<ChatEntry> = emptyList(),
     val agentRunning: Boolean = false,
     val agentStatus: String? = null,
+    val agentRequestStartedAt: Long? = null,
     val agentCompacting: Boolean = false,
     val agentCompactionStartedAt: Long? = null,
     val agentCompactionBeforeTokens: Int = 0,

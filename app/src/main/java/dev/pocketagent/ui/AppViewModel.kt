@@ -309,6 +309,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 lastRequestUsage = message.lastRequestUsage,
                 lastRequestAt = message.lastRequestAt,
                 plan = message.plan,
+                error = message.error,
             )
         }
         val history = chat.mapNotNull { message ->
@@ -351,7 +352,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val conversation = currentConversation ?: return
         val chat = _state.value.chat
             .filter { it.role != ChatRole.SYSTEM }
-            .filter { it.content.isNotBlank() }
+            .filter { it.content.isNotBlank() || it.error != null }
         if (chat.isEmpty()) return
         val firstUser = chat.firstOrNull { it.role == ChatRole.USER }?.content
         val title = if (conversation.title == "新对话" && firstUser != null) {
@@ -408,6 +409,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         lastRequestUsage = lastRequestUsage,
         lastRequestAt = lastRequestAt,
         plan = plan,
+        error = error,
     )
 
     private data class LoadedState(
@@ -2116,6 +2118,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 chat = it.chat + user + assistant,
                 agentRunning = true,
                 agentStatus = "正在分析项目",
+                agentRequestStartedAt = System.currentTimeMillis(),
             )
         }
         persistCurrentConversation()
@@ -2129,7 +2132,50 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 ) { event ->
                     when (event) {
                         is AgentEvent.AssistantText -> appendChat(assistantId, event.text)
+                        is AgentEvent.AssistantDelta -> appendChatDelta(assistantId, event.text)
                         is AgentEvent.Usage -> addUsage(assistantId, event.usage)
+                        is AgentEvent.ModelRequestStarted -> {
+                            startToolActivity(
+                                assistantId,
+                                "模型请求",
+                                "${event.model} · 第 ${event.round} 轮 · " +
+                                    "${event.messageCount} 条上下文",
+                            )
+                            _state.update {
+                                it.copy(
+                                    agentStatus = "正在等待模型响应 · 第 ${event.round} 轮",
+                                    agentRequestStartedAt = System.currentTimeMillis(),
+                                )
+                            }
+                        }
+                        is AgentEvent.ModelRequestFinished -> {
+                            finishToolActivity(
+                                id = assistantId,
+                                name = "模型请求",
+                                summary = "响应 ${event.elapsedMs / 1_000.0}s · " +
+                                    "${event.contentChars} 字符 · " +
+                                    "${event.toolCallCount} 个工具调用",
+                                success = true,
+                                activitySummary = "第 ${event.round} 轮模型响应已返回",
+                            )
+                            _state.update {
+                                it.copy(
+                                    agentStatus = "模型已响应，正在处理结果",
+                                    agentRequestStartedAt = null,
+                                )
+                            }
+                        }
+                        is AgentEvent.ModelReasoningProgress -> {
+                            val summary = "模型正在思考 · 已生成 ${event.chars} 字符推理"
+                            updateRunningActivitySummary(
+                                assistantId,
+                                "模型请求",
+                                summary,
+                            )
+                            _state.update {
+                                it.copy(agentStatus = summary)
+                            }
+                        }
                         is AgentEvent.PlanUpdated -> updatePlan(assistantId, event.steps)
                         is AgentEvent.ContextCompactionStarted -> {
                             val percent = (
@@ -2176,19 +2222,49 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             persistCurrentConversation()
                         }
-                        is AgentEvent.ToolStarted -> startToolActivity(
-                            assistantId,
-                            event.name,
-                            event.summary,
-                        )
-                        is AgentEvent.ToolFinished -> finishToolActivity(
-                            assistantId,
-                            event.name,
-                            event.summary,
-                            event.success,
-                        ).also { persistCurrentConversation() }
-                        is AgentEvent.State -> _state.update { it.copy(agentStatus = event.text) }
+                        is AgentEvent.ToolStarted -> {
+                            startToolActivity(
+                                assistantId,
+                                event.name,
+                                event.summary,
+                            )
+                            _state.update {
+                                it.copy(
+                                    agentStatus = "正在执行工具 · ${event.name}",
+                                    agentRequestStartedAt = null,
+                                )
+                            }
+                        }
+                        is AgentEvent.ToolFinished -> {
+                            finishToolActivity(
+                                assistantId,
+                                event.name,
+                                event.summary,
+                                event.success,
+                            )
+                            _state.update {
+                                it.copy(
+                                    agentStatus = if (event.success) {
+                                        "${event.name} 已完成"
+                                    } else {
+                                        "${event.name} 执行失败"
+                                    },
+                                )
+                            }
+                            persistCurrentConversation()
+                        }
+                        is AgentEvent.State -> {
+                            updateRunningActivitySummary(assistantId, "模型请求", event.text)
+                            _state.update { it.copy(agentStatus = event.text) }
+                        }
                         is AgentEvent.Stopped -> {
+                            finishToolActivity(
+                                id = assistantId,
+                                name = "模型请求",
+                                summary = event.message,
+                                success = false,
+                                activitySummary = "模型请求已停止",
+                            )
                             if (_state.value.agentCompacting) {
                                 finishToolActivity(
                                     id = assistantId,
@@ -2202,12 +2278,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             _state.update {
                                 it.copy(
                                     notice = event.message,
+                                    agentRequestStartedAt = null,
                                     agentCompacting = false,
                                     agentCompactionStartedAt = null,
                                 )
                             }
                         }
                         is AgentEvent.Failed -> {
+                            finishToolActivity(
+                                id = assistantId,
+                                name = "模型请求",
+                                summary = event.message,
+                                success = false,
+                                activitySummary = "模型请求失败",
+                            )
                             if (_state.value.agentCompacting) {
                                 finishToolActivity(
                                     id = assistantId,
@@ -2217,16 +2301,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                     activitySummary = "上下文压缩失败",
                                 )
                             }
-                            appendChat(assistantId, "\n\n⚠ ${event.message}\n")
+                            _state.update { current ->
+                                current.copy(
+                                    chat = current.chat.map { entry ->
+                                        if (entry.id == assistantId) {
+                                            entry.copy(error = event.message)
+                                        } else {
+                                            entry
+                                        }
+                                    },
+                                )
+                            }
                             _state.update {
                                 it.copy(
                                     notice = event.message,
+                                    agentRequestStartedAt = null,
                                     agentCompacting = false,
                                     agentCompactionStartedAt = null,
                                 )
                             }
                         }
-                        AgentEvent.Completed -> Unit
+                        AgentEvent.Completed -> {
+                            _state.update {
+                                it.copy(agentRequestStartedAt = null)
+                            }
+                        }
                     }
                 }
             } finally {
@@ -2235,6 +2334,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         agentRunning = false,
                         agentStatus = null,
+                        agentRequestStartedAt = null,
                         agentCompacting = false,
                         agentCompactionStartedAt = null,
                         agentCompactionBeforeTokens = 0,
@@ -2243,7 +2343,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             if (entry.id == assistantId) {
                                 entry.copy(
                                     pending = false,
-                                    content = entry.content.ifBlank { "任务已结束，没有返回文本。" },
+                                    content = entry.content.ifBlank {
+                                        if (entry.error == null) {
+                                            "任务已结束，没有返回文本。"
+                                        } else {
+                                            ""
+                                        }
+                                    },
                                 )
                             } else {
                                 entry
@@ -2297,6 +2403,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun consumeNotice() {
         _state.update { it.copy(notice = null) }
+    }
+
+    private fun appendChatDelta(id: Long, text: String) {
+        if (text.isEmpty()) return
+        _state.update { current ->
+            current.copy(
+                chat = current.chat.map { entry ->
+                    if (entry.id == id) {
+                        entry.copy(content = entry.content + text)
+                    } else {
+                        entry
+                    }
+                },
+            )
+        }
     }
 
     private fun appendChat(id: Long, text: String) {
@@ -2384,6 +2505,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun updateRunningActivitySummary(
+        id: Long,
+        name: String,
+        summary: String,
+    ) {
+        _state.update { current ->
+            current.copy(
+                chat = current.chat.map { entry ->
+                    if (entry.id != id) return@map entry
+                    val index = entry.activities.indexOfLast {
+                        it.name == name && it.success == null
+                    }
+                    if (index < 0) return@map entry
+                    entry.copy(
+                        activities = entry.activities.mapIndexed { activityIndex, activity ->
+                            if (activityIndex == index) {
+                                activity.copy(summary = summary)
+                            } else {
+                                activity
+                            }
+                        },
+                    )
+                },
+            )
+        }
+    }
+
     private fun finishToolActivity(
         id: Long,
         name: String,
@@ -2397,7 +2545,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     if (entry.id != id) return@map entry
                     val index = entry.activities.indexOfLast {
                         it.name == name && it.success == null
-                    }.takeIf { it >= 0 } ?: entry.activities.lastIndex
+                    }
                     if (index < 0) return@map entry
                     entry.copy(
                         activities = entry.activities.mapIndexed { activityIndex, activity ->
