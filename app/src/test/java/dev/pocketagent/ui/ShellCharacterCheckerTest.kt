@@ -12,6 +12,7 @@ class ShellCharacterCheckerTest {
         assertEquals(1, diagnostic.line)
         assertEquals(8, diagnostic.column)
         assertTrue(diagnostic.message.contains("英文 ;"))
+        assertEquals(";", diagnostic.replacement)
     }
 
     @Test

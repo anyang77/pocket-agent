@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Search
@@ -524,8 +525,29 @@ private fun Editor(
     var cursorLine by remember(path) { mutableStateOf(1) }
     var cursorColumn by remember(path) { mutableStateOf(1) }
     var controller by remember(path) { mutableStateOf<CodeEditorController?>(null) }
+    var showProblems by rememberSaveable(path) { mutableStateOf(false) }
     LaunchedEffect(dirty) {
         if (!dirty) localDirty = false
+    }
+    if (showProblems && diagnostics.isNotEmpty()) {
+        SyntaxDiagnosticsDialog(
+            diagnostics = diagnostics,
+            onGoTo = { diagnostic ->
+                controller?.goTo(diagnostic.line, diagnostic.column)
+                showProblems = false
+            },
+            onFix = { diagnostic ->
+                diagnostic.replacement?.let { replacement ->
+                    controller?.applyFix(
+                        diagnostic.line,
+                        diagnostic.column,
+                        replacement,
+                    )
+                    showProblems = false
+                }
+            },
+            onDismiss = { showProblems = false },
+        )
     }
     Column(modifier) {
         Row(
@@ -568,6 +590,12 @@ private fun Editor(
                 Icon(Icons.Outlined.Search, contentDescription = "搜索和替换")
             }
             IconButton(
+                onClick = { controller?.showCompletions() },
+                enabled = controller != null,
+            ) {
+                Icon(Icons.Outlined.AutoAwesome, contentDescription = "代码补全")
+            }
+            IconButton(
                 onClick = {
                     controller?.getContent { latest -> onRun(latest) }
                 },
@@ -593,18 +621,41 @@ private fun Editor(
                 color = MaterialTheme.colorScheme.errorContainer,
                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
             ) {
-                Text(
-                    text = buildString {
-                        append("第 ${diagnostic.line} 行：${diagnostic.message}")
-                        if (diagnostics.size > 1) {
-                            append("（另有 ${diagnostics.size - 1} 个错误）")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = buildString {
+                            append("第 ${diagnostic.line} 行：${diagnostic.message}")
+                            if (diagnostics.size > 1) {
+                                append("（另有 ${diagnostics.size - 1} 个错误）")
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (diagnostic.replacement != null) {
+                        TextButton(
+                            onClick = {
+                                controller?.applyFix(
+                                    diagnostic.line,
+                                    diagnostic.column,
+                                    diagnostic.replacement,
+                                )
+                            },
+                        ) {
+                            Text("修复")
                         }
-                    },
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                    }
+                    TextButton(onClick = { showProblems = true }) {
+                        Text("全部")
+                    }
+                }
             }
         }
         CodeEditorWebView(
@@ -624,6 +675,64 @@ private fun Editor(
                 .weight(1f),
         )
     }
+}
+
+@Composable
+private fun SyntaxDiagnosticsDialog(
+    diagnostics: List<EditorDiagnostic>,
+    onGoTo: (EditorDiagnostic) -> Unit,
+    onFix: (EditorDiagnostic) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("语法问题 · ${diagnostics.size}")
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                diagnostics.forEach { diagnostic ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onGoTo(diagnostic) },
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        ) {
+                            Text(
+                                "第 ${diagnostic.line} 行，第 ${diagnostic.column} 列",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Text(
+                                diagnostic.message,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            if (diagnostic.replacement != null) {
+                                TextButton(onClick = { onFix(diagnostic) }) {
+                                    Text("一键修复为 ${diagnostic.replacement}")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        },
+    )
 }
 
 private fun formatBytes(bytes: Long): String = when {

@@ -144,6 +144,16 @@
       content: "●";
       color: #f85149;
     }
+    .CodeMirror-lint-tooltip {
+      color: #f0f3f6 !important;
+      background: #1b222b !important;
+      border: 1px solid #4a5664 !important;
+      border-radius: 8px !important;
+      box-shadow: 0 8px 26px #000b !important;
+      font: 12px/1.5 "Roboto Mono", monospace !important;
+      max-width: 360px !important;
+      padding: 7px 9px !important;
+    }
     .CodeMirror-hints {
       background: #111821;
       border: 1px solid #536476;
@@ -153,14 +163,40 @@
       font-family: "JetBrains Mono", "Roboto Mono", monospace;
       font-size: 14px;
       max-height: 240px;
+      min-width: min(340px, 88vw);
     }
     .CodeMirror-hint {
       color: #e6edf3;
-      padding: 7px 10px;
+      padding: 6px 9px;
     }
     li.CodeMirror-hint-active {
       background: #26485e;
       color: #ffffff;
+    }
+    .pocket-hint {
+      display: grid;
+      grid-template-columns: 20px minmax(90px, auto) 1fr;
+      gap: 7px;
+      align-items: center;
+    }
+    .pocket-hint-kind {
+      color: #75beff;
+      font-size: 12px;
+      text-align: center;
+    }
+    .pocket-hint-label {
+      color: #d4d4d4;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pocket-hint-detail {
+      color: #8b98a8;
+      font: 11px "Roboto Mono", monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
   </style>
 </head>
@@ -243,6 +279,168 @@
       plain: []
     };
 
+    const completionMetadata = {
+      shell: {
+        echo: ["function", "输出文本", "printf '%s\\n' ..."],
+        printf: ["function", "格式化输出", "printf 'format' args..."],
+        cd: ["function", "切换目录", "cd path"],
+        pwd: ["function", "当前目录", "打印当前工作目录"],
+        export: ["keyword", "导出环境变量", "export NAME=value"],
+        local: ["keyword", "函数局部变量", "local name=value"],
+        read: ["function", "读取输入", "read -r value"],
+        test: ["function", "条件判断", "[ condition ]"],
+        source: ["function", "加载脚本", ". script"],
+        shift: ["function", "移动位置参数", "shift [n]"],
+        git: ["function", "版本控制", "git status"],
+        python: ["function", "Python 解释器", "python script.py"],
+        python3: ["function", "Python 3 解释器", "python3 script.py"],
+        node: ["function", "Node.js 解释器", "node script.js"],
+        clang: ["function", "C/C++ 编译器", "clang source.c"],
+        find: ["function", "查找文件", "find . -name pattern"],
+        grep: ["function", "文本搜索", "grep pattern file"],
+        sed: ["function", "流编辑器", "sed 's/a/b/' file"],
+        awk: ["function", "文本处理", "awk '{print $1}' file"],
+        curl: ["function", "HTTP 请求", "curl URL"],
+        chmod: ["function", "修改权限", "chmod +x script"]
+      },
+      python: {
+        def: ["snippet", "函数定义", "def function_name(args):"],
+        class: ["snippet", "类定义", "class ClassName:"],
+        import: ["keyword", "导入模块", "import module"],
+        from: ["keyword", "从模块导入", "from module import name"],
+        self: ["variable", "当前实例", "实例方法中的当前对象"],
+        print: ["function", "输出", "print(values..., sep=' ', end='\\n')"],
+        len: ["function", "对象长度", "len(object)"],
+        range: ["function", "整数序列", "range(start, stop, step)"],
+        enumerate: ["function", "带索引遍历", "enumerate(iterable, start=0)"],
+        zip: ["function", "并行遍历", "zip(iterables...)"],
+        open: ["function", "打开文件", "open(file, mode='r', encoding=None)"],
+        Path: ["type", "路径对象", "from pathlib import Path"],
+        dataclass: ["type", "数据类", "from dataclasses import dataclass"]
+      },
+      javascript: {
+        const: ["keyword", "常量声明", "const value = expression"],
+        let: ["keyword", "块级变量", "let value = expression"],
+        function: ["snippet", "函数声明", "function name(args) {}"],
+        async: ["keyword", "异步声明", "async function name() {}"],
+        await: ["keyword", "等待 Promise", "await promise"],
+        console: ["variable", "控制台对象", "console.log(...)"],
+        document: ["variable", "DOM 文档对象", "document.querySelector(...)"],
+        Promise: ["type", "异步结果", "new Promise((resolve, reject) => {})"],
+        fetch: ["function", "网络请求", "await fetch(url)"],
+        JSON: ["type", "JSON 工具", "JSON.parse(text)"],
+        Array: ["type", "数组对象", "Array.from(iterable)"],
+        Object: ["type", "对象工具", "Object.keys(value)"]
+      }
+    };
+
+    const propertyCompletions = {
+      console: [
+        ["log", "输出日志"], ["warn", "警告日志"], ["error", "错误日志"],
+        ["debug", "调试日志"], ["table", "表格输出"], ["time", "开始计时"],
+        ["timeEnd", "结束计时"], ["assert", "断言"]
+      ],
+      document: [
+        ["querySelector", "选择第一个元素"], ["querySelectorAll", "选择全部元素"],
+        ["getElementById", "按 ID 查找"], ["createElement", "创建元素"],
+        ["addEventListener", "监听事件"], ["body", "body 元素"],
+        ["documentElement", "根元素"]
+      ],
+      JSON: [
+        ["parse", "解析 JSON"], ["stringify", "序列化为 JSON"]
+      ],
+      Math: [
+        ["round", "四舍五入"], ["floor", "向下取整"], ["ceil", "向上取整"],
+        ["max", "最大值"], ["min", "最小值"], ["random", "随机数"], ["abs", "绝对值"]
+      ],
+      Promise: [
+        ["all", "等待全部 Promise"], ["allSettled", "等待全部结果"],
+        ["race", "首个完成结果"], ["resolve", "创建成功 Promise"],
+        ["reject", "创建失败 Promise"]
+      ]
+    };
+
+    const snippets = {
+      shell: [
+        {"label": "if", "insertText": "if [ condition ]; then\n  \nfi", "cursorOffset": 4, "detail": "条件判断"},
+        {"label": "for", "insertText": "for item in values; do\n  \ndone", "cursorOffset": 13, "detail": "循环"},
+        {"label": "while", "insertText": "while condition; do\n  \ndone", "cursorOffset": 6, "detail": "条件循环"},
+        {"label": "case", "insertText": "case \"$value\" in\n  pattern)\n    ;;\nesac", "cursorOffset": 8, "detail": "分支"},
+        {"label": "function", "insertText": "function name() {\n  \n}", "cursorOffset": 9, "detail": "函数"}
+      ],
+      python: [
+        {"label": "def", "insertText": "def function_name():\n    ", "cursorOffset": 4, "detail": "函数"},
+        {"label": "class", "insertText": "class ClassName:\n    def __init__(self):\n        ", "cursorOffset": 6, "detail": "类"},
+        {"label": "if", "insertText": "if condition:\n    ", "cursorOffset": 3, "detail": "条件"},
+        {"label": "for", "insertText": "for item in values:\n    ", "cursorOffset": 9, "detail": "循环"},
+        {"label": "try", "insertText": "try:\n    \nexcept Exception as error:\n    ", "cursorOffset": 9, "detail": "异常处理"},
+        {"label": "main", "insertText": "if __name__ == \"__main__\":\n    ", "cursorOffset": 31, "detail": "程序入口"}
+      ],
+      javascript: [
+        {"label": "function", "insertText": "function name() {\n  \n}", "cursorOffset": 9, "detail": "函数"},
+        {"label": "if", "insertText": "if (condition) {\n  \n}", "cursorOffset": 4, "detail": "条件"},
+        {"label": "for", "insertText": "for (const item of values) {\n  \n}", "cursorOffset": 19, "detail": "循环"},
+        {"label": "try", "insertText": "try {\n  \n} catch (error) {\n  \n}", "cursorOffset": 7, "detail": "异常处理"},
+        {"label": "async", "insertText": "async function name() {\n  await \n}", "cursorOffset": 15, "detail": "异步函数"}
+      ],
+      typescript: [
+        {"label": "interface", "insertText": "interface Name {\n  \n}", "cursorOffset": 10, "detail": "接口"},
+        {"label": "type", "insertText": "type Name = ;", "cursorOffset": 5, "detail": "类型别名"},
+        {"label": "function", "insertText": "function name(): void {\n  \n}", "cursorOffset": 9, "detail": "函数"}
+      ],
+      kotlin: [
+        {"label": "fun", "insertText": "fun name() {\n    \n}", "cursorOffset": 4, "detail": "函数"},
+        {"label": "if", "insertText": "if (condition) {\n    \n}", "cursorOffset": 4, "detail": "条件"},
+        {"label": "when", "insertText": "when (value) {\n    else -> \n}", "cursorOffset": 6, "detail": "分支"},
+        {"label": "class", "insertText": "data class Name(\n    val value: String\n)", "cursorOffset": 11, "detail": "数据类"}
+      ],
+      java: [
+        {"label": "main", "insertText": "public static void main(String[] args) {\n    \n}", "cursorOffset": 44, "detail": "入口函数"},
+        {"label": "if", "insertText": "if (condition) {\n    \n}", "cursorOffset": 4, "detail": "条件"},
+        {"label": "for", "insertText": "for (int i = 0; i < count; i++) {\n    \n}", "cursorOffset": 19, "detail": "循环"}
+      ],
+      cpp: [
+        {"label": "main", "insertText": "int main(int argc, char** argv) {\n    \n}", "cursorOffset": 35, "detail": "入口函数"},
+        {"label": "if", "insertText": "if (condition) {\n    \n}", "cursorOffset": 4, "detail": "条件"},
+        {"label": "for", "insertText": "for (int i = 0; i < count; ++i) {\n    \n}", "cursorOffset": 19, "detail": "循环"}
+      ]
+    };
+
+    const typeCompletions = {
+      kotlin: ["String", "Int", "Long", "Boolean", "Float", "Double", "List", "Map", "Set", "Any", "Unit", "Flow", "Result"],
+      java: ["String", "Object", "Integer", "Long", "Boolean", "List", "Map", "Set", "void", "int", "long", "float", "double", "char", "byte"],
+      cpp: ["string", "vector", "map", "set", "size_t", "uint8_t", "int32_t", "unique_ptr", "shared_ptr", "optional"],
+      python: ["str", "int", "float", "bool", "list", "dict", "set"],
+      javascript: ["String", "Number", "Boolean", "Array", "Object", "Promise", "Map", "Set"],
+      typescript: ["string", "number", "boolean", "unknown", "never", "any", "Array", "Promise", "Record", "Partial", "Readonly"]
+    };
+
+    const shellVariables = [
+      ["PATH", "可执行文件搜索路径"], ["HOME", "用户主目录"], ["PWD", "当前目录"],
+      ["SHELL", "当前 Shell"], ["TMPDIR", "临时目录"], ["PREFIX", "开发环境前缀"],
+      ["TERMUX_PREFIX", "内置环境前缀"], ["?", "上一条命令退出码"],
+      ["#", "参数数量"], ["0", "脚本名称"], ["@", "全部参数"], ["*", "全部参数"]
+    ];
+
+    const moduleCompletions = {
+      python: [
+        ["os", "操作系统接口"], ["sys", "解释器接口"], ["json", "JSON 编解码"],
+        ["pathlib", "路径操作"], ["subprocess", "子进程"], ["asyncio", "异步编程"],
+        ["dataclasses", "数据类"], ["typing", "类型标注"], ["collections", "容器类型"],
+        ["logging", "日志"], ["re", "正则表达式"], ["datetime", "日期时间"]
+      ],
+      javascript: [
+        ["fs", "文件系统"], ["path", "路径工具"], ["http", "HTTP 服务"],
+        ["https", "HTTPS 服务"], ["os", "操作系统"], ["url", "URL 工具"],
+        ["crypto", "加密工具"], ["child_process", "子进程"]
+      ],
+      typescript: [
+        ["fs", "文件系统"], ["path", "路径工具"], ["http", "HTTP 服务"],
+        ["https", "HTTPS 服务"], ["os", "操作系统"], ["url", "URL 工具"],
+        ["crypto", "加密工具"], ["child_process", "子进程"]
+      ]
+    };
+
     let currentMode = "plain";
     let currentDirty = false;
     let suppressEvents = false;
@@ -266,14 +464,17 @@
       matchBrackets: true,
       gutters: ["CodeMirror-linenumbers", "CodeMirror-lint-markers"],
       lint: {getAnnotations: currentDiagnostics, delay: 180},
+      hintOptions: {completeSingle: false, alignWithWord: true, closeOnUnfocus: true},
       viewportMargin: 18,
       scrollbarStyle: "native",
       inputStyle: "contenteditable",
       styleActiveLine: true,
       extraKeys: {
-        "Ctrl-Space": cm => cm.showHint({hint: pocketHint, completeSingle: false}),
+        "Ctrl-Space": cm => showCompletions(cm, true),
+        "Cmd-Space": cm => showCompletions(cm, true),
         "Ctrl-F": () => openSearch(),
-        "Cmd-F": () => openSearch()
+        "Cmd-F": () => openSearch(),
+        "F12": cm => goToDefinition(cm)
       }
     });
 
@@ -467,30 +668,289 @@
       if (api && api.onContentChanged) api.onContentChanged(editor.getValue());
     }
 
-    function pocketHint(cm) {
-      const cursor = cm.getCursor();
-      const token = cm.getTokenAt(cursor);
-      const before = cm.getRange({line: cursor.line, ch: 0}, cursor);
-      const match = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
-      if (!match) return null;
-      const word = match[1];
-      const start = cursor.ch - word.length;
-      const words = new Set(completions[currentMode] || []);
-      const source = cm.getValue();
-      const symbols = source.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
-      symbols.slice(0, 1200).forEach(value => {
-        if (value.length >= 2) words.add(value);
+    const kindBadges = {
+      keyword: "K",
+      type: "T",
+      function: "ƒ",
+      variable: "V",
+      snippet: "S",
+      property: "P",
+      module: "M",
+      symbol: "◆"
+    };
+    const kindPriority = {
+      snippet: 5,
+      function: 4,
+      property: 4,
+      variable: 3,
+      type: 3,
+      keyword: 2,
+      module: 2,
+      symbol: 1
+    };
+
+    function completionItem(
+      label,
+      detail,
+      kind,
+      insertText = label,
+      cursorOffset = null
+    ) {
+      return {
+        label,
+        text: insertText,
+        displayText: label,
+        detail,
+        kind,
+        insertText,
+        cursorOffset,
+        render: renderCompletion
+      };
+    }
+
+    function renderCompletion(node, self, item) {
+      node.className += " pocket-hint";
+      node.title = [item.detail, item.documentation].filter(Boolean).join("\n");
+      const badge = document.createElement("span");
+      badge.className = "pocket-hint-kind";
+      badge.textContent = kindBadges[item.kind] || "•";
+      const label = document.createElement("span");
+      label.className = "pocket-hint-label";
+      label.textContent = item.label;
+      const detail = document.createElement("span");
+      detail.className = "pocket-hint-detail";
+      detail.textContent = item.detail || "";
+      node.appendChild(badge);
+      node.appendChild(label);
+      node.appendChild(detail);
+    }
+
+    function positionAfter(from, text, offset) {
+      const before = text.slice(0, Math.max(0, Math.min(offset, text.length)));
+      const lines = before.split("\n");
+      if (lines.length === 1) return CodeMirror.Pos(from.line, from.ch + lines[0].length);
+      return CodeMirror.Pos(from.line + lines.length - 1, lines[lines.length - 1].length);
+    }
+
+    function snippetHint(cm, data, item) {
+      const from = item.from || data.from;
+      const to = item.to || data.to;
+      cm.replaceRange(item.insertText, from, to, "complete");
+      const cursor = positionAfter(from, item.insertText, item.cursorOffset);
+      cm.setCursor(cursor);
+      cm.scrollIntoView(cursor, 60);
+    }
+
+    function addSnippetCandidates(target, prefix) {
+      (snippets[currentMode] || []).forEach(item => {
+        if (prefix && !item.label.toLowerCase().startsWith(prefix.toLowerCase())) return;
+        target.push({
+          label: item.label,
+          text: item.insertText,
+          displayText: item.label,
+          detail: item.detail,
+          kind: "snippet",
+          insertText: item.insertText,
+          cursorOffset: item.cursorOffset,
+          render: renderCompletion,
+          hint: snippetHint
+        });
       });
-      const list = Array.from(words)
-        .filter(value => value.toLowerCase().startsWith(word.toLowerCase()))
-        .sort((a, b) => a.length - b.length || a.localeCompare(b))
-        .slice(0, 30);
+    }
+
+    function similarityScore(label, prefix) {
+      if (!prefix) return 1;
+      const value = label.toLowerCase();
+      const query = prefix.toLowerCase();
+      if (value === query) return 1200;
+      if (value.startsWith(query)) return 1000 - Math.min(300, value.length - query.length);
+      let queryIndex = 0;
+      let gap = 0;
+      for (let index = 0; index < value.length && queryIndex < query.length; index++) {
+        if (value[index] === query[queryIndex]) {
+          queryIndex++;
+        } else if (queryIndex > 0) {
+          gap++;
+        }
+      }
+      return queryIndex === query.length ? 500 - Math.min(300, gap) : -1;
+    }
+
+    function rankAndLimit(candidates, prefix) {
+      const unique = new Map();
+      candidates.forEach(item => {
+        const key = item.label.toLowerCase();
+        const existing = unique.get(key);
+        if (
+          !existing ||
+          (kindPriority[item.kind] || 0) > (kindPriority[existing.kind] || 0)
+        ) {
+          unique.set(key, item);
+        }
+      });
+      return Array.from(unique.values())
+        .map(item => ({item, score: similarityScore(item.label, prefix)}))
+        .filter(entry => entry.score >= 0)
+        .sort((left, right) =>
+          right.score - left.score ||
+          (kindPriority[right.item.kind] || 0) - (kindPriority[left.item.kind] || 0) ||
+          left.item.label.length - right.item.label.length ||
+          left.item.label.localeCompare(right.item.label)
+        )
+        .slice(0, 40)
+        .map(entry => entry.item);
+    }
+
+    function localShellVariables(source) {
+      const names = new Set();
+      const assignment = /(?:^|[\s;])([A-Za-z_][A-Za-z0-9_]*)=/gm;
+      let match;
+      while ((match = assignment.exec(source)) && names.size < 150) {
+        names.add(match[1]);
+      }
+      return Array.from(names);
+    }
+
+    function localPythonMethods(source) {
+      const methods = new Set();
+      const definition = /^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm;
+      let match;
+      while ((match = definition.exec(source)) && methods.size < 150) {
+        methods.add(match[1]);
+      }
+      return Array.from(methods);
+    }
+
+    function pocketHint(cm, manual = false) {
+      const cursor = cm.getCursor();
+      const before = cm.getRange({line: cursor.line, ch: 0}, cursor);
+      const source = cm.getValue();
+      let match = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
+      let word = match ? match[1] : "";
+      let start = cursor.ch - word.length;
+      const shellVariable = currentMode === "shell" &&
+        /\$(?:\{?)([A-Za-z0-9_?@*#]*)$/.exec(before);
+      const property = /([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z0-9_$]*)$/.exec(before);
+      if (!match && !manual && !shellVariable && !property) return null;
+      if (!match && (shellVariable || property)) {
+        word = "";
+        start = cursor.ch;
+      }
+
+      const candidates = [];
+      const metadata = completionMetadata[currentMode] || {};
+      (completions[currentMode] || []).forEach(value => {
+        const meta = metadata[value];
+        const kind = meta ? meta[0] :
+          ((typeCompletions[currentMode] || []).includes(value) ? "type" : "keyword");
+        candidates.push(completionItem(
+          value,
+          meta ? `${meta[1]}${meta[2] ? ` · ${meta[2]}` : ""}` :
+            (kind === "type" ? "类型" : "关键字"),
+          kind
+        ));
+      });
+      addSnippetCandidates(candidates, word);
+
+      if (property && (currentMode === "javascript" || currentMode === "typescript")) {
+        (propertyCompletions[property[1]] || []).forEach(([label, detail]) => {
+          candidates.push(completionItem(label, detail, "property"));
+          start = cursor.ch - word.length;
+        });
+      }
+      if (property && currentMode === "python" && property[1] === "self") {
+        localPythonMethods(source).forEach(label => {
+          candidates.push(completionItem(label, "当前类方法", "function"));
+        });
+      }
+
+      if (
+        (currentMode === "python" && /^\s*(?:from|import)\s+[A-Za-z0-9_]*$/.test(before)) ||
+        ((currentMode === "javascript" || currentMode === "typescript") &&
+          /^\s*import\b.*\bfrom\s+["']?[A-Za-z0-9_]*$/.test(before))
+      ) {
+        (moduleCompletions[currentMode] || []).forEach(([label, detail]) => {
+          candidates.push(completionItem(label, detail, "module"));
+        });
+      }
+
+      if (word.length >= 1 || manual) {
+        const symbols = new Set(source.match(/[A-Za-z_][A-Za-z0-9_]*/g) || []);
+        Array.from(symbols).slice(0, 1200).forEach(value => {
+          if (value.length >= 2) {
+            candidates.push(completionItem(value, "当前文件", "symbol"));
+          }
+        });
+      }
+
+      if (currentMode === "shell" && (shellVariable || manual || word.startsWith("$"))) {
+        const variablePrefix = shellVariable ? shellVariable[1] : "";
+        if (shellVariable) {
+          start = cursor.ch - variablePrefix.length;
+          word = variablePrefix;
+        }
+        shellVariables.forEach(([label, detail]) => {
+          const displayLabel = shellVariable ? label : `$${label}`;
+          candidates.push(completionItem(
+            displayLabel,
+            detail,
+            "variable",
+            displayLabel
+          ));
+        });
+        localShellVariables(source).forEach(label => {
+          const displayLabel = shellVariable ? label : `$${label}`;
+          candidates.push(completionItem(
+            displayLabel,
+            "Shell 变量",
+            "variable",
+            displayLabel
+          ));
+        });
+      }
+
+      const list = rankAndLimit(candidates, word);
       if (!list.length) return null;
       return {
         list,
-        from: CodeMirror.Pos(cursor.line, start),
+        from: CodeMirror.Pos(cursor.line, Math.max(0, start)),
         to: cursor
       };
+    }
+
+    function showCompletions(cm, manual = false) {
+      cm.showHint({
+        hint: editor => pocketHint(editor, manual),
+        completeSingle: false,
+        alignWithWord: true,
+        closeOnUnfocus: true
+      });
+    }
+
+    function goToDefinition(cm) {
+      const cursor = cm.getCursor();
+      const token = cm.getTokenAt(cursor);
+      const tokenMatch = /([A-Za-z_][A-Za-z0-9_]*)/.exec(token.string);
+      if (!tokenMatch) return;
+      const name = tokenMatch[1];
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const patterns = currentMode === "shell"
+        ? [new RegExp(`^\\s*(?:function\\s+)?${escaped}\\s*\\(\\)`)]
+        : currentMode === "python"
+          ? [new RegExp(`^\\s*(?:def|class)\\s+${escaped}\\b`)]
+          : [new RegExp(`\\b(?:function|class|const|let|var|fun)\\s+${escaped}\\b`)];
+      const lines = cm.getValue().split("\n");
+      for (let line = 0; line < lines.length; line++) {
+        if (line === cursor.line) continue;
+        if (patterns.some(pattern => pattern.test(lines[line]))) {
+          const ch = Math.max(0, lines[line].indexOf(name));
+          const target = CodeMirror.Pos(line, ch);
+          cm.setCursor(target);
+          cm.scrollIntoView(target, 120);
+          cm.focus();
+          return;
+        }
+      }
     }
 
     editor.on("change", () => {
@@ -513,12 +973,14 @@
       const before = cm.getRange({line: cursor.line, ch: 0}, cursor);
       const match = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
       const word = match ? match[1] : "";
-      if (word.length >= 2 && word !== lastHintWord) {
-        lastHintWord = word;
+      const trigger = /(?:\$|\.[A-Za-z0-9_]*)$/.test(before) ||
+        (change.text || []).join("").match(/[\$.]/);
+      if ((word.length >= 1 || trigger) && word !== lastHintWord) {
+        lastHintWord = word || (change.text || []).join("");
         clearTimeout(window.hintTimer);
         window.hintTimer = setTimeout(() => {
-          cm.showHint({hint: pocketHint, completeSingle: false});
-        }, 90);
+          showCompletions(cm, false);
+        }, 80);
       }
     });
 
@@ -549,10 +1011,33 @@
         editor.focus();
       },
       showCompletions() {
-        editor.showHint({hint: pocketHint, completeSingle: false});
+        editor.focus();
+        setTimeout(() => showCompletions(editor, true), 80);
       },
       openSearch() {
         openSearch();
+      },
+      goTo(line, column) {
+        const target = CodeMirror.Pos(
+          Math.max(0, Number(line) - 1),
+          Math.max(0, Number(column) - 1)
+        );
+        editor.setCursor(target);
+        editor.scrollIntoView(target, 80);
+        editor.focus();
+      },
+      applyFix(line, column, replacement) {
+        const from = CodeMirror.Pos(
+          Math.max(0, Number(line) - 1),
+          Math.max(0, Number(column) - 1)
+        );
+        const to = CodeMirror.Pos(from.line, from.ch + 1);
+        editor.replaceRange(String(replacement), from, to, "+quickfix");
+        editor.setCursor(CodeMirror.Pos(from.line, from.ch + String(replacement).length));
+        editor.focus();
+      },
+      goToDefinition() {
+        goToDefinition(editor);
       },
       setDiagnostics(diagnostics) {
         serverDiagnostics = (Array.isArray(diagnostics) ? diagnostics : []).map(item => {
@@ -563,7 +1048,8 @@
             from: CodeMirror.Pos(line, ch),
             to: CodeMirror.Pos(line, ch + 1),
             severity: item.severity || "error",
-            message: item.message || "语法错误"
+            message: item.message || "语法错误",
+            replacement: item.replacement || null
           };
         });
         editor.performLint();

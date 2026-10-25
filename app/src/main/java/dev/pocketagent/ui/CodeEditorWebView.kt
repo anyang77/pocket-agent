@@ -27,6 +27,7 @@ data class EditorDiagnostic(
     val line: Int,
     val column: Int,
     val message: String,
+    val replacement: String? = null,
 )
 
 object EditorDiagnosticParser {
@@ -170,6 +171,24 @@ class CodeEditorController internal constructor(
         webView.evaluateJavascript("PocketEditor.openSearch();", null)
     }
 
+    fun goTo(line: Int, column: Int) {
+        webView.evaluateJavascript(
+            "PocketEditor.goTo(${line.coerceAtLeast(1)}, ${column.coerceAtLeast(1)});",
+            null,
+        )
+    }
+
+    fun applyFix(line: Int, column: Int, replacement: String) {
+        webView.evaluateJavascript(
+            "PocketEditor.applyFix(" +
+                "${line.coerceAtLeast(1)}, " +
+                "${column.coerceAtLeast(1)}, " +
+                "${JSONObject.quote(replacement)}" +
+                ");",
+            null,
+        )
+    }
+
     fun getContent(onResult: (String) -> Unit) {
         webView.evaluateJavascript(
             "PocketEditor.flush(); PocketEditor.getValue();",
@@ -224,6 +243,7 @@ fun CodeEditorWebView(
                         put("line", diagnostic.line.coerceAtLeast(1) - 1)
                         put("ch", diagnostic.column.coerceAtLeast(1) - 1)
                         put("message", diagnostic.message)
+                        diagnostic.replacement?.let { put("replacement", it) }
                         put("severity", "error")
                     },
                 )

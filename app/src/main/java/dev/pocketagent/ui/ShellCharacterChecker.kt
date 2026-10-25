@@ -126,6 +126,7 @@ object ShellCharacterChecker {
                         line,
                         column,
                         "无效的全角标点“$character”，这里应使用英文 $recommendation",
+                        recommendation.toString(),
                     )
                 }
             }
@@ -171,6 +172,15 @@ object ShellCharacterChecker {
             codePoint in 0x202A..0x202E ||
             codePoint in 0x2066..0x2069
 
-    private fun diagnostic(line: Int, column: Int, message: String) =
-        EditorDiagnostic(line = line, column = column, message = message)
+    private fun diagnostic(
+        line: Int,
+        column: Int,
+        message: String,
+        replacement: String? = null,
+    ) = EditorDiagnostic(
+        line = line,
+        column = column,
+        message = message,
+        replacement = replacement,
+    )
 }
