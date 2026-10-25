@@ -214,6 +214,9 @@ class AgentEngine(
                         retryCount = lastRetryCount,
                     ),
                 )
+                turn.reasoningContent
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { onEvent(AgentEvent.ReasoningCompleted(it)) }
                 auditLog.append(
                     "model",
                     "模型响应",

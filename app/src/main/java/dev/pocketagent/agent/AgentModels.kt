@@ -178,6 +178,7 @@ sealed interface AgentEvent {
     data class StreamOutputReset(val contentChars: Int) : AgentEvent
     data class AssistantDelta(val text: String) : AgentEvent
     data class ModelReasoningProgress(val chars: Int) : AgentEvent
+    data class ReasoningCompleted(val text: String) : AgentEvent
     data class PlanUpdated(val steps: List<AgentPlanStep>) : AgentEvent
     data class ToolStarted(val name: String, val summary: String) : AgentEvent
     data class ToolFinished(val name: String, val summary: String, val success: Boolean) : AgentEvent

@@ -1,5 +1,7 @@
 package dev.pocketagent.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -45,6 +47,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.AddComment
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material3.AlertDialog
@@ -84,6 +87,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -100,7 +104,9 @@ import dev.pocketagent.agent.ToolActivity
 import dev.pocketagent.agent.ModelContextBudget
 import dev.pocketagent.agent.AgentPlanStatus
 import dev.pocketagent.agent.AgentPlanStep
+import dev.pocketagent.data.AgentGoal
 import dev.pocketagent.data.ConversationSummary
+import dev.pocketagent.data.GoalPhase
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -124,6 +130,9 @@ fun AgentScreen(
     onDeleteConversation: (Long) -> Unit,
     onApprovePending: () -> Unit,
     onDenyPending: () -> Unit,
+    onPauseGoal: () -> Unit,
+    onResumeGoal: () -> Unit,
+    onClearGoal: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var input by rememberSaveable { mutableStateOf("") }
@@ -540,6 +549,44 @@ fun AgentScreen(
             }
         }
 
+        if (state.queuedPrompts.isNotEmpty()) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    "等待当前任务结束 · ${state.queuedPrompts.size}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                state.queuedPrompts.take(3).forEachIndexed { index, prompt ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(9.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                    ) {
+                        Text(
+                            "${index + 1}. $prompt",
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+
+        state.agentGoal?.let { goal ->
+            GoalDockBar(
+                goal = goal,
+                onPause = onPauseGoal,
+                onResume = onResumeGoal,
+                onClear = onClearGoal,
+            )
+        }
+
         val flowTransition = rememberInfiniteTransition(label = "agent-input-flow")
         val flowProgress by flowTransition.animateFloat(
             initialValue = 0f,
@@ -587,7 +634,7 @@ fun AgentScreen(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(
                     onSend = {
-                        if (input.isNotBlank() && !state.agentRunning) {
+                        if (input.isNotBlank()) {
                             onSend(input)
                             input = ""
                         }
@@ -847,24 +894,31 @@ private fun ChatBubble(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
         ) {
-            Surface(
-                modifier = Modifier.widthIn(max = 520.dp),
-                shape = RoundedCornerShape(
-                    topStart = 20.dp,
-                    topEnd = 6.dp,
-                    bottomStart = 20.dp,
-                    bottomEnd = 20.dp,
-                ),
-                color = MaterialTheme.colorScheme.primaryContainer,
-            ) {
-                SelectionContainer {
-                    Text(
-                        text = entry.content,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                        style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
+            Column(horizontalAlignment = Alignment.End) {
+                Surface(
+                    modifier = Modifier.widthIn(max = 520.dp),
+                    shape = RoundedCornerShape(
+                        topStart = 20.dp,
+                        topEnd = 6.dp,
+                        bottomStart = 20.dp,
+                        bottomEnd = 20.dp,
+                    ),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                ) {
+                    SelectionContainer {
+                        Text(
+                            text = entry.content,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
                 }
+                MessageActions(
+                    text = entry.content,
+                    timestamp = entry.timestamp,
+                    alignEnd = true,
+                )
             }
         }
         return
@@ -908,15 +962,16 @@ private fun ChatBubble(
                 )
             }
 
-            entry.goal?.let { goal ->
-                GoalCard(
-                    goal = goal,
-                    phase = entry.phase,
-                )
-            }
-
             if (entry.plan.isNotEmpty()) {
                 PlanCard(entry.plan)
+            }
+
+            if (entry.reasoning.isNotBlank()) {
+                AssistantReasoningRow(
+                    entryId = entry.id,
+                    text = entry.reasoning,
+                    running = entry.pending,
+                )
             }
 
             AgentTimeline(
@@ -925,6 +980,13 @@ private fun ChatBubble(
                 liveStartedAt = liveStartedAt,
                 liveRetry = liveRetry,
             )
+
+            if (entry.content.isNotBlank() && !entry.pending) {
+                MessageActions(
+                    text = entry.content,
+                    timestamp = entry.timestamp,
+                )
+            }
 
             entry.error?.let { message ->
                 AgentErrorCard(
@@ -938,64 +1000,170 @@ private fun ChatBubble(
 }
 
 @Composable
-private fun GoalCard(
-    goal: String,
-    phase: AgentTurnPhase,
+private fun MessageActions(
+    text: String,
+    timestamp: Long,
+    alignEnd: Boolean = false,
 ) {
-    Surface(
+    val context = LocalContext.current
+    var copied by rememberSaveable(text) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_200)
+            copied = false
+        }
+    }
+    val clock = remember(timestamp) {
+        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
+    }
+    Row(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (alignEnd) Spacer(Modifier.weight(1f))
+        TextButton(
+            onClick = {
+                context.getSystemService(ClipboardManager::class.java)
+                    .setPrimaryClip(ClipData.newPlainText("消息", text))
+                copied = true
+            },
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+        ) {
+            Icon(
+                Icons.Outlined.ContentCopy,
+                contentDescription = null,
+                modifier = Modifier.size(13.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                if (copied) "已复制" else "复制",
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        if (!alignEnd) Spacer(Modifier.weight(1f))
+        Text(
+            clock,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun AssistantReasoningRow(
+    entryId: Long,
+    text: String,
+    running: Boolean,
+) {
+    var expanded by rememberSaveable(entryId) { mutableStateOf(false) }
+    val summary = remember(text) {
+        text.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(140)
+    }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded },
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "目标",
+                    if (running) "思考中" else "思考过程",
                     modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.labelMedium.copy(
+                    style = MaterialTheme.typography.labelSmall.copy(
                         fontWeight = FontWeight.SemiBold,
                     ),
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(
-                    agentPhaseLabel(phase),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = agentPhaseColor(phase),
+                Icon(
+                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (expanded) "收起思考" else "展开思考",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text(
-                goal,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
-            )
+            if (expanded) {
+                MarkdownContent(text)
+            } else if (summary.isNotBlank()) {
+                Text(
+                    summary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
 
-private fun agentPhaseLabel(phase: AgentTurnPhase): String = when (phase) {
-    AgentTurnPhase.IDLE -> "待开始"
-    AgentTurnPhase.THINKING -> "思考中"
-    AgentTurnPhase.RECEIVING -> "输出中"
-    AgentTurnPhase.TOOL_RUNNING -> "执行工具"
-    AgentTurnPhase.WAITING_APPROVAL -> "等待确认"
-    AgentTurnPhase.RETRYING -> "重试中"
-    AgentTurnPhase.COMPACTING -> "整理上下文"
-    AgentTurnPhase.COMPLETED -> "已完成"
-    AgentTurnPhase.FAILED -> "受阻"
-    AgentTurnPhase.STOPPED -> "已停止"
-}
-
 @Composable
-private fun agentPhaseColor(phase: AgentTurnPhase): Color = when (phase) {
-    AgentTurnPhase.FAILED -> MaterialTheme.colorScheme.error
-    AgentTurnPhase.COMPLETED, AgentTurnPhase.STOPPED ->
-        MaterialTheme.colorScheme.onSurfaceVariant
-    else -> MaterialTheme.colorScheme.tertiary
+private fun GoalDockBar(
+    goal: AgentGoal,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onClear: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 6.dp),
+        shape = RoundedCornerShape(11.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 11.dp, end = 5.dp, top = 3.dp, bottom = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Text(
+                "◎",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+            Text(
+                when (goal.phase) {
+                    GoalPhase.ACTIVE -> "进行中"
+                    GoalPhase.PAUSED -> "已暂停"
+                    GoalPhase.BLOCKED -> "受阻"
+                },
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = if (goal.phase == GoalPhase.BLOCKED) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+            )
+            Text(
+                goal.objective,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            when (goal.phase) {
+                GoalPhase.ACTIVE -> TextButton(
+                    onClick = onPause,
+                    contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
+                ) { Text("暂停", style = MaterialTheme.typography.labelSmall) }
+                GoalPhase.PAUSED, GoalPhase.BLOCKED -> TextButton(
+                    onClick = onResume,
+                    contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
+                ) { Text("继续", style = MaterialTheme.typography.labelSmall) }
+            }
+            TextButton(
+                onClick = onClear,
+                contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
+            ) { Text("清除", style = MaterialTheme.typography.labelSmall) }
+        }
+    }
 }
 
 @Composable

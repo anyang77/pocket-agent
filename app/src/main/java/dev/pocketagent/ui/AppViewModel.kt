@@ -23,6 +23,7 @@ import dev.pocketagent.agent.PermissionRequest
 import dev.pocketagent.agent.TokenUsage
 import dev.pocketagent.agent.ToolActivity
 import dev.pocketagent.data.AiSettings
+import dev.pocketagent.data.AgentGoal
 import dev.pocketagent.data.AuditLog
 import dev.pocketagent.data.ConversationStore
 import dev.pocketagent.data.ConversationSummary
@@ -34,6 +35,8 @@ import dev.pocketagent.data.GitHubOAuthConfigStore
 import dev.pocketagent.data.GitHubRepository
 import dev.pocketagent.data.GitOperationResult
 import dev.pocketagent.data.GitRepository
+import dev.pocketagent.data.GoalPhase
+import dev.pocketagent.data.GoalRepository
 import dev.pocketagent.data.ModelProfile
 import dev.pocketagent.data.ManagedRepositoryStore
 import dev.pocketagent.data.OnboardingRepository
@@ -107,6 +110,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val conversationStore = ConversationStore(application)
     private val currentConversationRepository = CurrentConversationRepository(application)
     private val onboardingRepository = OnboardingRepository(application)
+    private val goalRepository = GoalRepository(application)
     private val aiClient = AiClient()
     private val agentEngine = AgentEngine(
         workspace = workspace,
@@ -139,6 +143,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             activeGitAccountId = gitRepository.activeGithubAccount()?.id,
             githubOAuthClientConfigured = githubOAuthClientId().isNotBlank(),
             managedRepositories = managedRepositoryStore.load(),
+            agentGoal = goalRepository.load(),
             chat = emptyList(),
         ),
     )
@@ -322,6 +327,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             AgentTurnPhase.IDLE
                         }
                     },
+                reasoning = message.reasoning,
             )
         }
         val history = chat.mapNotNull { message ->
@@ -425,6 +431,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         retryCount = retryCount,
         goal = goal,
         phase = phase.name,
+        reasoning = reasoning,
     )
 
     private data class LoadedState(
@@ -2118,11 +2125,66 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         appendTerminal("\n[已请求停止]\n")
     }
 
+    fun pauseGoal() {
+        val current = _state.value.agentGoal ?: return
+        val updated = current.copy(phase = GoalPhase.PAUSED)
+        goalRepository.save(updated)
+        _state.update { it.copy(agentGoal = updated, notice = "目标已暂停") }
+        auditLog.append("goal", "暂停目标", updated.objective)
+    }
+
+    fun resumeGoal() {
+        val current = _state.value.agentGoal ?: return
+        val updated = current.copy(phase = GoalPhase.ACTIVE)
+        goalRepository.save(updated)
+        _state.update { it.copy(agentGoal = updated, notice = "目标已继续") }
+        auditLog.append("goal", "继续目标", updated.objective)
+        if (!_state.value.agentRunning) sendChat(updated.objective)
+    }
+
+    fun clearGoal() {
+        val current = _state.value.agentGoal ?: return
+        goalRepository.save(null)
+        _state.update { it.copy(agentGoal = null, notice = "目标已清除") }
+        auditLog.append("goal", "清除目标", current.objective)
+    }
+
+    private fun handleGoalCommand(prompt: String): Boolean {
+        if (!prompt.startsWith("/goal")) return false
+        val argument = prompt.removePrefix("/goal").trim()
+        when (argument.lowercase()) {
+            "" -> _state.update {
+                it.copy(notice = "用法：/goal <目标>，或 /goal pause、resume、clear")
+            }
+            "pause" -> pauseGoal()
+            "resume" -> resumeGoal()
+            "clear" -> clearGoal()
+            else -> {
+                val goal = AgentGoal(argument, GoalPhase.ACTIVE)
+                goalRepository.save(goal)
+                _state.update { it.copy(agentGoal = goal) }
+                auditLog.append("goal", "创建目标", argument)
+                if (!_state.value.agentRunning) sendChat(argument)
+            }
+        }
+        return true
+    }
+
     fun sendChat(text: String) {
         val prompt = text.trim()
-        if (prompt.isBlank() || _state.value.agentRunning) return
+        if (handleGoalCommand(prompt)) return
+        if (prompt.isBlank()) return
         if (_state.value.settings.apiKey.isBlank()) {
             _state.update { it.copy(notice = "请先在设置里填写 API Key") }
+            return
+        }
+        if (_state.value.agentRunning) {
+            _state.update {
+                it.copy(
+                    queuedPrompts = it.queuedPrompts + prompt,
+                    notice = "已加入下一轮队列",
+                )
+            }
             return
         }
 
@@ -2259,6 +2321,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             _state.update {
                                 it.copy(agentStatus = summary)
                             }
+                        }
+                        is AgentEvent.ReasoningCompleted -> {
+                            appendReasoning(assistantId, event.text)
                         }
                         is AgentEvent.PlanUpdated -> updatePlan(assistantId, event.steps)
                         is AgentEvent.ContextCompactionStarted -> {
@@ -2467,7 +2532,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 persistCurrentConversation()
                 refreshGit()
-                AgentForegroundService.stop(appContext)
+                val nextPrompt = _state.value.queuedPrompts.firstOrNull()
+                if (nextPrompt == null) {
+                    AgentForegroundService.stop(appContext)
+                } else {
+                    _state.update {
+                        it.copy(queuedPrompts = it.queuedPrompts.drop(1))
+                    }
+                    sendChat(nextPrompt)
+                }
             }
         }
     }
@@ -2475,7 +2548,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun stopAgent() {
         if (!_state.value.agentRunning) return
         auditLog.append("agent", "请求停止任务", "用户点击停止")
-        _state.update { it.copy(agentStatus = "正在停止任务…") }
+        _state.update {
+            it.copy(
+                agentStatus = "正在停止任务…",
+                queuedPrompts = emptyList(),
+            )
+        }
         pendingApprovalDeferred?.complete(false)
         pendingApprovalDeferred = null
         aiClient.cancel()
@@ -2521,6 +2599,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 chat = current.chat.map { entry ->
                     if (entry.id == id) {
                         entry.copy(content = entry.content + text)
+                    } else {
+                        entry
+                    }
+                },
+            )
+        }
+    }
+
+    private fun appendReasoning(id: Long, text: String) {
+        if (text.isBlank()) return
+        _state.update { current ->
+            current.copy(
+                chat = current.chat.map { entry ->
+                    if (entry.id == id) {
+                        val separator = if (entry.reasoning.isBlank()) "" else "\n\n"
+                        entry.copy(reasoning = entry.reasoning + separator + text.trim())
                     } else {
                         entry
                     }

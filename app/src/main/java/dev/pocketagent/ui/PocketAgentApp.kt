@@ -323,6 +323,9 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onDeleteConversation = viewModel::deleteConversation,
                 onApprovePending = viewModel::approvePending,
                 onDenyPending = viewModel::denyPending,
+                onPauseGoal = viewModel::pauseGoal,
+                onResumeGoal = viewModel::resumeGoal,
+                onClearGoal = viewModel::clearGoal,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),

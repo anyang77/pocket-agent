@@ -1,6 +1,7 @@
 package dev.pocketagent.ui
 
 import dev.pocketagent.data.AiSettings
+import dev.pocketagent.data.AgentGoal
 import dev.pocketagent.agent.AgentPermissions
 import dev.pocketagent.agent.AgentPlanStep
 import dev.pocketagent.data.AuditEntry
@@ -59,6 +60,7 @@ data class ChatEntry(
     val retryCount: Int = 0,
     val goal: String? = null,
     val phase: AgentTurnPhase = AgentTurnPhase.IDLE,
+    val reasoning: String = "",
 )
 
 data class AgentRetryState(
@@ -122,6 +124,8 @@ data class AppUiState(
     val agentStatus: String? = null,
     val agentRequestStartedAt: Long? = null,
     val agentRetry: AgentRetryState? = null,
+    val agentGoal: AgentGoal? = null,
+    val queuedPrompts: List<String> = emptyList(),
     val agentCompacting: Boolean = false,
     val agentCompactionStartedAt: Long? = null,
     val agentCompactionBeforeTokens: Int = 0,
