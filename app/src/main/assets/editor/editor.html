@@ -475,6 +475,9 @@
         "Cmd-Space": cm => showCompletions(cm, true),
         "Ctrl-F": () => openSearch(),
         "Cmd-F": () => openSearch(),
+        "Ctrl-Shift-Z": cm => cm.redo(),
+        "Cmd-Shift-Z": cm => cm.redo(),
+        "Ctrl-Y": cm => cm.redo(),
         "F12": cm => goToDefinition(cm)
       }
     });
@@ -647,6 +650,13 @@
 
     function bridge() {
       return window.PocketEditorBridge || null;
+    }
+
+    function publishHistoryState() {
+      const api = bridge();
+      if (!api || !api.onHistoryChanged) return;
+      const size = editor.historySize();
+      api.onHistoryChanged(size.undo > 0, size.redo > 0);
     }
 
     function currentDiagnostics() {
@@ -965,7 +975,12 @@
       if (findPanel.classList.contains("visible")) {
         setTimeout(() => updateFindStatus(), 0);
       }
-      if (!cm.state.completionActive) {
+      publishHistoryState();
+      if (
+        !cm.state.completionActive &&
+        change.origin !== "undo" &&
+        change.origin !== "redo"
+      ) {
         const inserted = (change.text || []).join("\n");
         if (inserted && /[A-Za-z0-9_$\.]$/.test(inserted)) {
           clearTimeout(completionTimer);
@@ -995,6 +1010,8 @@
         editor.setCursor(Math.min(cursor.line, Math.max(0, editor.lineCount() - 1)), 0);
         currentDirty = false;
         suppressEvents = false;
+        if (editor.clearHistory) editor.clearHistory();
+        publishHistoryState();
         editor.performLint();
         setTimeout(() => editor.refresh(), 0);
         if (findPanel.classList.contains("visible")) {
@@ -1016,6 +1033,16 @@
       showCompletions() {
         editor.focus();
         setTimeout(() => showCompletions(editor, true), 80);
+      },
+      undo() {
+        editor.undo();
+        publishHistoryState();
+        editor.focus();
+      },
+      redo() {
+        editor.redo();
+        publishHistoryState();
+        editor.focus();
       },
       openSearch() {
         openSearch();

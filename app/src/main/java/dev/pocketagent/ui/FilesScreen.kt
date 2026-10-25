@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,6 +17,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Add
@@ -23,6 +26,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.InsertDriveFile
+import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -524,6 +528,8 @@ private fun Editor(
     var localDirty by remember(path) { mutableStateOf(dirty) }
     var cursorLine by remember(path) { mutableStateOf(1) }
     var cursorColumn by remember(path) { mutableStateOf(1) }
+    var canUndo by remember(path) { mutableStateOf(false) }
+    var canRedo by remember(path) { mutableStateOf(false) }
     var controller by remember(path) { mutableStateOf<CodeEditorController?>(null) }
     var showProblems by rememberSaveable(path) { mutableStateOf(false) }
     LaunchedEffect(dirty) {
@@ -581,35 +587,79 @@ private fun Editor(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "${language.label} · Ln $cursorLine, Col $cursorColumn",
+                    "${language.label} · $cursorLine:$cursorColumn",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(onClick = { controller?.openSearch() }) {
-                Icon(Icons.Outlined.Search, contentDescription = "搜索和替换")
+            IconButton(
+                onClick = { controller?.openSearch() },
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Search,
+                    contentDescription = "搜索和替换",
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            IconButton(
+                onClick = { controller?.undo() },
+                modifier = Modifier.size(36.dp),
+                enabled = canUndo && controller != null,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Undo,
+                    contentDescription = "撤回",
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            IconButton(
+                onClick = { controller?.redo() },
+                modifier = Modifier.size(36.dp),
+                enabled = canRedo && controller != null,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Redo,
+                    contentDescription = "前进",
+                    modifier = Modifier.size(20.dp),
+                )
             }
             IconButton(
                 onClick = { controller?.showCompletions() },
+                modifier = Modifier.size(36.dp),
                 enabled = controller != null,
             ) {
-                Icon(Icons.Outlined.AutoAwesome, contentDescription = "代码补全")
+                Icon(
+                    Icons.Outlined.AutoAwesome,
+                    contentDescription = "代码补全",
+                    modifier = Modifier.size(20.dp),
+                )
             }
             IconButton(
                 onClick = {
                     controller?.getContent { latest -> onRun(latest) }
                 },
+                modifier = Modifier.size(36.dp),
                 enabled = canRun && controller != null,
             ) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = "运行脚本")
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = "运行脚本",
+                    modifier = Modifier.size(22.dp),
+                )
             }
-            TextButton(
+            IconButton(
                 onClick = {
                     controller?.getContent { latest -> onSave(latest) }
                 },
+                modifier = Modifier.size(36.dp),
                 enabled = localDirty && controller != null,
             ) {
-                Text("保存")
+                Icon(
+                    Icons.Outlined.Save,
+                    contentDescription = "保存",
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
         diagnostics.firstOrNull()?.let { diagnostic ->
@@ -668,6 +718,10 @@ private fun Editor(
             onCursorChanged = { line, column ->
                 cursorLine = line
                 cursorColumn = column
+            },
+            onHistoryStateChanged = { undo, redo ->
+                canUndo = undo
+                canRedo = redo
             },
             onControllerReady = { controller = it },
             modifier = Modifier

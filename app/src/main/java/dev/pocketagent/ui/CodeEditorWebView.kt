@@ -171,6 +171,14 @@ class CodeEditorController internal constructor(
         webView.evaluateJavascript("PocketEditor.openSearch();", null)
     }
 
+    fun undo() {
+        webView.evaluateJavascript("PocketEditor.undo();", null)
+    }
+
+    fun redo() {
+        webView.evaluateJavascript("PocketEditor.redo();", null)
+    }
+
     fun goTo(line: Int, column: Int) {
         webView.evaluateJavascript(
             "PocketEditor.goTo(${line.coerceAtLeast(1)}, ${column.coerceAtLeast(1)});",
@@ -211,12 +219,14 @@ fun CodeEditorWebView(
     onContentChanged: (String) -> Unit,
     onDirtyChanged: (Boolean) -> Unit,
     onCursorChanged: (Int, Int) -> Unit,
+    onHistoryStateChanged: (Boolean, Boolean) -> Unit,
     onControllerReady: (CodeEditorController) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val currentContentChanged by rememberUpdatedState(onContentChanged)
     val currentDirtyChanged by rememberUpdatedState(onDirtyChanged)
     val currentCursorChanged by rememberUpdatedState(onCursorChanged)
+    val currentHistoryStateChanged by rememberUpdatedState(onHistoryStateChanged)
     val currentControllerReady by rememberUpdatedState(onControllerReady)
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val context = LocalContext.current
@@ -286,6 +296,13 @@ fun CodeEditorWebView(
             @JavascriptInterface
             fun onCursorChanged(line: Int, column: Int) {
                 mainHandler.post { currentCursorChanged(line, column) }
+            }
+
+            @JavascriptInterface
+            fun onHistoryChanged(canUndo: Boolean, canRedo: Boolean) {
+                mainHandler.post {
+                    currentHistoryStateChanged(canUndo, canRedo)
+                }
             }
         }
     }
