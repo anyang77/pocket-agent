@@ -9,6 +9,7 @@ import android.os.Environment
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.pocketagent.BuildConfig
 import dev.pocketagent.agent.AgentEngine
 import dev.pocketagent.agent.AgentEvent
 import dev.pocketagent.agent.AgentPermissions
@@ -27,6 +28,9 @@ import dev.pocketagent.data.ConversationStore
 import dev.pocketagent.data.ConversationSummary
 import dev.pocketagent.data.CurrentConversationRepository
 import dev.pocketagent.data.GitChange
+import dev.pocketagent.data.GitHubDeviceAuthClient
+import dev.pocketagent.data.GitHubDevicePollResult
+import dev.pocketagent.data.GitHubOAuthConfigStore
 import dev.pocketagent.data.GitOperationResult
 import dev.pocketagent.data.GitRepository
 import dev.pocketagent.data.ModelProfile
@@ -43,6 +47,7 @@ import dev.pocketagent.runtime.RuntimeCapabilities
 import dev.pocketagent.runtime.SystemAccessRepository
 import dev.pocketagent.runtime.TermuxRuntime
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -94,6 +99,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         internalRuntime.home,
     )
     private val managedRepositoryStore = ManagedRepositoryStore(application)
+    private val githubOAuthConfigStore = GitHubOAuthConfigStore(application)
     private val settingsRepository = SettingsRepository(application)
     private val permissionSettingsRepository = PermissionSettingsRepository(application)
     private val conversationStore = ConversationStore(application)
@@ -111,6 +117,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var pendingApprovalDeferred: CompletableDeferred<Boolean>? = null
     private var agentJob: Job? = null
     private var editorLintJob: Job? = null
+    private var githubLoginJob: Job? = null
+    private val githubAuthClient = GitHubDeviceAuthClient()
     private val nextId = AtomicLong(1)
     private val nextConversationId = AtomicLong(1)
     private val conversationCache = linkedMapOf<Long, StoredConversation>()
@@ -126,6 +134,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             notificationPermissionGranted = hasNotificationPermission(),
             gitAccounts = gitRepository.accounts(),
             activeGitAccountId = gitRepository.activeGithubAccount()?.id,
+            githubOAuthClientConfigured = githubOAuthClientId().isNotBlank(),
             sshAccounts = gitRepository.sshAccounts(),
             managedRepositories = managedRepositoryStore.load(),
             chat = emptyList(),
@@ -1284,6 +1293,165 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         gitRepository.removeAccount(accountId)
         refreshGitAccounts()
     }
+
+    fun startGitHubLogin() {
+        if (_state.value.githubLoginRunning) return
+        val clientId = githubOAuthClientId()
+        if (clientId.isBlank()) {
+            _state.update {
+                it.copy(
+                    githubLoginError = "GitHub OAuth 尚未配置 Client ID",
+                    notice = "需要在构建时配置 POCKET_GITHUB_CLIENT_ID",
+                )
+            }
+            return
+        }
+        githubLoginJob?.cancel()
+        githubAuthClient.cancel()
+        _state.update {
+            it.copy(
+                githubLoginRunning = true,
+                githubLoginError = null,
+                githubLogin = GitHubLoginState(),
+            )
+        }
+        auditLog.append("git", "GitHub 登录", "通过 OAuth Device Flow 开始授权")
+        githubLoginJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val grant = githubAuthClient.requestDeviceGrant(clientId)
+                val expiresAt = System.currentTimeMillis() + grant.expiresInSeconds * 1_000L
+                var intervalMs = grant.intervalSeconds * 1_000L
+                _state.update {
+                    it.copy(
+                        githubLogin = GitHubLoginState(
+                            userCode = grant.userCode,
+                            verificationUri = grant.verificationUri,
+                            status = "等待浏览器确认授权",
+                            expiresAt = expiresAt,
+                        ),
+                    )
+                }
+                auditLog.append("git", "GitHub 登录等待授权", "code=${grant.userCode}")
+                while (System.currentTimeMillis() < expiresAt) {
+                    delay(intervalMs)
+                    if (System.currentTimeMillis() >= expiresAt) break
+                    when (val result = githubAuthClient.poll(clientId, grant.deviceCode)) {
+                        GitHubDevicePollResult.Pending -> {
+                            val remaining = (
+                                (expiresAt - System.currentTimeMillis()) / 1_000
+                                ).coerceAtLeast(0)
+                            _state.update {
+                                it.copy(
+                                    githubLogin = it.githubLogin?.copy(
+                                        status = "等待确认 · 剩余 ${remaining}s",
+                                    ),
+                                )
+                            }
+                        }
+                        GitHubDevicePollResult.SlowDown -> {
+                            intervalMs = (intervalMs + 5_000).coerceAtMost(30_000)
+                            _state.update {
+                                it.copy(
+                                    githubLogin = it.githubLogin?.copy(
+                                        status = "GitHub 要求降低轮询频率，继续等待…",
+                                    ),
+                                )
+                            }
+                        }
+                        GitHubDevicePollResult.Expired -> {
+                            throw IllegalStateException("GitHub 授权码已过期，请重新登录")
+                        }
+                        GitHubDevicePollResult.Denied -> {
+                            throw IllegalStateException("GitHub 授权已被拒绝")
+                        }
+                        is GitHubDevicePollResult.Authorized -> {
+                            _state.update {
+                                it.copy(
+                                    githubLogin = it.githubLogin?.copy(
+                                        status = "授权成功，正在读取账号…",
+                                    ),
+                                )
+                            }
+                            val user = githubAuthClient.currentUser(result.accessToken)
+                            val account = gitRepository.saveGithubOAuthAccount(
+                                accessToken = result.accessToken,
+                                login = user.login,
+                                displayName = user.name,
+                            ) ?: throw IllegalStateException("无法保存 GitHub 凭据")
+                            refreshGitAccounts()
+                            _state.update {
+                                it.copy(
+                                    githubLogin = null,
+                                    githubLoginRunning = false,
+                                    githubLoginError = null,
+                                    notice = "已登录 GitHub：${account.label}",
+                                )
+                            }
+                            auditLog.append(
+                                "git",
+                                "GitHub 登录成功",
+                                "account=${user.login}",
+                                "success",
+                            )
+                            return@launch
+                        }
+                    }
+                }
+                throw IllegalStateException("GitHub 授权码已过期，请重新登录")
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (githubLoginJob == null) return@launch
+                _state.update {
+                    it.copy(
+                        githubLogin = null,
+                        githubLoginRunning = false,
+                        githubLoginError = error.message ?: "GitHub 登录失败",
+                    )
+                }
+                auditLog.append(
+                    "git",
+                    "GitHub 登录失败",
+                    error.message ?: error.javaClass.simpleName,
+                    "failed",
+                )
+            } finally {
+                githubLoginJob = null
+            }
+        }
+    }
+
+    fun cancelGitHubLogin() {
+        githubAuthClient.cancel()
+        githubLoginJob?.cancel()
+        githubLoginJob = null
+        _state.update {
+            it.copy(
+                githubLogin = null,
+                githubLoginRunning = false,
+                githubLoginError = null,
+            )
+        }
+        auditLog.append("git", "GitHub 登录取消", "用户关闭设备授权窗口")
+    }
+
+    fun saveGitHubOAuthClientId(clientId: String) {
+        val normalized = clientId.trim()
+        if (normalized.isBlank()) return
+        githubOAuthConfigStore.saveClientId(normalized)
+        _state.update {
+            it.copy(
+                githubOAuthClientConfigured = githubOAuthClientId().isNotBlank(),
+                githubLoginError = null,
+                notice = "GitHub OAuth Client ID 已保存",
+            )
+        }
+    }
+
+    private fun githubOAuthClientId(): String =
+        BuildConfig.GITHUB_OAUTH_CLIENT_ID.trim().ifBlank {
+            githubOAuthConfigStore.clientId()
+        }
 
     fun generateSshAccount(label: String) {
         if (_state.value.sshKeyGenerating) return

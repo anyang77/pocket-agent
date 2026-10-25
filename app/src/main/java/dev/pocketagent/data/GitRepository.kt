@@ -222,6 +222,16 @@ class GitRepository(
         credentials.removeAccount(id)
     }
 
+    fun saveGithubOAuthAccount(
+        accessToken: String,
+        login: String,
+        displayName: String,
+    ): GitAccount? = credentials.saveGithubAccount(
+        token = accessToken,
+        login = login,
+        displayName = displayName,
+    )
+
     fun sshAccounts(): List<SshAccount> = sshAccounts.accounts()
 
     suspend fun generateSshAccount(

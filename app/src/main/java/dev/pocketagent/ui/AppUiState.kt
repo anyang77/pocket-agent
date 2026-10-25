@@ -51,6 +51,13 @@ data class PendingApproval(
     val risk: String,
 )
 
+data class GitHubLoginState(
+    val userCode: String = "",
+    val verificationUri: String = "https://github.com/login/device",
+    val status: String = "正在连接 GitHub",
+    val expiresAt: Long? = null,
+)
+
 data class AppUiState(
     val tab: AppTab = AppTab.AGENT,
     val onboardingCompleted: Boolean = false,
@@ -78,6 +85,10 @@ data class AppUiState(
     val gitCommitDetailLoading: Boolean = false,
     val gitAccounts: List<GitAccount> = emptyList(),
     val activeGitAccountId: String? = null,
+    val githubLogin: GitHubLoginState? = null,
+    val githubLoginRunning: Boolean = false,
+    val githubLoginError: String? = null,
+    val githubOAuthClientConfigured: Boolean = false,
     val sshAccounts: List<SshAccount> = emptyList(),
     val sshKeyGenerating: Boolean = false,
     val managedRepositories: List<ManagedRepository> = emptyList(),

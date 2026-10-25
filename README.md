@@ -37,6 +37,7 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 - 首次引导和设置页可配置 128K、200K、256K、512K 或 1M 上下文窗口
 - 可视化 Git：初始化/克隆、分支、暂存、提交、diff、历史和拉取/推送
 - 本地仓库列表、多 GitHub HTTPS 账号、SSH Key 账号和多仓库快速切换
+- GitHub 浏览器设备授权登录：无需 SSH Key 或手动粘贴 Token，登录一次后 clone/pull/push 自动复用
 - API Key 使用 Android Keystore + AES/GCM 保存
 - App 自带精简 Termux bionic 基础用户态，不依赖外部 Termux、不需要 Ubuntu/PRoot
 - 首次初始化通过内置 apt 用户态一次性下载 Python、Node、Java/JDK、ShellCheck、clang/LLVM、Git 和 SSH
@@ -62,6 +63,19 @@ export ANDROID_HOME="$HOME/android-sdk"
 
 私有 GitHub 仓库优先使用 App 内生成的 SSH Key：复制 Public Key 到对应 GitHub 账号一次，
 之后该账号的所有仓库共用。HTTPS Token 仅在 Clone 对话框中按需展开。
+
+### GitHub OAuth Device Flow
+
+发布构建需要创建一个 GitHub OAuth App，并在 OAuth App 设置中启用 Device Flow。
+Client ID 是公开配置，Client Secret 不进入 APK。构建时传入：
+
+```bash
+POCKET_GITHUB_CLIENT_ID=你的ClientID ./gradlew :app:assembleDebug
+```
+
+用户点击 Git 页的“使用 GitHub 登录”后，App 会打开系统浏览器，显示一次性验证码，
+授权成功后使用 Android Keystore 保存 Token。
+如果调试包没有内置 Client ID，可在 Git > 管理 的 GitHub 登录卡片中填写一次。
 
 APK 输出：
 

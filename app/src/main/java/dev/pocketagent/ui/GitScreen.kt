@@ -14,10 +14,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -80,6 +82,9 @@ fun GitScreen(
     onCloseCommitDetail: () -> Unit,
     onGitAccountSelected: (String) -> Unit,
     onGitAccountRemoved: (String) -> Unit,
+    onGitHubLogin: () -> Unit,
+    onCancelGitHubLogin: () -> Unit,
+    onSaveGitHubClientId: (String) -> Unit,
     onGenerateSshAccount: (String) -> Unit,
     onRemoveSshAccount: (String) -> Unit,
     onSwitchRepository: (String) -> Unit,
@@ -93,9 +98,43 @@ fun GitScreen(
     var manageVisible by rememberSaveable { mutableStateOf(false) }
     var historyVisible by rememberSaveable { mutableStateOf(false) }
     var expandedCommit by rememberSaveable { mutableStateOf<String?>(null) }
+    var openedLoginCode by rememberSaveable { mutableStateOf("") }
+    var githubClientId by rememberSaveable { mutableStateOf("") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val git = state.gitState
     val context = LocalContext.current
+
+    LaunchedEffect(state.githubLogin?.userCode) {
+        val login = state.githubLogin ?: return@LaunchedEffect
+        if (login.userCode.isBlank() || login.userCode == openedLoginCode) {
+            return@LaunchedEffect
+        }
+        openedLoginCode = login.userCode
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(login.verificationUri)),
+            )
+        }
+    }
+
+    state.githubLogin?.let { login ->
+        GitHubDeviceLoginDialog(
+            login = login,
+            error = state.githubLoginError,
+            onOpenBrowser = {
+                runCatching {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(login.verificationUri)),
+                    )
+                }
+            },
+            onCopyCode = {
+                context.getSystemService(ClipboardManager::class.java)
+                    .setPrimaryClip(ClipData.newPlainText("GitHub code", login.userCode))
+            },
+            onCancel = onCancelGitHubLogin,
+        )
+    }
 
     if (state.gitDiffTitle != null) {
         ModalBottomSheet(
@@ -392,7 +431,7 @@ fun GitScreen(
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(7.dp),
                     ) {
-                        Text("HTTPS 凭据账号", style = MaterialTheme.typography.bodyMedium)
+                        Text("GitHub 登录账号", style = MaterialTheme.typography.bodyMedium)
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                             items(state.gitAccounts, key = { it.id }) { gitAccount ->
                                 AssistChip(
@@ -417,6 +456,88 @@ fun GitScreen(
                                 Text("移除当前凭据")
                             }
                         }
+                    }
+                }
+            }
+        }
+        if (manageVisible) item {
+            Card {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("GitHub 登录", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "浏览器确认一次，Token 加密保存，仓库自动复用",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (state.githubLoginRunning) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else if (state.githubOAuthClientConfigured) {
+                            Button(onClick = onGitHubLogin) {
+                                Text("使用 GitHub 登录")
+                            }
+                        }
+                    }
+                    if (!state.githubOAuthClientConfigured) {
+                        Text(
+                            "发布版应在构建时设置 Client ID。本地调试也可以在这里填写一次。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedTextField(
+                            value = githubClientId,
+                            onValueChange = { githubClientId = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("GitHub OAuth Client ID") },
+                            singleLine = true,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(
+                                onClick = {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(
+                                                Intent.ACTION_VIEW,
+                                                Uri.parse(
+                                                    "https://github.com/settings/applications/new",
+                                                ),
+                                            ),
+                                        )
+                                    }
+                                },
+                            ) { Text("创建 OAuth App") }
+                            Button(
+                                onClick = {
+                                    onSaveGitHubClientId(githubClientId)
+                                    githubClientId = ""
+                                },
+                                enabled = githubClientId.isNotBlank(),
+                            ) { Text("保存 Client ID") }
+                        }
+                    }
+                    state.githubLoginError?.let { error ->
+                        Text(
+                            error,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    if (state.gitAccounts.isNotEmpty()) {
+                        Text(
+                            "已登录 ${state.gitAccounts.joinToString { it.label }}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -891,6 +1012,88 @@ private fun NewSshAccountDialog(
             ) { Text("生成") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun GitHubDeviceLoginDialog(
+    login: GitHubLoginState,
+    error: String?,
+    onOpenBrowser: () -> Unit,
+    onCopyCode: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("登录 GitHub") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (login.userCode.isBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Text(login.status, style = MaterialTheme.typography.bodySmall)
+                    }
+                } else {
+                    Text(
+                        "浏览器已打开 GitHub 授权页，请输入一次性代码：",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        SelectionContainer {
+                            Text(
+                                login.userCode,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                style = MaterialTheme.typography.headlineSmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                ),
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = onCopyCode) { Text("复制代码") }
+                        TextButton(onClick = onOpenBrowser) { Text("重新打开浏览器") }
+                    }
+                    Text(
+                        login.status,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        login.verificationUri,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                error?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onOpenBrowser, enabled = login.userCode.isNotBlank()) {
+                Text("打开浏览器")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) { Text("取消登录") }
+        },
     )
 }
 

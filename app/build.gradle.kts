@@ -4,6 +4,11 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val githubOAuthClientId = providers.gradleProperty("POCKET_GITHUB_CLIENT_ID")
+    .orElse(providers.environmentVariable("POCKET_GITHUB_CLIENT_ID"))
+    .orElse("")
+    .get()
+
 android {
     namespace = "dev.pocketagent"
     compileSdk = 35
@@ -16,6 +21,11 @@ android {
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
+        buildConfigField(
+            "String",
+            "GITHUB_OAUTH_CLIENT_ID",
+            "\"$githubOAuthClientId\"",
+        )
     }
 
     buildTypes {
@@ -73,5 +83,6 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
     testImplementation(libs.kotlinx.coroutines.test)
 }
