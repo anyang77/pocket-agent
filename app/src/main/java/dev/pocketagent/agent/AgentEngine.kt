@@ -8,6 +8,9 @@ import dev.pocketagent.runtime.SystemAccessRepository
 import dev.pocketagent.runtime.SystemPathType
 import dev.pocketagent.runtime.SystemReadPolicy
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -81,6 +84,7 @@ class AgentEngine(
         try {
             var lastPromptTokens = 0
             while (true) {
+                currentCoroutineContext().ensureActive()
                 val contextLimit = ModelContextBudget.limitFor(
                     settings.model,
                     settings.contextWindow,
@@ -163,6 +167,7 @@ class AgentEngine(
                         onReasoningDelta = onReasoningDelta,
                     )
                 } catch (error: AgentException) {
+                    currentCoroutineContext().ensureActive()
                     if (!error.message.orEmpty().contains("reasoning_content", ignoreCase = true)) {
                         throw error
                     }
@@ -240,17 +245,21 @@ class AgentEngine(
                 }
 
                 for (call in turn.toolCalls) {
+                    currentCoroutineContext().ensureActive()
                     val summary = summarizeArguments(call.arguments)
                     auditLog.append("tool", "调用 ${call.name}", summary)
                     onEvent(AgentEvent.ToolStarted(call.name, summary))
-                    val result = runCatching { executeTool(call, authorize) }
-                        .getOrElse { error ->
-                            ToolResult(
-                                content = "TOOL_ERROR: ${error.message ?: error.javaClass.simpleName}",
-                                success = false,
-                                preview = "工具调用失败",
-                            )
-                        }
+                    val result = try {
+                        executeTool(call, authorize)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        ToolResult(
+                            content = "TOOL_ERROR: ${error.message ?: error.javaClass.simpleName}",
+                            success = false,
+                            preview = "工具调用失败",
+                        )
+                    }
                     conversation += AgentMessage(
                         role = "tool",
                         content = result.content.take(MAX_TOOL_RESULT_CHARS),
@@ -272,6 +281,11 @@ class AgentEngine(
             onEvent(AgentEvent.Stopped("已停止当前任务"))
             throw error
         } catch (error: Exception) {
+            if (!currentCoroutineContext().isActive) {
+                auditLog.append("agent", "任务已停止", "取消信号已结束执行")
+                onEvent(AgentEvent.Stopped("已停止当前任务"))
+                throw CancellationException("已停止当前任务")
+            }
             auditLog.append("agent", "任务失败", error.message ?: error.javaClass.simpleName)
             onEvent(
                 AgentEvent.Failed(

@@ -372,8 +372,7 @@ class TermuxRuntime(context: Context) {
 
     fun cancel() {
         activeProcess?.let {
-            it.destroy()
-            if (it.isAlive) it.destroyForcibly()
+            terminateProcessTreeAsync(it, null)
         }
     }
 

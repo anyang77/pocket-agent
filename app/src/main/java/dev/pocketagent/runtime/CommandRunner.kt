@@ -23,6 +23,8 @@ class CommandRunner(
 ) {
     @Volatile
     private var activeProcess: Process? = null
+    @Volatile
+    private var activeSuBinary: File? = null
 
     suspend fun run(
         command: String,
@@ -112,6 +114,7 @@ class CommandRunner(
         }
 
         activeProcess = process
+        activeSuBinary = if (effectiveRoot) su else null
         val captured = StringBuilder()
         try {
             coroutineScope {
@@ -143,7 +146,10 @@ class CommandRunner(
                 )
             }
         } finally {
-            if (activeProcess === process) activeProcess = null
+            if (activeProcess === process) {
+                activeProcess = null
+                activeSuBinary = null
+            }
             if (process.isAlive) process.destroyForcibly()
         }
     }
@@ -151,8 +157,7 @@ class CommandRunner(
     fun cancel() {
         internalRuntime?.cancel()
         activeProcess?.let {
-            it.destroy()
-            if (it.isAlive) it.destroyForcibly()
+            terminateProcessTreeAsync(it, activeSuBinary)
         }
     }
 
