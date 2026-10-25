@@ -2597,6 +2597,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 name = name,
                                 summary = summary,
                                 startedAt = System.currentTimeMillis(),
+                                contentOffset = entry.content.length,
                             ),
                         )
                     } else {

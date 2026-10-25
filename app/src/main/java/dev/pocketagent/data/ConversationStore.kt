@@ -125,6 +125,7 @@ class ConversationStore(context: Context) {
                                                 .takeIf { it > 0 },
                                             durationMs = activity.optLong("duration_ms")
                                                 .takeIf { it >= 0 && activity.has("duration_ms") },
+                                            contentOffset = activity.optInt("content_offset", 0),
                                         ),
                                     )
                                 }
@@ -225,6 +226,7 @@ class ConversationStore(context: Context) {
                                                 activity.result?.let { put("result", it) }
                                                 activity.startedAt?.let { put("started_at", it) }
                                                 activity.durationMs?.let { put("duration_ms", it) }
+                                                put("content_offset", activity.contentOffset)
                                             },
                                         )
                                     }

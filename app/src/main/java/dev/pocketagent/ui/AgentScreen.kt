@@ -1,6 +1,12 @@
 package dev.pocketagent.ui
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -29,7 +35,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CheckCircle
@@ -56,6 +61,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -72,7 +78,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -529,54 +540,107 @@ fun AgentScreen(
             }
         }
 
-        OutlinedTextField(
-            value = input,
-            onValueChange = { input = it },
+        val flowTransition = rememberInfiniteTransition(label = "agent-input-flow")
+        val flowAngle by flowTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1_800, easing = LinearEasing),
+            ),
+            label = "agent-input-flow-angle",
+        )
+        val flowPrimary = MaterialTheme.colorScheme.primary
+        val flowSecondary = MaterialTheme.colorScheme.tertiary
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 6.dp, bottom = 10.dp),
-            placeholder = {
-                Text(
-                    if (state.agentRunning) {
-                        "Agent 正在持续执行，点击右侧停止"
-                    } else {
-                        "问点什么，或者让 Agent 直接改代码…"
-                    },
-                )
-            },
-            minLines = 1,
-            maxLines = 5,
-            shape = RoundedCornerShape(24.dp),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(
-                onSend = {
-                    if (input.isNotBlank() && !state.agentRunning) {
-                        onSend(input)
-                        input = ""
-                    }
-                },
-            ),
-            trailingIcon = {
-                FilledIconButton(
-                    onClick = {
+        ) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text(
                         if (state.agentRunning) {
-                            onStopAgent()
+                            "Agent 正在持续执行，点击右侧停止"
                         } else {
+                            "问点什么，或者让 Agent 直接改代码…"
+                        },
+                    )
+                },
+                minLines = 1,
+                maxLines = 5,
+                shape = RoundedCornerShape(24.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = if (state.agentRunning) {
+                        Color.Transparent
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                    unfocusedBorderColor = if (state.agentRunning) {
+                        Color.Transparent
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(
+                    onSend = {
+                        if (input.isNotBlank() && !state.agentRunning) {
                             onSend(input)
                             input = ""
                         }
                     },
-                    enabled = state.agentRunning || input.isNotBlank(),
-                    modifier = Modifier.size(38.dp),
-                    shape = CircleShape,
-                ) {
-                    Icon(
-                        if (state.agentRunning) Icons.Filled.Stop else Icons.Filled.Send,
-                        contentDescription = if (state.agentRunning) "停止任务" else "发送",
-                    )
+                ),
+                trailingIcon = {
+                    FilledIconButton(
+                        onClick = {
+                            if (state.agentRunning) {
+                                onStopAgent()
+                            } else {
+                                onSend(input)
+                                input = ""
+                            }
+                        },
+                        enabled = state.agentRunning || input.isNotBlank(),
+                        modifier = Modifier.size(38.dp),
+                        shape = CircleShape,
+                    ) {
+                        Icon(
+                            if (state.agentRunning) Icons.Filled.Stop else Icons.Filled.Send,
+                            contentDescription = if (state.agentRunning) "停止任务" else "发送",
+                        )
+                    }
+                },
+            )
+            if (state.agentRunning) {
+                Canvas(Modifier.matchParentSize()) {
+                    val strokeWidth = 2.dp.toPx()
+                    rotate(flowAngle) {
+                        drawRoundRect(
+                            brush = Brush.sweepGradient(
+                                0f to flowPrimary.copy(alpha = 0.12f),
+                                0.20f to flowPrimary,
+                                0.28f to flowSecondary,
+                                0.38f to flowPrimary.copy(alpha = 0.12f),
+                                0.64f to flowSecondary.copy(alpha = 0.75f),
+                                0.74f to flowPrimary.copy(alpha = 0.12f),
+                                1f to flowPrimary.copy(alpha = 0.12f),
+                                center = Offset(size.width / 2f, size.height / 2f),
+                            ),
+                            topLeft = Offset(strokeWidth / 2f, strokeWidth / 2f),
+                            size = androidx.compose.ui.geometry.Size(
+                                size.width - strokeWidth,
+                                size.height - strokeWidth,
+                            ),
+                            cornerRadius = CornerRadius(24.dp.toPx()),
+                            style = Stroke(width = strokeWidth),
+                        )
+                    }
                 }
-            },
-        )
+            }
+        }
     }
 }
 
@@ -831,30 +895,18 @@ private fun ChatBubble(
                 PlanCard(entry.plan)
             }
 
-            if (entry.activities.isNotEmpty()) {
-                ActivityTrace(entry)
-            }
-
-            if (liveRetry != null) {
-                AgentRetryCard(liveRetry)
-            } else if (liveStatus != null && entry.activities.isEmpty()) {
-                AgentLiveStatus(
-                    status = liveStatus,
-                    startedAt = liveStartedAt,
-                )
-            }
+            AgentTimeline(
+                entry = entry,
+                liveStatus = liveStatus,
+                liveStartedAt = liveStartedAt,
+                liveRetry = liveRetry,
+            )
 
             entry.error?.let { message ->
                 AgentErrorCard(
                     message = message,
                     retryCount = entry.retryCount,
                 )
-            }
-
-            if (entry.content.isNotBlank()) {
-                SelectionContainer {
-                    MarkdownContent(entry.content)
-                }
             }
 
         }
@@ -1176,131 +1228,143 @@ private fun PlanCard(plan: List<AgentPlanStep>) {
 }
 
 @Composable
-private fun ActivityTrace(entry: ChatEntry) {
-    val running = entry.activities.any { it.success == null }
-    var expanded by rememberSaveable(entry.id) { mutableStateOf(running) }
-    val activityScrollState = rememberScrollState()
-    LaunchedEffect(running) {
-        if (running) expanded = true
+private fun AgentTimeline(
+    entry: ChatEntry,
+    liveStatus: String?,
+    liveStartedAt: Long?,
+    liveRetry: AgentRetryState?,
+) {
+    var cursor = 0
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        entry.activities.forEachIndexed { index, activity ->
+            val offset = activity.contentOffset.coerceIn(cursor, entry.content.length)
+            if (offset > cursor) {
+                MarkdownContent(entry.content.substring(cursor, offset))
+                cursor = offset
+            }
+            InlineActivity(
+                entryId = entry.id,
+                index = index,
+                activity = activity,
+            )
+        }
+        if (cursor < entry.content.length) {
+            MarkdownContent(entry.content.substring(cursor))
+        }
+        if (liveRetry != null) {
+            AgentRetryCard(liveRetry)
+        } else if (entry.activities.isEmpty() && liveStatus != null) {
+            AgentLiveStatus(
+                status = liveStatus,
+                startedAt = liveStartedAt,
+            )
+        }
     }
-    val failures = entry.activities.count { it.success == false }
+}
 
+@Composable
+private fun InlineActivity(
+    entryId: Long,
+    index: Int,
+    activity: ToolActivity,
+) {
+    var expanded by rememberSaveable(entryId, index) { mutableStateOf(false) }
+    val running = activity.success == null
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { expanded = !expanded },
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(11.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
     ) {
-        Column(Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
+        Column(
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (running) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(15.dp),
-                        strokeWidth = 1.8.dp,
+                when {
+                    running -> CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 1.7.dp,
                         color = MaterialTheme.colorScheme.tertiary,
                     )
-                } else {
-                    Icon(
+                    activity.success == false -> Text(
+                        "×",
+                        modifier = Modifier.width(14.dp),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    else -> Icon(
                         Icons.Filled.CheckCircle,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = if (failures == 0) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.tertiary
-                        },
+                        modifier = Modifier.size(15.dp),
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                 }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "执行过程 · ${entry.activities.size} 步",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                    Text(
-                        when {
-                            running -> "正在执行"
-                            failures > 0 -> "$failures 步失败，详情可展开"
-                            else -> "全部完成"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text(
+                    activity.name,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    color = if (activity.success == false) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                activity.durationMs
+                    ?.takeIf { activity.name != "上下文压缩" }
+                    ?.let(::formatActivityDuration)
+                    ?.let { duration ->
+                        Text(
+                            duration,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 Icon(
                     if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                    contentDescription = if (expanded) "收起执行过程" else "展开执行过程",
-                    modifier = Modifier.size(18.dp),
+                    contentDescription = if (expanded) "收起" else "展开",
+                    modifier = Modifier.size(17.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            Text(
+                activity.summary,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    lineHeight = 16.sp,
+                ),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = if (expanded) 12 else 4,
+                overflow = TextOverflow.Ellipsis,
+            )
             if (expanded) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
-                )
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 320.dp)
-                        .verticalScroll(activityScrollState),
-                    verticalArrangement = Arrangement.spacedBy(9.dp),
-                ) {
-                    entry.activities.forEach { activity ->
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.Top,
-                        ) {
-                            Text(
-                                when (activity.success) {
-                                    null -> "…"
-                                    true -> "✓"
-                                    false -> "×"
-                                },
-                                modifier = Modifier.width(14.dp),
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Bold,
-                                ),
-                                color = when (activity.success) {
-                                    false -> MaterialTheme.colorScheme.tertiary
-                                    true -> MaterialTheme.colorScheme.primary
-                                    null -> MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                            )
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    activity.name,
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = FontWeight.SemiBold,
-                                    ),
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                                Text(
-                                    activity.summary,
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontFamily = FontFamily.Monospace,
-                                        lineHeight = 16.sp,
-                                    ),
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
-                                activity.result?.let {
-                                    val timing = activity.durationMs
-                                        ?.takeIf { duration -> activity.name != "上下文压缩" }
-                                        ?.let(::formatActivityDuration)
-                                        ?.let { duration -> " · $duration" }
-                                        .orEmpty()
-                                    Text(
-                                        "↳ $it$timing",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-                    }
+                activity.result?.takeIf { it.isNotBlank() }?.let { result ->
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                    )
+                    Text(
+                        result,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            lineHeight = 16.sp,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 12,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }

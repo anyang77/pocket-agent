@@ -71,6 +71,7 @@ data class ToolActivity(
     val result: String? = null,
     val startedAt: Long? = null,
     val durationMs: Long? = null,
+    val contentOffset: Int = 0,
 )
 
 enum class AgentPlanStatus {
