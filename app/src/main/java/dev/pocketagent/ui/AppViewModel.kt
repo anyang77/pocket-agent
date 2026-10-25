@@ -442,7 +442,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun completeOnboarding() {
         onboardingRepository.complete()
-        _state.update { it.copy(onboardingCompleted = true, tab = AppTab.AGENT) }
+        _state.update { it.copy(onboardingCompleted = true, tab = AppTab.FILES) }
         auditLog.append("app", "完成首次引导", "权限、模型和环境初始化完成")
     }
 

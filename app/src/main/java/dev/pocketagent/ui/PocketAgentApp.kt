@@ -291,16 +291,16 @@ fun PocketAgentApp(viewModel: AppViewModel) {
         bottomBar = {
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 NavigationBarItem(
-                    selected = state.tab == AppTab.AGENT,
-                    onClick = { viewModel.selectTab(AppTab.AGENT) },
-                    icon = { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null) },
-                    label = { Text("Agent") },
-                )
-                NavigationBarItem(
                     selected = state.tab == AppTab.FILES,
                     onClick = { viewModel.selectTab(AppTab.FILES) },
                     icon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
                     label = { Text("文件") },
+                )
+                NavigationBarItem(
+                    selected = state.tab == AppTab.AGENT,
+                    onClick = { viewModel.selectTab(AppTab.AGENT) },
+                    icon = { Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = null) },
+                    label = { Text("Agent") },
                 )
                 NavigationBarItem(
                     selected = state.tab == AppTab.GIT,

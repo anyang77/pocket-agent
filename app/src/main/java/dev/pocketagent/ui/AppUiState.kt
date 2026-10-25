@@ -59,7 +59,7 @@ data class GitHubLoginState(
 )
 
 data class AppUiState(
-    val tab: AppTab = AppTab.AGENT,
+    val tab: AppTab = AppTab.FILES,
     val onboardingCompleted: Boolean = false,
     val capabilities: RuntimeCapabilities = RuntimeCapabilities(),
     val settings: AiSettings = AiSettings(),
