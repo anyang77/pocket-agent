@@ -1,6 +1,5 @@
 package dev.pocketagent.ui
 
-import android.graphics.Color
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -16,7 +15,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.DeveloperMode
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Terminal
@@ -28,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +34,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -50,6 +51,12 @@ fun TerminalScreen(
     modifier: Modifier = Modifier,
 ) {
     var terminalView by remember { mutableStateOf<TerminalView?>(null) }
+    val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val terminalBackground = MaterialTheme.colorScheme.surface
+
+    LaunchedEffect(terminalManager, darkTheme) {
+        terminalManager.setDarkTheme(darkTheme)
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -66,39 +73,16 @@ fun TerminalScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("执行环境", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            when (state.terminalRuntime) {
-                                RuntimeKind.TERMUX -> "内置 Termux · 使用 pkg/apt 管理工具"
-                                RuntimeKind.SYSTEM_SHELL -> "手机系统 Shell · 使用 Android 系统命令"
-                                RuntimeKind.ROOT_TERMUX -> "Root · 在 Termux 中执行系统级操作"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    TextButton(onClick = terminalManager::decreaseFont) { Text("A−") }
-                    TextButton(onClick = terminalManager::increaseFont) { Text("A+") }
-                    TextButton(
-                        onClick = terminalManager::restart,
-                        enabled = state.terminalRuntime != RuntimeKind.TERMUX ||
-                            state.capabilities.internalTermuxReady,
-                    ) {
-                        Text("重启")
-                    }
-                }
-
                 Row(
                     modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     RuntimeChoice(
                         modifier = Modifier.weight(1f),
                         icon = Icons.Outlined.FolderOpen,
                         label = "Termux",
-                        selected = state.terminalRuntime == RuntimeKind.TERMUX,
+                        selected = state.terminalRuntime != RuntimeKind.SYSTEM_SHELL,
                         enabled = state.capabilities.internalTermuxReady,
                         onClick = { onRuntimeSelected(RuntimeKind.TERMUX) },
                     )
@@ -110,14 +94,13 @@ fun TerminalScreen(
                         enabled = true,
                         onClick = { onRuntimeSelected(RuntimeKind.SYSTEM_SHELL) },
                     )
-                    RuntimeChoice(
-                        modifier = Modifier.weight(1f),
-                        icon = Icons.Outlined.DeveloperMode,
-                        label = "Root",
-                        selected = state.terminalRuntime == RuntimeKind.ROOT_TERMUX,
-                        enabled = state.capabilities.rootGranted,
-                        onClick = { onRuntimeSelected(RuntimeKind.ROOT_TERMUX) },
-                    )
+                    TextButton(
+                        onClick = terminalManager::restart,
+                        enabled = state.terminalRuntime == RuntimeKind.SYSTEM_SHELL ||
+                            state.capabilities.internalTermuxReady,
+                    ) {
+                        Text("重启")
+                    }
                 }
             }
         }
@@ -152,7 +135,7 @@ fun TerminalScreen(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             factory = { context ->
                 TerminalView(context, null).apply {
-                    setBackgroundColor(Color.rgb(11, 15, 20))
+                    setBackgroundColor(terminalBackground.toArgb())
                     terminalManager.attach(this)
                     terminalView = this
                 }

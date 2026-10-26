@@ -16,7 +16,6 @@ import com.termux.terminal.TextStyle
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import dev.pocketagent.data.AuditLog
-import dev.pocketagent.runtime.RootDetector
 import dev.pocketagent.runtime.RuntimeKind
 import dev.pocketagent.runtime.TermuxRuntime
 import java.io.File
@@ -26,7 +25,6 @@ class TerminalSessionManager(
     private val runtime: TermuxRuntime,
     private val workspace: () -> File,
     private val auditLog: AuditLog,
-    private val rootDetector: RootDetector = RootDetector(),
 ) : TerminalSessionClient, TerminalViewClient {
     private val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences("terminal_ui", Context.MODE_PRIVATE)
@@ -43,44 +41,58 @@ class TerminalSessionManager(
         }
     }
     private var view: TerminalView? = null
-    private var session: TerminalSession? = null
+    private val sessions = mutableMapOf<RuntimeKind, TerminalSession>()
     private val terminalInput = StringBuilder()
     private var runtimeKind = RuntimeKind.TERMUX
+    private var darkTheme = true
 
     init {
         configureTerminalColors()
     }
 
     @Synchronized
+    fun setDarkTheme(enabled: Boolean) {
+        darkTheme = enabled
+        configureTerminalColors()
+        view?.post {
+            view?.setBackgroundColor(terminalBackgroundColor())
+            view?.invalidate()
+        }
+    }
+
+    @Synchronized
     fun currentSession(): TerminalSession {
-        val existing = session
-        if (existing != null && existing.isRunning) return existing
-        val useRoot = runtimeKind == RuntimeKind.ROOT_TERMUX
+        sessions[runtimeKind]?.takeIf { it.isRunning }?.let { return it }
         val useSystemShell = runtimeKind == RuntimeKind.SYSTEM_SHELL
-        val su = if (useRoot) rootDetector.findSuBinary() else null
         val shellPath: String
         val arguments: Array<String>
-        if (su != null) {
-            shellPath = su.absolutePath
-            arguments = arrayOf("su", "-c", buildRootShellCommand(workspace()))
-        } else if (useSystemShell) {
+        val environment: Array<String>
+        if (useSystemShell) {
             shellPath = "/system/bin/sh"
             arguments = arrayOf("sh", "-i")
+            environment = arrayOf(
+                "HOME=/sdcard",
+                "PWD=${workspace().absolutePath}",
+                "PATH=/sbin:/system/sbin:/system/bin:/system/xbin:/vendor/bin:/vendor/xbin",
+                "TERM=xterm-256color",
+                "LANG=C.UTF-8",
+            )
         } else {
             val terminalShell = runtime.terminalShell()
             shellPath = terminalShell.first
             arguments = terminalShell.second
+            environment = runtime.environmentArray()
         }
-        val sessionDirectory = if (su != null) runtime.home else workspace()
         val created = TerminalSession(
             shellPath,
-            sessionDirectory.absolutePath,
+            workspace().absolutePath,
             arguments,
-            runtime.environmentArray(),
+            environment,
             5_000,
             this,
         )
-        session = created
+        sessions[runtimeKind] = created
+        configureTerminalColors()
         auditLog.append(
             "terminal",
             "启动 Shell",
@@ -96,6 +108,7 @@ class TerminalSessionManager(
         newView.setTerminalViewClient(this)
         applyFontSize(newView)
         newView.setTypeface(Typeface.MONOSPACE)
+        newView.setBackgroundColor(terminalBackgroundColor())
         newView.setPadding(10, 10, 10, 10)
         newView.isFocusable = true
         newView.isFocusableInTouchMode = true
@@ -104,13 +117,15 @@ class TerminalSessionManager(
 
     @Synchronized
     fun detach(oldView: TerminalView) {
-        if (view === oldView) view = null
+        if (view === oldView) {
+            oldView.attachSession(null)
+            view = null
+        }
     }
 
     fun restart() {
         flushTerminalCommand()
-        session?.finishIfRunning()
-        session = null
+        sessions.remove(runtimeKind)?.finishIfRunning()
         auditLog.append("terminal", "重启 Shell", "用户请求重启")
         view?.let { attach(it) }
     }
@@ -120,16 +135,9 @@ class TerminalSessionManager(
         if (runtimeKind == kind) return
         runtimeKind = kind
         auditLog.append("terminal", "切换执行环境", "runtime=$kind")
-        if (session != null) {
-            session?.finishIfRunning()
-            session = null
-            view?.let { attach(it) }
-        }
-    }
-
-    @Synchronized
-    fun setUseRoot(enabled: Boolean) {
-        setRuntimeKind(if (enabled) RuntimeKind.ROOT_TERMUX else RuntimeKind.TERMUX)
+        view?.attachSession(currentSession())
+        configureTerminalColors()
+        view?.invalidate()
     }
 
     fun increaseFont() {
@@ -223,11 +231,11 @@ class TerminalSessionManager(
 
     override fun onScale(scale: Float): Float {
         when {
-            scale >= 1.1f -> increaseFont()
-            scale <= 0.9f -> decreaseFont()
+            scale >= 1.12f -> increaseFont()
+            scale <= 0.89f -> decreaseFont()
             else -> return scale
         }
-        return 1.0f
+        return 1f
     }
 
     override fun onSingleTapUp(e: MotionEvent) {
@@ -279,16 +287,32 @@ class TerminalSessionManager(
         }
     }
 
-    private fun buildRootShellCommand(workspace: File): String {
-        val environment = runtime.environmentArray().joinToString(" ") { shellQuote(it) }
-        return "cd -- ${shellQuote(workspace.absolutePath)} && " +
-            "exec ${runtime.prefix.absolutePath}/bin/env -i $environment " +
-            runtime.shellInvocation("${runtime.bash.absolutePath} --norc --noprofile -i")
+    private fun configureTerminalColors() {
+        val defaultColors = TerminalColors.COLOR_SCHEME.mDefaultColors
+        val emulatorColors = view?.mEmulator?.mColors?.mCurrentColors
+        val palette = if (darkTheme) DARK_PALETTE else LIGHT_PALETTE
+        palette.copyInto(defaultColors, 0, 0, palette.size)
+        defaultColors[TextStyle.COLOR_INDEX_FOREGROUND] = if (darkTheme) {
+            TERMINAL_DARK_FOREGROUND
+        } else {
+            TERMINAL_LIGHT_FOREGROUND
+        }
+        defaultColors[TextStyle.COLOR_INDEX_BACKGROUND] = terminalBackgroundColor()
+        defaultColors[TextStyle.COLOR_INDEX_CURSOR] = if (darkTheme) {
+            TERMINAL_DARK_CURSOR
+        } else {
+            TERMINAL_LIGHT_CURSOR
+        }
+        if (emulatorColors != null) {
+            defaultColors.copyInto(emulatorColors, 0, 0, emulatorColors.size)
+        }
     }
 
-    private fun configureTerminalColors() {
-        val colors = TerminalColors.COLOR_SCHEME.mDefaultColors
-        val base = intArrayOf(
+    private fun terminalBackgroundColor(): Int =
+        if (darkTheme) TERMINAL_DARK_BACKGROUND else TERMINAL_LIGHT_BACKGROUND
+
+    companion object {
+        private val DARK_PALETTE = intArrayOf(
             0xFF0B1016.toInt(),
             0xFFFF7B72.toInt(),
             0xFF7EE787.toInt(),
@@ -306,16 +330,31 @@ class TerminalSessionManager(
             0xFF9BEAF0.toInt(),
             0xFFFFFFFF.toInt(),
         )
-        base.copyInto(colors, 0, 0, base.size.coerceAtMost(16))
-        colors[TextStyle.COLOR_INDEX_FOREGROUND] = 0xFFE6EDF3.toInt()
-        colors[TextStyle.COLOR_INDEX_BACKGROUND] = 0xFF090D12.toInt()
-        colors[TextStyle.COLOR_INDEX_CURSOR] = 0xFF8BE9C1.toInt()
-    }
+        private val LIGHT_PALETTE = intArrayOf(
+            0xFF3E4C59.toInt(),
+            0xFFB42318.toInt(),
+            0xFF18794E.toInt(),
+            0xFF8A6100.toInt(),
+            0xFF1D4ED8.toInt(),
+            0xFF7E22CE.toInt(),
+            0xFF0E7490.toInt(),
+            0xFF344054.toInt(),
+            0xFF667085.toInt(),
+            0xFFD92D20.toInt(),
+            0xFF15803D.toInt(),
+            0xFFA16207.toInt(),
+            0xFF2563EB.toInt(),
+            0xFF9333EA.toInt(),
+            0xFF0F766E.toInt(),
+            0xFF1F2933.toInt(),
+        )
 
-    private fun shellQuote(value: String): String =
-        "'" + value.replace("'", "'\"'\"'") + "'"
-
-    companion object {
+        private const val TERMINAL_DARK_FOREGROUND = 0xFFE6EDF3.toInt()
+        private const val TERMINAL_LIGHT_FOREGROUND = 0xFF1F2933.toInt()
+        private const val TERMINAL_DARK_BACKGROUND = 0xFF090D12.toInt()
+        private const val TERMINAL_LIGHT_BACKGROUND = 0xFFFFFFFF.toInt()
+        private const val TERMINAL_DARK_CURSOR = 0xFF8BE9C1.toInt()
+        private const val TERMINAL_LIGHT_CURSOR = 0xFF087F5B.toInt()
         private const val MIN_FONT_SP = 10
         private const val MAX_FONT_SP = 22
     }

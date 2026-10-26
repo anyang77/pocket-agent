@@ -14,6 +14,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -28,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.pocketagent.data.AiSettings
+import dev.pocketagent.ui.theme.ThemePreference
 
 @Composable
 fun SettingsScreen(
@@ -36,6 +39,7 @@ fun SettingsScreen(
     onProfileSelected: (String) -> Unit,
     onCreateProfile: (String, String, String, Int) -> Unit,
     onDeleteProfile: (String) -> Unit,
+    onThemePreferenceChanged: (ThemePreference) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var baseUrl by rememberSaveable(state.settings.baseUrl) {
@@ -97,6 +101,42 @@ fun SettingsScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("外观", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "跟随系统会随手机的深色模式自动切换。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ThemeChoice(
+                        modifier = Modifier.weight(1f),
+                        label = "跟随系统",
+                        selected = state.themePreference == ThemePreference.SYSTEM,
+                        onClick = { onThemePreferenceChanged(ThemePreference.SYSTEM) },
+                    )
+                    ThemeChoice(
+                        modifier = Modifier.weight(1f),
+                        label = "浅色",
+                        selected = state.themePreference == ThemePreference.LIGHT,
+                        onClick = { onThemePreferenceChanged(ThemePreference.LIGHT) },
+                    )
+                    ThemeChoice(
+                        modifier = Modifier.weight(1f),
+                        label = "深色",
+                        selected = state.themePreference == ThemePreference.DARK,
+                        onClick = { onThemePreferenceChanged(ThemePreference.DARK) },
+                    )
+                }
+            }
+        }
+        item {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+        }
         item {
             Column {
                 Text("模型配置", style = MaterialTheme.typography.titleLarge)
@@ -220,6 +260,21 @@ fun SettingsScreen(
             )
         }
     }
+}
+
+@Composable
+private fun ThemeChoice(
+    modifier: Modifier,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label) },
+        modifier = modifier,
+    )
 }
 
 @Composable

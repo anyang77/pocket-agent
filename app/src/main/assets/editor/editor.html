@@ -7,6 +7,37 @@
   <link rel="stylesheet" href="addon/hint/show-hint.min.css">
   <link rel="stylesheet" href="addon/lint/lint.min.css">
   <style>
+    :root {
+      --editor-bg: #090d12;
+      --editor-fg: #e6edf3;
+      --editor-gutter-bg: #0d141c;
+      --editor-line-number: #718096;
+      --editor-border: #263241;
+      --editor-panel: #111821;
+      --editor-panel-border: #536476;
+      --editor-cursor: #8be9c1;
+      --editor-muted: #c2cfdc;
+      --editor-selection: #26485e;
+      --editor-active-line: #101b25;
+      --editor-search-match: #4a3a13;
+      --editor-search-current: #b77900;
+      --editor-search-ring: #ffd166;
+      --editor-keyword: #569cd6;
+      --editor-builtin: #dcdcaa;
+      --editor-variable-2: #9cdcfe;
+      --editor-variable: #d4d4d4;
+      --editor-string: #ce9178;
+      --editor-number: #b5cea8;
+      --editor-comment: #6a9955;
+      --editor-type: #4ec9b0;
+      --editor-error: #f44747;
+      --editor-hint-active: #26485e;
+      --editor-hint-kind: #75beff;
+      --editor-hint-label: #d4d4d4;
+      --editor-hint-detail: #8b98a8;
+      --editor-shadow: #000b;
+      --editor-hint-shadow: #0005;
+    }
     html, body {
       margin: 0;
       padding: 0;
@@ -15,7 +46,7 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #090d12;
+      background: var(--editor-bg);
     }
     body {
       display: flex;
@@ -27,21 +58,21 @@
       min-height: 0;
       width: auto !important;
       height: auto !important;
-      background: #090d12;
-      color: #e6edf3;
+      background: var(--editor-bg);
+      color: var(--editor-fg);
       font-family: "JetBrains Mono", "Roboto Mono", monospace;
       font-size: 14px;
       line-height: 1.5;
     }
     .CodeMirror-gutters {
-      background: #0d141c;
-      border-right: 1px solid #263241;
+      background: var(--editor-gutter-bg);
+      border-right: 1px solid var(--editor-border);
     }
     .CodeMirror-linenumber {
-      color: #718096;
+      color: var(--editor-line-number);
     }
     .CodeMirror-cursor {
-      border-left: 2px solid #8be9c1;
+      border-left: 2px solid var(--editor-cursor);
     }
     #findPanel {
       display: none;
@@ -50,10 +81,10 @@
       width: auto;
       margin: 8px;
       padding: 9px;
-      background: #111821;
-      border: 1px solid #536476;
+      background: var(--editor-panel);
+      border: 1px solid var(--editor-panel-border);
       border-radius: 12px;
-      box-shadow: 0 8px 28px #000b;
+      box-shadow: 0 8px 28px var(--editor-shadow);
     }
     #findPanel.visible {
       display: block;
@@ -73,9 +104,9 @@
       height: 38px;
       box-sizing: border-box;
       padding: 0 10px;
-      color: #e6edf3;
-      background: #090d12;
-      border: 1px solid #536476;
+      color: var(--editor-fg);
+      background: var(--editor-bg);
+      border: 1px solid var(--editor-panel-border);
       border-radius: 8px;
       font: 14px "Roboto Mono", monospace;
       outline: none;
@@ -84,94 +115,94 @@
       min-width: 40px;
       height: 38px;
       padding: 0 10px;
-      color: #d5faec;
-      background: #173d32;
-      border: 1px solid #365f50;
+      color: var(--editor-fg);
+      background: var(--editor-panel);
+      border: 1px solid var(--editor-panel-border);
       border-radius: 8px;
       font-size: 13px;
     }
     .find-button.secondary {
-      color: #e6edf3;
-      background: #1b2632;
-      border-color: #536476;
+      color: var(--editor-fg);
+      background: var(--editor-panel);
+      border-color: var(--editor-panel-border);
     }
     #findStatus {
-      color: #c2cfdc;
+      color: var(--editor-muted);
       font: 12px "Roboto Mono", monospace;
       white-space: nowrap;
     }
     .CodeMirror-selected {
-      background: #26485e !important;
+      background: var(--editor-selection) !important;
     }
     .CodeMirror-activeline-background {
-      background: #101b25;
+      background: var(--editor-active-line);
     }
     .pocket-search-match {
-      background: #4a3a13;
+      background: var(--editor-search-match);
       border-radius: 2px;
     }
     .pocket-search-current {
-      background: #b77900;
-      box-shadow: inset 0 0 0 2px #ffd166;
+      background: var(--editor-search-current);
+      box-shadow: inset 0 0 0 2px var(--editor-search-ring);
       border-radius: 3px;
     }
-    .CodeMirror .cm-keyword { color: #569cd6; }
-    .CodeMirror .cm-builtin, .CodeMirror .cm-def { color: #dcdcaa; }
-    .CodeMirror .cm-variable-2 { color: #9cdcfe; }
+    .CodeMirror .cm-keyword { color: var(--editor-keyword); }
+    .CodeMirror .cm-builtin, .CodeMirror .cm-def { color: var(--editor-builtin); }
+    .CodeMirror .cm-variable-2 { color: var(--editor-variable-2); }
     .CodeMirror .cm-variable,
     .CodeMirror .cm-variable-3,
-    .CodeMirror .cm-property { color: #d4d4d4; }
-    .CodeMirror .cm-string, .CodeMirror .cm-string-2 { color: #ce9178; }
-    .CodeMirror .cm-number { color: #b5cea8; }
-    .CodeMirror .cm-comment { color: #6a9955; }
-    .CodeMirror .cm-type { color: #4ec9b0; }
-    .CodeMirror .cm-atom { color: #569cd6; }
-    .CodeMirror .cm-operator, .CodeMirror .cm-punctuation { color: #d4d4d4; }
-    .CodeMirror .cm-meta, .CodeMirror .cm-tag { color: #569cd6; }
-    .CodeMirror .cm-header { color: #569cd6; font-weight: 700; }
-    .CodeMirror .cm-link { color: #4ec9b0; }
-    .CodeMirror .cm-quote { color: #6a9955; }
-    .CodeMirror .cm-error, .CodeMirror .cm-invalidchar { color: #f44747 !important; }
+    .CodeMirror .cm-property { color: var(--editor-variable); }
+    .CodeMirror .cm-string, .CodeMirror .cm-string-2 { color: var(--editor-string); }
+    .CodeMirror .cm-number { color: var(--editor-number); }
+    .CodeMirror .cm-comment { color: var(--editor-comment); }
+    .CodeMirror .cm-type { color: var(--editor-type); }
+    .CodeMirror .cm-atom { color: var(--editor-keyword); }
+    .CodeMirror .cm-operator, .CodeMirror .cm-punctuation { color: var(--editor-variable); }
+    .CodeMirror .cm-meta, .CodeMirror .cm-tag { color: var(--editor-keyword); }
+    .CodeMirror .cm-header { color: var(--editor-keyword); font-weight: 700; }
+    .CodeMirror .cm-link { color: var(--editor-type); }
+    .CodeMirror .cm-quote { color: var(--editor-comment); }
+    .CodeMirror .cm-error, .CodeMirror .cm-invalidchar { color: var(--editor-error) !important; }
     .CodeMirror-lint-mark-error {
       border-bottom: none !important;
       text-decoration-line: underline;
       text-decoration-style: wavy;
-      text-decoration-color: #f85149;
+      text-decoration-color: var(--editor-error);
       text-decoration-thickness: 1.5px;
       text-underline-offset: 3px;
     }
     .CodeMirror-lint-marker-error {
       content: "●";
-      color: #f85149;
+      color: var(--editor-error);
     }
     .CodeMirror-lint-tooltip {
-      color: #f0f3f6 !important;
-      background: #1b222b !important;
-      border: 1px solid #4a5664 !important;
+      color: var(--editor-fg) !important;
+      background: var(--editor-panel) !important;
+      border: 1px solid var(--editor-panel-border) !important;
       border-radius: 8px !important;
-      box-shadow: 0 8px 26px #000b !important;
+      box-shadow: 0 8px 26px var(--editor-shadow) !important;
       font: 12px/1.5 "Roboto Mono", monospace !important;
       max-width: 360px !important;
       padding: 7px 9px !important;
     }
     .CodeMirror-hints {
-      background: #111821;
-      border: 1px solid #536476;
+      background: var(--editor-panel);
+      border: 1px solid var(--editor-panel-border);
       border-radius: 10px;
-      box-shadow: 0 8px 28px #0009;
-      color: #e6edf3;
+      box-shadow: 0 8px 28px var(--editor-hint-shadow);
+      color: var(--editor-fg);
       font-family: "JetBrains Mono", "Roboto Mono", monospace;
       font-size: 14px;
       max-height: 240px;
       min-width: min(340px, 88vw);
     }
     .CodeMirror-hint {
-      color: #e6edf3;
+      color: var(--editor-fg);
       padding: 6px 9px;
     }
     li.CodeMirror-hint-active {
-      background: #26485e;
-      color: #ffffff;
+      background: var(--editor-hint-active);
+      color: var(--editor-fg);
     }
     .pocket-hint {
       display: grid;
@@ -180,19 +211,19 @@
       align-items: center;
     }
     .pocket-hint-kind {
-      color: #75beff;
+      color: var(--editor-hint-kind);
       font-size: 12px;
       text-align: center;
     }
     .pocket-hint-label {
-      color: #d4d4d4;
+      color: var(--editor-variable);
       font-weight: 600;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
     .pocket-hint-detail {
-      color: #8b98a8;
+      color: var(--editor-hint-detail);
       font: 11px "Roboto Mono", monospace;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -1141,6 +1172,17 @@
       refresh() {
         editor.refresh();
         editor.scrollIntoView(editor.getCursor(), 80);
+      },
+      setTheme(theme) {
+        if (!theme || typeof theme !== "object") return;
+        Object.entries(theme).forEach(([name, value]) => {
+          if (typeof value === "string" && value.length > 0) {
+            document.documentElement.style.setProperty(`--${name}`, value);
+          }
+        });
+        document.body.style.background = getComputedStyle(document.documentElement)
+          .getPropertyValue("--editor-bg").trim();
+        editor.refresh();
       }
     };
 

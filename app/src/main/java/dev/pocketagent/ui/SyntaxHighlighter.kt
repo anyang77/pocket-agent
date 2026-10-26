@@ -11,14 +11,14 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.withStyle
 
 object TermuxEditorColors {
-    val keyword = Color(0xFF79C0FF)
-    val string = Color(0xFF7EE787)
-    val comment = Color(0xFF8B949E)
-    val number = Color(0xFFE3D58A)
-    val function = Color(0xFFD2A8FF)
-    val type = Color(0xFF56D4DD)
-    val operator = Color(0xFFFF7B72)
-    val variable = Color(0xFFFFA657)
+    val keyword = Color(0xFF005CC5)
+    val string = Color(0xFF167D45)
+    val comment = Color(0xFF667085)
+    val number = Color(0xFF8A6100)
+    val function = Color(0xFF6F42C1)
+    val type = Color(0xFF0B7285)
+    val operator = Color(0xFFC62828)
+    val variable = Color(0xFFA24800)
 }
 
 enum class SyntaxLanguage(val label: String) {

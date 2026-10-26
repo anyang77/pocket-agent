@@ -1,10 +1,12 @@
 package dev.pocketagent.ui.theme
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -12,7 +14,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private val AppColors = darkColorScheme(
+private val DarkColors = darkColorScheme(
     primary = Color(0xFF8BE9C1),
     onPrimary = Color(0xFF062D22),
     primaryContainer = Color(0xFF173D32),
@@ -95,10 +97,59 @@ private val AppShapes = Shapes(
     extraLarge = RoundedCornerShape(28.dp),
 )
 
+private val LightColors = lightColorScheme(
+    primary = Color(0xFF087F5B),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFD8F5E8),
+    onPrimaryContainer = Color(0xFF073A2B),
+    secondary = Color(0xFF28659A),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFDCEBFF),
+    onSecondaryContainer = Color(0xFF0A2F4F),
+    tertiary = Color(0xFF805600),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFFFE7B3),
+    onTertiaryContainer = Color(0xFF3D2A00),
+    background = Color(0xFFF7F9FB),
+    onBackground = Color(0xFF17212B),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF17212B),
+    surfaceVariant = Color(0xFFEDF1F5),
+    onSurfaceVariant = Color(0xFF4B5B6B),
+    outline = Color(0xFF7B8997),
+    error = Color(0xFFB3261E),
+    onError = Color(0xFFFFFFFF),
+    errorContainer = Color(0xFFF9DEDC),
+    onErrorContainer = Color(0xFF410E0B),
+)
+
+enum class ThemePreference {
+    SYSTEM,
+    LIGHT,
+    DARK,
+    ;
+
+    companion object {
+        fun fromStorage(value: String?): ThemePreference =
+            entries.firstOrNull { it.name == value } ?: SYSTEM
+    }
+}
+
 @Composable
-fun PocketAgentTheme(content: @Composable () -> Unit) {
+fun isDarkTheme(preference: ThemePreference): Boolean = when (preference) {
+    ThemePreference.SYSTEM -> isSystemInDarkTheme()
+    ThemePreference.LIGHT -> false
+    ThemePreference.DARK -> true
+}
+
+@Composable
+fun PocketAgentTheme(
+    preference: ThemePreference = ThemePreference.SYSTEM,
+    content: @Composable () -> Unit,
+) {
+    val darkTheme = isDarkTheme(preference)
     MaterialTheme(
-        colorScheme = AppColors,
+        colorScheme = if (darkTheme) DarkColors else LightColors,
         typography = AppTypography,
         shapes = AppShapes,
         content = content,

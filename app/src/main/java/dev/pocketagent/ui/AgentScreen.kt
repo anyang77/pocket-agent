@@ -119,6 +119,7 @@ import java.util.Locale
 fun AgentScreen(
     state: AppUiState,
     onSend: (String) -> Unit,
+    onInputDraftChange: (String) -> Unit,
     onStopAgent: () -> Unit,
     onNewConversation: () -> Unit,
     onModelSelected: (String) -> Unit,
@@ -135,7 +136,7 @@ fun AgentScreen(
     onPermissionsChanged: (dev.pocketagent.agent.AgentPermissions) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var input by rememberSaveable { mutableStateOf("") }
+    val input = state.agentInputDraft
     var historyVisible by rememberSaveable { mutableStateOf(false) }
     var autoFollow by rememberSaveable { mutableStateOf(true) }
     val listState = rememberLazyListState()
@@ -367,10 +368,9 @@ fun AgentScreen(
                     AssistChip(
                         onClick = {
                             if (command == "/goal") {
-                                input = "/goal "
+                                onInputDraftChange("/goal ")
                             } else {
                                 onSend(command)
-                                input = ""
                             }
                         },
                         label = { Text("$command · $label") },
@@ -435,7 +435,7 @@ fun AgentScreen(
         ) {
             OutlinedTextField(
                 value = input,
-                onValueChange = { input = it },
+                onValueChange = onInputDraftChange,
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = {
                     Text(
@@ -466,7 +466,6 @@ fun AgentScreen(
                     onSend = {
                         if (input.isNotBlank()) {
                             onSend(input)
-                            input = ""
                         }
                     },
                 ),
@@ -477,7 +476,6 @@ fun AgentScreen(
                                 onStopAgent()
                             } else {
                                 onSend(input)
-                                input = ""
                             }
                         },
                         enabled = state.agentRunning || input.isNotBlank(),

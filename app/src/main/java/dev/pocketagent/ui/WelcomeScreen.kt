@@ -40,7 +40,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -49,10 +48,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
-
-private val WelcomeIconBackground = Color(0xFF173D32)
-private val WelcomeIconColor = Color(0xFF8BE9C1)
-private val WelcomeMuted = Color(0xFFAAB7C4)
 
 @Composable
 fun WelcomeScreen(onContinue: () -> Unit) {
@@ -157,14 +152,14 @@ private fun WelcomeTitle() {
             Box(
                 modifier = Modifier
                     .size(42.dp)
-                    .background(WelcomeIconBackground, RoundedCornerShape(11.dp)),
+                    .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(11.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Code,
                     contentDescription = null,
                     modifier = Modifier.size(23.dp),
-                    tint = WelcomeIconColor,
+                    tint = MaterialTheme.colorScheme.primary,
                 )
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -176,7 +171,7 @@ private fun WelcomeTitle() {
                 Text(
                     "版本 0.1.0",
                     style = MaterialTheme.typography.labelSmall,
-                    color = WelcomeMuted,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -192,7 +187,7 @@ private fun WelcomeTitle() {
             Text(
                 "首次启动需要确认应用用途、相关权限以及数据处理方式，然后完成环境和模型设置。",
                 style = MaterialTheme.typography.bodyMedium,
-                color = WelcomeMuted,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 lineHeight = 23.sp,
             )
         }
@@ -231,7 +226,7 @@ private fun WelcomeSection(
                 Text(
                     line,
                     style = MaterialTheme.typography.bodySmall,
-                    color = WelcomeMuted,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 20.sp,
                 )
             }

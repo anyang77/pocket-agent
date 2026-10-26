@@ -25,6 +25,7 @@ import dev.pocketagent.agent.TokenUsage
 import dev.pocketagent.agent.ToolActivity
 import dev.pocketagent.agent.retainLastMeasuredSpeed
 import dev.pocketagent.data.AiSettings
+import dev.pocketagent.data.AppearanceRepository
 import dev.pocketagent.data.AgentGoal
 import dev.pocketagent.data.AuditLog
 import dev.pocketagent.data.ConversationStore
@@ -93,7 +94,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         runtime = internalRuntime,
         workspace = { workspace.root },
         auditLog = auditLog,
-        rootDetector = rootDetector,
     )
     private val systemAccess = SystemAccessRepository(
         context = application,
@@ -109,6 +109,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val managedRepositoryStore = ManagedRepositoryStore(application)
     private val githubOAuthConfigStore = GitHubOAuthConfigStore(application)
     private val settingsRepository = SettingsRepository(application)
+    private val appearanceRepository = AppearanceRepository(application)
     private val permissionSettingsRepository = PermissionSettingsRepository(application)
     private val conversationStore = ConversationStore(application)
     private val currentConversationRepository = CurrentConversationRepository(application)
@@ -141,6 +142,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(
         AppUiState(
             welcomeAccepted = onboardingRepository.isWelcomeAccepted(),
+            welcomeVisible = false,
+            themePreference = appearanceRepository.loadThemePreference(),
             onboardingCompleted = onboardingRepository.isCompleted(),
             capabilities = RuntimeCapabilities(
                 internalTermuxReady = internalRuntime.isReady(),
@@ -220,6 +223,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateAgentInputDraft(text: String) {
+        _state.update { it.copy(agentInputDraft = text) }
+    }
+
     fun newConversation() {
         if (_state.value.agentRunning) {
             _state.update { it.copy(notice = "请等待当前任务结束") }
@@ -248,6 +255,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 chat = listOf(welcome),
+                agentInputDraft = "",
                 currentConversationId = id,
                 agentContextTokens = 0,
                 conversations = conversationSummaries(),
@@ -334,6 +342,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 chat = chat,
+                agentInputDraft = "",
                 currentConversationId = conversation.id,
                 agentContextTokens = 0,
                 conversations = conversationSummaries(),
@@ -431,6 +440,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val permissions: AgentPermissions,
         val conversations: List<StoredConversation>,
     )
+
+    fun setThemePreference(preference: dev.pocketagent.ui.theme.ThemePreference) {
+        appearanceRepository.saveThemePreference(preference)
+        _state.update { it.copy(themePreference = preference) }
+    }
 
     fun selectTab(tab: AppTab) {
         _state.update { it.copy(tab = tab) }
@@ -916,17 +930,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         mountAvailable = probe.mountAvailable,
                         error = probe.error,
                     ),
-                    terminalRoot = if (probe.granted) current.terminalRoot else false,
-                    terminalRuntime = if (
-                        !probe.granted &&
-                        current.terminalRuntime == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
-                    ) {
-                        dev.pocketagent.runtime.RuntimeKind.TERMUX
-                    } else {
-                        current.terminalRuntime
-                    },
+                    terminalRoot = false,
+                    terminalRuntime = current.terminalRuntime.takeUnless {
+                        it == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
+                    } ?: dev.pocketagent.runtime.RuntimeKind.TERMUX,
                     notice = if (announce && probe.granted) {
-                        "Root 已授权，可在终端中手动切换 Root 环境"
+                        "Root 已授权，可在终端中输入 su 提权"
                     } else if (announce) {
                         probe.error ?: "Root 不可用"
                     } else {
@@ -970,14 +979,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             error = probe.error,
                         ),
                         terminalRoot = false,
-                        terminalRuntime = if (
-                            !probe.granted &&
-                            current.terminalRuntime == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
-                        ) {
-                            dev.pocketagent.runtime.RuntimeKind.TERMUX
-                        } else {
-                            current.terminalRuntime
-                        },
+                        terminalRuntime = current.terminalRuntime.takeUnless {
+                            it == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
+                        } ?: dev.pocketagent.runtime.RuntimeKind.TERMUX,
                     )
                 }
                 if (probe.granted) {
@@ -2054,46 +2058,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(scriptOutput = null, scriptTitle = null) }
     }
 
-    fun setTerminalRoot(enabled: Boolean) {
-        setTerminalRuntime(
-            if (enabled) {
-                dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
-            } else {
-                dev.pocketagent.runtime.RuntimeKind.TERMUX
-            },
-        )
-    }
-
     fun setTerminalRuntime(kind: dev.pocketagent.runtime.RuntimeKind) {
-        when (kind) {
-            dev.pocketagent.runtime.RuntimeKind.TERMUX,
+        val supportedKind = when (kind) {
             dev.pocketagent.runtime.RuntimeKind.SYSTEM_SHELL,
-            -> Unit
-            dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX -> {
-                if (!_state.value.capabilities.rootGranted) {
-                    _state.update { it.copy(notice = "请先在设置里完成 Root 授权") }
-                    return
-                }
-            }
+            dev.pocketagent.runtime.RuntimeKind.TERMUX,
+            -> kind
+            dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX ->
+                dev.pocketagent.runtime.RuntimeKind.TERMUX
         }
-        _state.update {
-            it.copy(
-                terminalRuntime = kind,
-                terminalRoot = kind == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX,
-            )
-        }
-        terminalManager.setRuntimeKind(kind)
+        _state.update { it.copy(terminalRuntime = supportedKind, terminalRoot = false) }
+        terminalManager.setRuntimeKind(supportedKind)
     }
 
     fun runTerminal(command: String) {
         val trimmed = command.trim()
         if (trimmed.isBlank() || _state.value.terminalRunning) return
         val runtimeKind = _state.value.terminalRuntime
-        val asRoot = runtimeKind == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
-        if (asRoot && !_state.value.capabilities.rootGranted) {
-            _state.update { it.copy(notice = "Root 当前不可用") }
-            return
-        }
+        val asRoot = false
 
         _state.update {
             it.copy(
@@ -2293,15 +2274,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val prompt = text.trim()
         when (prompt.lowercase()) {
             "/new" -> {
+                _state.update { it.copy(agentInputDraft = "") }
                 newConversation()
                 return
             }
             "/clear" -> {
+                _state.update { it.copy(agentInputDraft = "") }
                 clearChat()
                 return
             }
         }
-        if (handleGoalCommand(prompt)) return
+        if (handleGoalCommand(prompt)) {
+            _state.update { it.copy(agentInputDraft = "") }
+            return
+        }
         if (prompt.isBlank()) return
         if (_state.value.settings.apiKey.isBlank()) {
             _state.update { it.copy(notice = "请先在设置里填写 API Key") }
@@ -2310,6 +2296,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.agentRunning) {
             _state.update {
                 it.copy(
+                    agentInputDraft = "",
                     queuedPrompts = it.queuedPrompts + prompt,
                     notice = "已加入下一轮队列",
                 )
@@ -2330,6 +2317,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         activeAssistantId = assistantId
         _state.update {
             it.copy(
+                agentInputDraft = "",
                 chat = it.chat + user + assistant,
                 agentRunning = true,
                 agentStatus = "正在分析项目",

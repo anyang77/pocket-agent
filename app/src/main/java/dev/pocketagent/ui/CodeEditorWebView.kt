@@ -16,8 +16,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
@@ -237,9 +239,13 @@ fun CodeEditorWebView(
     val currentControllerReady by rememberUpdatedState(onControllerReady)
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val context = LocalContext.current
+    val darkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val currentDarkTheme by rememberUpdatedState(darkTheme)
+    val currentEditorTheme by rememberUpdatedState(editorThemePayload(darkTheme))
+    val editorBackground = if (darkTheme) Color.rgb(9, 13, 18) else Color.rgb(255, 255, 255)
     val webView = remember(path) {
         WebView(context).apply {
-            setBackgroundColor(Color.rgb(9, 13, 18))
+            setBackgroundColor(editorBackground)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = false
             settings.allowFileAccess = true
@@ -280,6 +286,10 @@ fun CodeEditorWebView(
                 mainHandler.post {
                     webView.evaluateJavascript(
                         "PocketEditor.setMode(${JSONObject.quote(language.name.lowercase())});",
+                        null,
+                    )
+                    webView.evaluateJavascript(
+                        "PocketEditor.setTheme(${editorThemePayload(currentDarkTheme)});",
                         null,
                     )
                     webView.evaluateJavascript(
@@ -325,6 +335,7 @@ fun CodeEditorWebView(
                         val text = JSONObject.quote(initialContent)
                         view.evaluateJavascript(
                             "if (window.PocketEditor) {" +
+                                "PocketEditor.setTheme(${editorThemePayload(currentDarkTheme)}); " +
                                 "PocketEditor.setMode($mode); " +
                                 "PocketEditor.setValue($text);" +
                                 "}",
@@ -373,9 +384,20 @@ fun CodeEditorWebView(
             }
         },
         update = {
-            it.setBackgroundColor(Color.rgb(9, 13, 18))
+            it.setBackgroundColor(editorBackground)
         },
     )
+
+    LaunchedEffect(webView, darkTheme) {
+        val theme = editorThemePayload(darkTheme)
+        webView.post {
+            webView.setBackgroundColor(editorBackground)
+            webView.evaluateJavascript(
+                "if (window.PocketEditor) PocketEditor.setTheme($theme);",
+                null,
+            )
+        }
+    }
 
     DisposableEffect(webView) {
         onDispose {
@@ -385,3 +407,68 @@ fun CodeEditorWebView(
         }
     }
 }
+
+private fun editorThemePayload(darkTheme: Boolean): JSONObject =
+    if (darkTheme) {
+        JSONObject()
+            .put("editor-bg", "#090d12")
+            .put("editor-fg", "#e6edf3")
+            .put("editor-gutter-bg", "#0d141c")
+            .put("editor-line-number", "#718096")
+            .put("editor-border", "#263241")
+            .put("editor-panel", "#111821")
+            .put("editor-panel-border", "#536476")
+            .put("editor-cursor", "#8be9c1")
+            .put("editor-muted", "#c2cfdc")
+            .put("editor-selection", "#26485e")
+            .put("editor-active-line", "#101b25")
+            .put("editor-search-match", "#4a3a13")
+            .put("editor-search-current", "#b77900")
+            .put("editor-search-ring", "#ffd166")
+            .put("editor-keyword", "#569cd6")
+            .put("editor-builtin", "#dcdcaa")
+            .put("editor-variable-2", "#9cdcfe")
+            .put("editor-variable", "#d4d4d4")
+            .put("editor-string", "#ce9178")
+            .put("editor-number", "#b5cea8")
+            .put("editor-comment", "#6a9955")
+            .put("editor-type", "#4ec9b0")
+            .put("editor-error", "#f44747")
+            .put("editor-hint-active", "#26485e")
+            .put("editor-hint-kind", "#75beff")
+            .put("editor-hint-label", "#d4d4d4")
+            .put("editor-hint-detail", "#8b98a8")
+            .put("editor-shadow", "#000b")
+            .put("editor-hint-shadow", "#0005")
+    } else {
+        JSONObject()
+            .put("editor-bg", "#ffffff")
+            .put("editor-fg", "#1f2933")
+            .put("editor-gutter-bg", "#f3f6f8")
+            .put("editor-line-number", "#718096")
+            .put("editor-border", "#d8e0e7")
+            .put("editor-panel", "#ffffff")
+            .put("editor-panel-border", "#9aa8b5")
+            .put("editor-cursor", "#087f5b")
+            .put("editor-muted", "#4b5b6b")
+            .put("editor-selection", "#cce7f8")
+            .put("editor-active-line", "#f0f7fa")
+            .put("editor-search-match", "#fff0b3")
+            .put("editor-search-current", "#ffd666")
+            .put("editor-search-ring", "#805600")
+            .put("editor-keyword", "#005cc5")
+            .put("editor-builtin", "#6f42c1")
+            .put("editor-variable-2", "#2463a8")
+            .put("editor-variable", "#24292f")
+            .put("editor-string", "#a31515")
+            .put("editor-number", "#098658")
+            .put("editor-comment", "#557a46")
+            .put("editor-type", "#0b7285")
+            .put("editor-error", "#c62828")
+            .put("editor-hint-active", "#d8eefb")
+            .put("editor-hint-kind", "#0969da")
+            .put("editor-hint-label", "#24292f")
+            .put("editor-hint-detail", "#57606a")
+            .put("editor-shadow", "#0b203514")
+            .put("editor-hint-shadow", "#0b20351f")
+    }

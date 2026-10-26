@@ -5,24 +5,38 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.pocketagent.ui.AppViewModel
 import dev.pocketagent.ui.PocketAgentApp
 import dev.pocketagent.ui.theme.PocketAgentTheme
+import dev.pocketagent.ui.theme.isDarkTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = false
-            isAppearanceLightNavigationBars = false
-        }
         setContent {
-            PocketAgentTheme {
-                val viewModel: AppViewModel = viewModel()
+            val viewModel: AppViewModel = viewModel()
+            val state by viewModel.state.collectAsStateWithLifecycle()
+            PocketAgentTheme(preference = state.themePreference) {
+                val darkTheme = isDarkTheme(state.themePreference)
+                val backgroundColor = MaterialTheme.colorScheme.background
+                val navigationColor = MaterialTheme.colorScheme.surface
+                SideEffect {
+                    window.statusBarColor = backgroundColor.toArgb()
+                    window.navigationBarColor = navigationColor.toArgb()
+                    WindowCompat.getInsetsController(window, window.decorView).apply {
+                        isAppearanceLightStatusBars = !darkTheme
+                        isAppearanceLightNavigationBars = !darkTheme
+                    }
+                }
                 val debugAction = intent.getStringExtra("pocket_agent_action")
                 LaunchedEffect(debugAction) {
                     when (debugAction) {

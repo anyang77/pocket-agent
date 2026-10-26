@@ -18,6 +18,7 @@ import dev.pocketagent.agent.TokenUsage
 import dev.pocketagent.agent.ToolActivity
 import dev.pocketagent.runtime.RuntimeCapabilities
 import dev.pocketagent.runtime.RuntimeKind
+import dev.pocketagent.ui.theme.ThemePreference
 
 enum class AppTab {
     AGENT,
@@ -88,6 +89,7 @@ data class GitHubLoginState(
 data class AppUiState(
     val welcomeAccepted: Boolean = false,
     val welcomeVisible: Boolean = false,
+    val themePreference: ThemePreference = ThemePreference.SYSTEM,
     val tab: AppTab = AppTab.FILES,
     val onboardingCompleted: Boolean = false,
     val capabilities: RuntimeCapabilities = RuntimeCapabilities(),
@@ -123,6 +125,7 @@ data class AppUiState(
     val githubRepositoriesError: String? = null,
     val managedRepositories: List<ManagedRepository> = emptyList(),
     val chat: List<ChatEntry> = emptyList(),
+    val agentInputDraft: String = "",
     val agentRunning: Boolean = false,
     val agentStatus: String? = null,
     /** Non-null while context compaction is running; rendered inline instead of as a card. */

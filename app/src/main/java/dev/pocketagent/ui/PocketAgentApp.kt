@@ -286,6 +286,7 @@ fun PocketAgentApp(viewModel: AppViewModel) {
             AppTab.AGENT -> AgentScreen(
                 state = state,
                 onSend = viewModel::sendChat,
+                onInputDraftChange = viewModel::updateAgentInputDraft,
                 onStopAgent = viewModel::stopAgent,
                 onNewConversation = viewModel::newConversation,
                 onModelSelected = viewModel::selectModel,
@@ -369,6 +370,7 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onProfileSelected = viewModel::selectModelProfile,
                 onCreateProfile = viewModel::createModelProfile,
                 onDeleteProfile = viewModel::deleteModelProfile,
+                onThemePreferenceChanged = viewModel::setThemePreference,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),

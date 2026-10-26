@@ -259,11 +259,19 @@ private fun speedLabel(tokensPerSecond: Float?): String =
 private fun overallRateLabel(rate: Float?): String =
     if (rate == null) "缓存 --" else "缓存 ${(rate * 100).roundToInt()}%"
 
+@Composable
 private fun cacheDotColor(rate: Float?): Color = when {
-    rate == null -> Color(0xFF9E9E9E)
-    rate >= 0.5f -> Color(0xFF2E9E5B)
-    rate >= 0.2f -> Color(0xFFD79A26)
-    else -> Color(0xFFC4553F)
+    rate == null -> MaterialTheme.colorScheme.outline
+    rate >= 0.5f -> Color(0xFF15803D)
+    rate >= 0.2f -> Color(0xFFA16207)
+    else -> Color(0xFFB42318)
+}
+
+@Composable
+private fun cacheRateColor(rate: Float): Color = when {
+    rate >= 0.5f -> MaterialTheme.colorScheme.primary
+    rate >= 0.2f -> MaterialTheme.colorScheme.tertiary
+    else -> MaterialTheme.colorScheme.error
 }
 
 @Composable
@@ -406,7 +414,7 @@ private fun UsageMenuContent(
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.SemiBold,
         ),
-        color = overallRate?.let { cacheDotColor(it) }
+        color = overallRate?.let { cacheRateColor(it) }
             ?: MaterialTheme.colorScheme.onSurfaceVariant,
     )
     AgentMenuRow(
