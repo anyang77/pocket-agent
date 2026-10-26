@@ -8,6 +8,12 @@ class OnboardingRepository(context: Context) {
 
     fun isCompleted(): Boolean = preferences.getBoolean("completed", false)
 
+    fun isWelcomeAccepted(): Boolean = preferences.getBoolean("welcome_read_v1", false)
+
+    fun acceptWelcome() {
+        preferences.edit().putBoolean("welcome_read_v1", true).apply()
+    }
+
     fun complete() {
         preferences.edit().putBoolean("completed", true).apply()
     }

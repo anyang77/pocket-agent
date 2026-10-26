@@ -16,7 +16,7 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 - Shell 使用 ShellCheck + 解释器解析检查；Python、JavaScript、Java、JSON、C/C++ 使用对应真实工具检查
 - Shell、Python、Node 和 Java 可在编辑器内直接运行并查看输出与退出码
 - Termux `TerminalView` + PTY 交互式终端，字号可调
-- 自动探测 `su`；拿到 Root 后终端、Shell 命令和系统只读访问会自动使用 Root
+- 每次启动后自动检测 `su`；检测到可用 Root 时启用设备管理能力，普通开发命令仍使用独立 Termux 用户环境
 - OpenAI-compatible 模型接入
 - 默认接入 DeepSeek：`https://api.deepseek.com/v1` + `deepseek-chat`
 - Agent 工具调用：列文件、读写工作区、读取设备信息、只读访问系统路径、运行完整 Shell
@@ -26,6 +26,7 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 - 完整 Android shell：管道、重定向、命令串联、系统包管理和 root 工具均可执行
 - 完整本地审计日志：模型请求、工具调用、授权决定、文件哈希、命令退出码、终端命令
 - 首次启动三步引导：必需权限、运行环境、模型接入
+- 欢迎页说明软件用途、权限、AI 数据去向及备份注意事项；阅读满 5 秒并滑至底部后可继续，进入首次设置
 - 多会话本地历史：自动标题、切换、删除、重启恢复和上下文恢复
 - 类 dsh 的聊天布局：Markdown/代码块、折叠执行过程、自动跟随最新消息
 - 持续 Agent 循环：不设固定轮数，用户可随时停止；接近模型上下文上限时自动生成检查点并继续
@@ -44,12 +45,12 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 - Java 使用 `javac` 解析阶段检查和 `java --source 17` 单文件运行，不依赖外部 Termux 或系统 JDK
 - 初始化会修复应用私有工具链的所有权与 SELinux 标签，工具链就绪后 Git 不再重复安装
 - apt 初始化优先使用清华 TUNA，失败时自动回退 BFSU、USTC、NJU 和 Termux 官方源
-- App 使用 `targetSdk=30` 和 `MANAGE_EXTERNAL_STORAGE`，首次引导直接进入系统全盘文件访问授权
+- App 使用 `targetSdk=35`；点击“去授权”后，通知直接弹系统授权框，共享项目目录打开系统“所有文件访问”页面，授权返回后再初始化工作区
 - 内置 Termux 通过 system-linker 和 `termux-exec` 解决 Android 10+ 的 app-data 执行限制
 
 ## 当前限制
 
-- 检测到 Root 并获 root 管理器授权后，Agent 和终端会自动使用 Root；权限审批与审计仍然生效。
+- Root 授权后，终端提供 Termux、手机 Shell 和 Root 三种独立环境；Agent 只有请求系统级能力时才使用 Root，权限审批与审计仍然生效。
 - 该构建面向侧载、F-Droid 或官网分发；使用全盘文件和动态工具链，不适合直接提交 Google Play。
 
 ## 构建

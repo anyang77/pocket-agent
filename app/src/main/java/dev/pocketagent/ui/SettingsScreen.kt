@@ -280,14 +280,3 @@ private val CONTEXT_WINDOW_OPTIONS = listOf(
 
 private fun formatContextWindow(tokens: Int): String =
     if (tokens >= 1_000_000) "1M" else "${tokens / 1_000}K"
-
-private fun reasoningEffortLabel(effort: String): String = when (effort) {
-    "minimal" -> "极低"
-    "low" -> "低"
-    "medium" -> "中"
-    "high" -> "高"
-    "xhigh" -> "极高"
-    "max" -> "最高"
-    "none" -> "关闭"
-    else -> "自动"
-}

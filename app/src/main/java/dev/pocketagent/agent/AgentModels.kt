@@ -47,6 +47,22 @@ data class TokenUsage(
         }
 }
 
+/**
+ * Rough token estimate used for live speed readouts. The engine's own context estimate uses the
+ * same 3-chars-per-token ratio, so both numbers stay on the same scale.
+ */
+object TokenEstimator {
+    fun estimate(chars: Int): Int = if (chars <= 0) 0 else chars / 3
+
+    /** Tokens per second for [chars] produced over [elapsedMs]; null when it is too early to tell. */
+    fun tokensPerSecond(chars: Int, elapsedMs: Long): Float? {
+        if (chars <= 0 || elapsedMs < 250) return null
+        val tokens = estimate(chars)
+        if (tokens <= 0) return null
+        return tokens / (elapsedMs / 1_000f)
+    }
+}
+
 object ModelContextBudget {
     fun limitFor(model: String, configuredWindow: Int = 0): Int {
         if (configuredWindow > 0) return configuredWindow
@@ -73,6 +89,9 @@ data class ToolActivity(
     val durationMs: Long? = null,
     val contentOffset: Int = 0,
 )
+
+/** Keeps an older measured speed visible while a new request is still warming up. */
+fun retainLastMeasuredSpeed(current: Float?, next: Float?): Float? = next ?: current
 
 enum class AgentPlanStatus {
     PENDING,
@@ -166,6 +185,8 @@ sealed interface AgentEvent {
         val model: String,
         val round: Int,
         val messageCount: Int,
+        /** Prompt size the engine is actually sending, i.e. the value that drives compaction. */
+        val contextTokens: Int = 0,
     ) : AgentEvent
     data class ModelRequestFinished(
         val round: Int,
@@ -173,6 +194,7 @@ sealed interface AgentEvent {
         val contentChars: Int,
         val toolCallCount: Int,
         val retryCount: Int,
+        val completionTokens: Int = 0,
     ) : AgentEvent
     data class RetryScheduled(val notice: RetryNotice) : AgentEvent
     data class StreamOutputReset(val contentChars: Int) : AgentEvent
@@ -181,7 +203,12 @@ sealed interface AgentEvent {
     data class ReasoningCompleted(val text: String) : AgentEvent
     data class PlanUpdated(val steps: List<AgentPlanStep>) : AgentEvent
     data class ToolStarted(val name: String, val summary: String) : AgentEvent
-    data class ToolFinished(val name: String, val summary: String, val success: Boolean) : AgentEvent
+    data class ToolFinished(
+        val name: String,
+        val summary: String,
+        val success: Boolean,
+        val output: String = "",
+    ) : AgentEvent
     data class State(val text: String) : AgentEvent
     data object Completed : AgentEvent
     data class Stopped(val message: String) : AgentEvent

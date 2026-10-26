@@ -17,6 +17,7 @@ import dev.pocketagent.data.ModelProfile
 import dev.pocketagent.agent.TokenUsage
 import dev.pocketagent.agent.ToolActivity
 import dev.pocketagent.runtime.RuntimeCapabilities
+import dev.pocketagent.runtime.RuntimeKind
 
 enum class AppTab {
     AGENT,
@@ -85,6 +86,8 @@ data class GitHubLoginState(
 )
 
 data class AppUiState(
+    val welcomeAccepted: Boolean = false,
+    val welcomeVisible: Boolean = false,
     val tab: AppTab = AppTab.FILES,
     val onboardingCompleted: Boolean = false,
     val capabilities: RuntimeCapabilities = RuntimeCapabilities(),
@@ -122,14 +125,16 @@ data class AppUiState(
     val chat: List<ChatEntry> = emptyList(),
     val agentRunning: Boolean = false,
     val agentStatus: String? = null,
+    /** Non-null while context compaction is running; rendered inline instead of as a card. */
+    val agentCompactStatus: String? = null,
+    /** Prompt size published by the engine — the same number that triggers compaction. */
+    val agentContextTokens: Int = 0,
+    /** Output speed in tokens/second; live while streaming, final once the request ends. */
+    val agentTokensPerSecond: Float? = null,
     val agentRequestStartedAt: Long? = null,
     val agentRetry: AgentRetryState? = null,
     val agentGoal: AgentGoal? = null,
     val queuedPrompts: List<String> = emptyList(),
-    val agentCompacting: Boolean = false,
-    val agentCompactionStartedAt: Long? = null,
-    val agentCompactionBeforeTokens: Int = 0,
-    val agentCompactionLimit: Int = 0,
     val files: List<FileEntry> = emptyList(),
     val currentDirectory: String = ".",
     val workspacePath: String = "",
@@ -149,6 +154,7 @@ data class AppUiState(
     val terminalOutput: String = "",
     val terminalRunning: Boolean = false,
     val terminalRoot: Boolean = false,
+    val terminalRuntime: RuntimeKind = RuntimeKind.TERMUX,
     val rootProbing: Boolean = false,
     val internalRuntimeInstalling: Boolean = false,
     val internalRuntimeInstallMessage: String? = null,

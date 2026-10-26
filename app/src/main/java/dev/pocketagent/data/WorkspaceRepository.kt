@@ -26,6 +26,9 @@ class WorkspaceRepository(
     private val useRoot: () -> Boolean = { false },
 ) {
     private val appContext = context.applicationContext
+    fun agentPermissions(): dev.pocketagent.agent.AgentPermissions =
+        PermissionSettingsRepository(appContext).load()
+
     val defaultRoot: File = File("/sdcard")
     @Volatile
     var root: File = defaultRoot

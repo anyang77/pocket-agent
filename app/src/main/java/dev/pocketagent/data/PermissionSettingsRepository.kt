@@ -15,7 +15,10 @@ class PermissionSettingsRepository(context: Context) {
             )
         }.getOrDefault(PermissionMode.ASK)
         return AgentPermissions(
-            mode = mode,
+            // Legacy AUTO selections did not show the full-access risk confirmation.
+            mode = if (mode == PermissionMode.AUTO &&
+                !preferences.getBoolean("full_access_risk_confirmed_v1", false)
+            ) PermissionMode.ASK else mode,
             allowFileWrite = preferences.getBoolean("allow_file_write", true),
             allowCommands = preferences.getBoolean("allow_commands", true),
             allowNetwork = preferences.getBoolean("allow_network", false),
@@ -26,6 +29,7 @@ class PermissionSettingsRepository(context: Context) {
     fun save(permissions: AgentPermissions) {
         preferences.edit()
             .putString("mode", permissions.mode.name)
+            .putBoolean("full_access_risk_confirmed_v1", permissions.mode == PermissionMode.AUTO)
             .putBoolean("allow_file_write", permissions.allowFileWrite)
             .putBoolean("allow_commands", permissions.allowCommands)
             .putBoolean("allow_network", permissions.allowNetwork)

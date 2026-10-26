@@ -1137,8 +1137,25 @@
       },
       flush() {
         flushContent();
+      },
+      refresh() {
+        editor.refresh();
+        editor.scrollIntoView(editor.getCursor(), 80);
       }
     };
+
+    function refreshEditorViewport() {
+      if (!window.PocketEditor) return;
+      requestAnimationFrame(() => {
+        window.PocketEditor.refresh();
+        setTimeout(() => window.PocketEditor.refresh(), 80);
+      });
+    }
+
+    window.addEventListener("resize", refreshEditorViewport);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", refreshEditorViewport);
+    }
 
     setTimeout(() => {
       editor.refresh();

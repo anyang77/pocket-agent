@@ -23,7 +23,7 @@ class RuntimeSelectorTest {
             ),
         )
         assertEquals(
-            RuntimeKind.ROOT_SHELL,
+            RuntimeKind.ROOT_TERMUX,
             RuntimeSelector.select(
                 RuntimeCapabilities(rootGranted = true),
                 RuntimePreference.ROOT_WHEN_AVAILABLE,

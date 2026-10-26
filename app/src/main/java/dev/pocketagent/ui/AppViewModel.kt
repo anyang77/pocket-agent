@@ -20,8 +20,10 @@ import dev.pocketagent.agent.PermissionDecision
 import dev.pocketagent.agent.PermissionKind
 import dev.pocketagent.agent.PermissionMode
 import dev.pocketagent.agent.PermissionRequest
+import dev.pocketagent.agent.TokenEstimator
 import dev.pocketagent.agent.TokenUsage
 import dev.pocketagent.agent.ToolActivity
+import dev.pocketagent.agent.retainLastMeasuredSpeed
 import dev.pocketagent.data.AiSettings
 import dev.pocketagent.data.AgentGoal
 import dev.pocketagent.data.AuditLog
@@ -63,6 +65,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -77,7 +81,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val commandRunner = CommandRunner(
         rootDetector = rootDetector,
         internalRuntime = internalRuntime,
-        useRoot = { autoUseRoot },
     )
     private val workspace = WorkspaceRepository(
         context = application,
@@ -130,9 +133,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val conversationCache = linkedMapOf<Long, StoredConversation>()
     private var currentConversation: StoredConversation? = null
     private var activeAssistantId: Long? = null
+    private var settingsLoaded = false
+    @Volatile
+    private var workspaceNeedsConfiguration = true
+    private val workspaceConfigurationMutex = Mutex()
 
     private val _state = MutableStateFlow(
         AppUiState(
+            welcomeAccepted = onboardingRepository.isWelcomeAccepted(),
             onboardingCompleted = onboardingRepository.isCompleted(),
             capabilities = RuntimeCapabilities(
                 internalTermuxReady = internalRuntime.isReady(),
@@ -166,30 +174,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     conversations = conversationStore.load(),
                 )
             }
-            var settings = loaded.settings
-            var workspaceResult = runCatching {
-                workspace.configure(settings.workspacePath)
-            }
-            if (workspaceResult.isFailure) {
-                val probe = rootDetector.probe()
-                if (probe.granted) {
-                    autoUseRoot = true
-                    terminalManager.setUseRoot(true)
-                    workspaceResult = runCatching {
-                        workspace.configure(settings.workspacePath)
-                    }
-                }
-                if (workspaceResult.isFailure) {
-                    workspace.configure("")
-                    settings = settings.copy(workspacePath = "")
-                    auditLog.append(
-                        "workspace",
-                        "工作区回退默认目录",
-                        workspaceResult.exceptionOrNull()?.message.orEmpty(),
-                    )
-                }
-            }
-            workspace.ensureWorkspace()
+            val settings = loaded.settings
             conversationCache.clear()
             loaded.conversations.forEach { conversationCache[it.id] = it }
             nextConversationId.set(
@@ -209,6 +194,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     defaultWorkspacePath = "/sdcard",
                 )
             }
+            settingsLoaded = true
+            retryWorkspaceConfiguration()
             auditLog.append(
                 "permission",
                 "加载权限",
@@ -224,10 +211,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 newConversation()
             }
-            if (settings.apiKey.isNotBlank()) {
-                refreshModels()
+            if (_state.value.welcomeAccepted) {
+                if (settings.apiKey.isNotBlank()) refreshModels()
+                installInternalRuntime()
+                refreshRootAccess()
             }
-            probeRoot(announce = false)
             refreshFiles()
         }
     }
@@ -261,6 +249,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 chat = listOf(welcome),
                 currentConversationId = id,
+                agentContextTokens = 0,
                 conversations = conversationSummaries(),
             )
         }
@@ -346,6 +335,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 chat = chat,
                 currentConversationId = conversation.id,
+                agentContextTokens = 0,
                 conversations = conversationSummaries(),
             )
         }
@@ -462,12 +452,53 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 notificationPermissionGranted = hasNotificationPermission(),
             )
         }
+        retryWorkspaceConfiguration()
+    }
+
+    private fun retryWorkspaceConfiguration() {
+        if (!_state.value.welcomeAccepted) return
+        if (!settingsLoaded || !workspaceNeedsConfiguration) return
+        if (!_state.value.storageAccessGranted && !autoUseRoot) return
+        viewModelScope.launch {
+            workspaceConfigurationMutex.withLock {
+                if (!workspaceNeedsConfiguration) return@withLock
+                runCatching {
+                    workspace.configure(_state.value.settings.workspacePath)
+                    workspace.ensureWorkspace()
+                }.onSuccess {
+                    workspaceNeedsConfiguration = false
+                    _state.update { it.copy(workspacePath = workspace.displayRoot) }
+                    refreshFiles()
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
+                    auditLog.append("workspace", "工作区初始化失败", error.message.orEmpty())
+                    _state.update { it.copy(notice = error.message ?: "无法打开工作区") }
+                }
+            }
+        }
     }
 
     fun completeOnboarding() {
         onboardingRepository.complete()
         _state.update { it.copy(onboardingCompleted = true, tab = AppTab.FILES) }
         auditLog.append("app", "完成首次引导", "权限、模型和环境初始化完成")
+    }
+
+    fun acceptWelcome() {
+        _state.update { it.copy(welcomeVisible = false) }
+        if (_state.value.welcomeAccepted) return
+        onboardingRepository.acceptWelcome()
+        _state.update { it.copy(welcomeAccepted = true) }
+        observeRootAccess()
+        if (settingsLoaded) {
+            retryWorkspaceConfiguration()
+            if (_state.value.settings.apiKey.isNotBlank()) refreshModels()
+            installInternalRuntime()
+        }
+    }
+
+    fun showWelcome() {
+        _state.update { it.copy(welcomeVisible = true) }
     }
 
     fun saveSettings(settings: AiSettings) {
@@ -484,6 +515,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             val workspaceChanged = workspaceResult.isSuccess &&
                 previousWorkspace != workspace.displayRoot
+            if (workspaceResult.isSuccess) workspaceNeedsConfiguration = false
             settingsRepository.save(updatedSettings)
             val refreshedProfiles = settingsRepository.loadProfiles()
             val refreshedProfileId = settingsRepository.activeProfileId()
@@ -741,10 +773,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return PermissionDecision(true, reason)
         }
 
-        if (request.kind == PermissionKind.ROOT) {
-            return deny("Agent 没有 root 权限")
-        }
-
         return when (request.kind) {
             PermissionKind.WRITE_FILES -> {
                 if (permissions.mode == PermissionMode.READ_ONLY) {
@@ -805,7 +833,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }
-            PermissionKind.ROOT -> deny("Agent 没有 root 权限")
+            PermissionKind.ROOT -> {
+                if (!_state.value.capabilities.rootGranted) {
+                    deny("尚未授予 Root 权限")
+                } else if (permissions.mode == PermissionMode.READ_ONLY) {
+                    deny("当前是只读模式")
+                } else if (permissions.mode == PermissionMode.ASK) {
+                    requestApproval(request)
+                } else {
+                    allow("自动模式 · 明确请求 Root 环境")
+                }
+            }
         }
     }
 
@@ -861,7 +899,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val probe = rootDetector.probe()
             autoUseRoot = probe.granted
-            terminalManager.setUseRoot(probe.granted)
             auditLog.append(
                 "root",
                 "Root 探测结果",
@@ -880,8 +917,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         error = probe.error,
                     ),
                     terminalRoot = if (probe.granted) current.terminalRoot else false,
+                    terminalRuntime = if (
+                        !probe.granted &&
+                        current.terminalRuntime == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
+                    ) {
+                        dev.pocketagent.runtime.RuntimeKind.TERMUX
+                    } else {
+                        current.terminalRuntime
+                    },
                     notice = if (announce && probe.granted) {
-                        "Root 已授权，Agent 和终端会自动使用 Root"
+                        "Root 已授权，可在终端中手动切换 Root 环境"
                     } else if (announce) {
                         probe.error ?: "Root 不可用"
                     } else {
@@ -890,9 +935,56 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             if (probe.granted) {
+                retryWorkspaceConfiguration()
                 repairRuntimeOwnership()
             }
             installInternalRuntime()
+        }
+    }
+
+    fun refreshRootAccess() {
+        val wasGranted = _state.value.capabilities.rootGranted
+        _state.update { it.copy(capabilities = it.capabilities.copy(rootGranted = false)) }
+        observeRootAccess()
+        if (wasGranted) {
+            auditLog.append("root", "重新检测 Root", "系统恢复后刷新授权状态")
+        }
+    }
+
+    private fun observeRootAccess() {
+        if (!_state.value.welcomeAccepted) return
+        if (_state.value.capabilities.rootGranted || _state.value.rootProbing) return
+        val knownSu = rootDetector.findSuBinary() ?: return
+        if (!knownSu.canExecute()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val probe = rootDetector.probe()
+            withContext(Dispatchers.Main) {
+                autoUseRoot = probe.granted
+                _state.update { current ->
+                    current.copy(
+                        capabilities = current.capabilities.copy(
+                            rootGranted = probe.granted,
+                            systemReadable = probe.canReadAppData,
+                            chrootAvailable = probe.chrootAvailable,
+                            mountAvailable = probe.mountAvailable,
+                            error = probe.error,
+                        ),
+                        terminalRoot = false,
+                        terminalRuntime = if (
+                            !probe.granted &&
+                            current.terminalRuntime == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
+                        ) {
+                            dev.pocketagent.runtime.RuntimeKind.TERMUX
+                        } else {
+                            current.terminalRuntime
+                        },
+                    )
+                }
+                if (probe.granted) {
+                    retryWorkspaceConfiguration()
+                    repairRuntimeOwnership()
+                }
+            }
         }
     }
 
@@ -1035,6 +1127,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshFiles() {
+        if (workspaceNeedsConfiguration) return
         viewModelScope.launch {
             runCatching {
                 val normalized = workspace.normalizeWorkspacePath(
@@ -1139,6 +1232,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 workspace.configure(path)
                 workspace.ensureWorkspace()
             }.onSuccess {
+                workspaceNeedsConfiguration = false
                 val updated = _state.value.settings.copy(
                     workspacePath = workspace.displayRoot,
                 )
@@ -1961,17 +2055,41 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setTerminalRoot(enabled: Boolean) {
-        if (enabled && !_state.value.capabilities.rootGranted) {
-            _state.update { it.copy(notice = "请先在设置里完成 root 授权") }
-            return
+        setTerminalRuntime(
+            if (enabled) {
+                dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
+            } else {
+                dev.pocketagent.runtime.RuntimeKind.TERMUX
+            },
+        )
+    }
+
+    fun setTerminalRuntime(kind: dev.pocketagent.runtime.RuntimeKind) {
+        when (kind) {
+            dev.pocketagent.runtime.RuntimeKind.TERMUX,
+            dev.pocketagent.runtime.RuntimeKind.SYSTEM_SHELL,
+            -> Unit
+            dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX -> {
+                if (!_state.value.capabilities.rootGranted) {
+                    _state.update { it.copy(notice = "请先在设置里完成 Root 授权") }
+                    return
+                }
+            }
         }
-        _state.update { it.copy(terminalRoot = enabled) }
+        _state.update {
+            it.copy(
+                terminalRuntime = kind,
+                terminalRoot = kind == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX,
+            )
+        }
+        terminalManager.setRuntimeKind(kind)
     }
 
     fun runTerminal(command: String) {
         val trimmed = command.trim()
         if (trimmed.isBlank() || _state.value.terminalRunning) return
-        val asRoot = _state.value.terminalRoot
+        val runtimeKind = _state.value.terminalRuntime
+        val asRoot = runtimeKind == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
         if (asRoot && !_state.value.capabilities.rootGranted) {
             _state.update { it.copy(notice = "Root 当前不可用") }
             return
@@ -1980,7 +2098,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 terminalRunning = true,
-                terminalOutput = it.terminalOutput + "\n❯ ${if (asRoot) "[root] " else ""}$trimmed\n",
+                terminalOutput = it.terminalOutput + "\n❯ [${runtimeKind.name.lowercase()}] $trimmed\n",
             )
         }
         auditLog.append(
@@ -1993,6 +2111,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 command = trimmed,
                 workingDir = workspace.root,
                 asRoot = asRoot,
+                useInternalRuntime = runtimeKind != dev.pocketagent.runtime.RuntimeKind.SYSTEM_SHELL,
                 onOutput = ::appendTerminal,
             )
             val footer = buildString {
@@ -2227,6 +2346,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         persistCurrentConversation()
 
+        var streamChars = 0
+        var streamStartedAt = System.currentTimeMillis()
+        var speedUpdatedAt = 0L
         agentJob = viewModelScope.launch {
             try {
                 agentEngine.run(
@@ -2242,6 +2364,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         is AgentEvent.AssistantDelta -> {
                             setTurnPhase(assistantId, AgentTurnPhase.RECEIVING)
                             appendChatDelta(assistantId, event.text)
+                            streamChars += event.text.length
+                            val now = System.currentTimeMillis()
+                            // Throttle the readout so it updates ~4x/s instead of per delta.
+                            if (now - speedUpdatedAt >= 250) {
+                                val speed = TokenEstimator.tokensPerSecond(
+                                    streamChars,
+                                    now - streamStartedAt,
+                                )
+                                if (speed != null) {
+                                    speedUpdatedAt = now
+                                    _state.update {
+                                        it.copy(
+                                            agentTokensPerSecond = retainLastMeasuredSpeed(
+                                                it.agentTokensPerSecond,
+                                                speed,
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
                         }
                         is AgentEvent.Usage -> addUsage(assistantId, event.usage)
                         is AgentEvent.ModelRequestStarted -> {
@@ -2252,16 +2394,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 "${event.model} · 第 ${event.round} 轮 · " +
                                     "${event.messageCount} 条上下文",
                             )
+                            streamChars = 0
+                            streamStartedAt = System.currentTimeMillis()
                             _state.update {
                                 it.copy(
                                     agentStatus = "正在等待模型响应 · 第 ${event.round} 轮",
                                     agentRequestStartedAt = System.currentTimeMillis(),
                                     agentRetry = null,
+                                    agentContextTokens = event.contextTokens
+                                        .takeIf { it > 0 }
+                                        ?: it.agentContextTokens,
                                 )
                             }
                         }
                         is AgentEvent.StreamOutputReset -> {
                             setTurnPhase(assistantId, AgentTurnPhase.RETRYING)
+                            streamChars = 0
+                            streamStartedAt = System.currentTimeMillis()
                             trimChatTail(assistantId, event.contentChars)
                             updateRunningActivitySummary(
                                 assistantId,
@@ -2312,11 +2461,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 success = true,
                                 activitySummary = "第 ${event.round} 轮模型响应已返回",
                             )
+                            val measuredSpeed = if (event.completionTokens > 0 &&
+                                event.elapsedMs > 0
+                            ) {
+                                event.completionTokens / (event.elapsedMs / 1_000f)
+                            } else {
+                                null
+                            }
                             _state.update {
                                 it.copy(
                                     agentStatus = "模型已响应，正在处理结果",
                                     agentRequestStartedAt = null,
                                     agentRetry = null,
+                                    agentTokensPerSecond = retainLastMeasuredSpeed(
+                                        it.agentTokensPerSecond,
+                                        measuredSpeed,
+                                    ),
                                 )
                             }
                         }
@@ -2343,41 +2503,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                     event.contextLimit.coerceAtLeast(1).toFloat() *
                                     100f
                                 ).toInt().coerceIn(0, 100)
-                            startToolActivity(
-                                assistantId,
-                                "上下文压缩",
-                                "上下文 $percent% · 已超过自动压缩线，正在生成检查点以继续任务",
-                            )
                             _state.update {
                                 it.copy(
-                                    agentStatus = "正在压缩上下文 · $percent% · 可随时停止",
-                                    agentCompacting = true,
-                                    agentCompactionStartedAt = System.currentTimeMillis(),
-                                    agentCompactionBeforeTokens = event.beforeTokens,
-                                    agentCompactionLimit = event.contextLimit,
+                                    agentStatus = "正在压缩上下文 · $percent%" +
+                                        " · ${formatKTokens(event.beforeTokens)}",
+                                    agentCompactStatus = "上下文 $percent%，正在整理检查点",
                                 )
                             }
                         }
-                        is AgentEvent.ContextCompacted -> finishToolActivity(
-                            id = assistantId,
-                            name = "上下文压缩",
-                            summary = "${formatKTokens(event.beforeTokens)} → " +
-                                "${formatKTokens(event.afterTokens)} · " +
-                                "${event.elapsedMs / 1_000.0}s · " +
-                                "检查点 ${event.summaryChars} 字符",
-                            success = true,
-                            activitySummary = if (event.fallback) {
-                                "模型压缩不可用，已使用本地兜底检查点继续"
-                            } else {
-                                "上下文压缩完成，任务已继续"
-                            },
-                        ).also {
+                        is AgentEvent.ContextCompacted -> {
                             _state.update {
                                 it.copy(
-                                    agentCompacting = false,
-                                    agentCompactionStartedAt = null,
-                                    agentCompactionBeforeTokens = 0,
-                                    agentCompactionLimit = 0,
+                                    agentCompactStatus = null,
+                                    agentStatus = "上下文压缩完成，继续执行",
                                 )
                             }
                             persistCurrentConversation()
@@ -2405,6 +2543,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 event.name,
                                 event.summary,
                                 event.success,
+                                output = event.output,
                             )
                             _state.update {
                                 it.copy(
@@ -2430,23 +2569,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 success = false,
                                 activitySummary = "模型请求已停止",
                             )
-                            if (_state.value.agentCompacting) {
-                                finishToolActivity(
-                                    id = assistantId,
-                                    name = "上下文压缩",
-                                    summary = event.message,
-                                    success = false,
-                                    activitySummary = "上下文压缩已停止",
-                                )
-                            }
                             appendChat(assistantId, "\n\n■ ${event.message}\n")
                             _state.update {
                                 it.copy(
                                     notice = event.message,
                                     agentRequestStartedAt = null,
                                     agentRetry = null,
-                                    agentCompacting = false,
-                                    agentCompactionStartedAt = null,
                                 )
                             }
                         }
@@ -2459,15 +2587,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 success = false,
                                 activitySummary = "模型请求失败",
                             )
-                            if (_state.value.agentCompacting) {
-                                finishToolActivity(
-                                    id = assistantId,
-                                    name = "上下文压缩",
-                                    summary = event.message,
-                                    success = false,
-                                    activitySummary = "上下文压缩失败",
-                                )
-                            }
                             _state.update { current ->
                                 current.copy(
                                     chat = current.chat.map { entry ->
@@ -2487,8 +2606,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                     notice = event.message,
                                     agentRequestStartedAt = null,
                                     agentRetry = null,
-                                    agentCompacting = false,
-                                    agentCompactionStartedAt = null,
                                 )
                             }
                         }
@@ -2510,12 +2627,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         agentRunning = false,
                         agentStatus = null,
+                        agentCompactStatus = null,
                         agentRequestStartedAt = null,
                         agentRetry = null,
-                        agentCompacting = false,
-                        agentCompactionStartedAt = null,
-                        agentCompactionBeforeTokens = 0,
-                        agentCompactionLimit = 0,
                         chat = it.chat.map { entry ->
                             if (entry.id == assistantId) {
                                 entry.copy(
@@ -2778,6 +2892,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         name: String,
         summary: String,
         success: Boolean,
+        output: String? = null,
         activitySummary: String? = null,
     ) {
         _state.update { current ->
@@ -2794,7 +2909,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 val finishedAt = System.currentTimeMillis()
                                 activity.copy(
                                     summary = activitySummary ?: activity.summary,
-                                    result = summary,
+                                    result = output ?: summary,
                                     success = success,
                                     durationMs = activity.startedAt
                                         ?.let { (finishedAt - it).coerceAtLeast(0) },

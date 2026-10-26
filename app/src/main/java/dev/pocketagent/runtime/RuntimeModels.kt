@@ -2,8 +2,8 @@ package dev.pocketagent.runtime
 
 enum class RuntimeKind {
     SYSTEM_SHELL,
-    ROOT_SHELL,
     TERMUX,
+    ROOT_TERMUX,
 }
 
 enum class RuntimePreference {
@@ -35,7 +35,7 @@ object RuntimeSelector {
     ): RuntimeKind = when {
         capabilities.internalTermuxReady -> RuntimeKind.TERMUX
         preference == RuntimePreference.ROOT_WHEN_AVAILABLE && capabilities.rootGranted ->
-            RuntimeKind.ROOT_SHELL
+            RuntimeKind.ROOT_TERMUX
         else -> RuntimeKind.SYSTEM_SHELL
     }
 }

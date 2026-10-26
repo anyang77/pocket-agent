@@ -37,30 +37,30 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.outlined.AddComment
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -72,8 +72,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -87,6 +87,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -99,7 +100,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.pocketagent.agent.TokenUsage
 import dev.pocketagent.agent.ToolActivity
 import dev.pocketagent.agent.ModelContextBudget
 import dev.pocketagent.agent.AgentPlanStatus
@@ -113,7 +113,6 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -133,11 +132,10 @@ fun AgentScreen(
     onPauseGoal: () -> Unit,
     onResumeGoal: () -> Unit,
     onClearGoal: () -> Unit,
+    onPermissionsChanged: (dev.pocketagent.agent.AgentPermissions) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var input by rememberSaveable { mutableStateOf("") }
-    var modelMenuExpanded by rememberSaveable { mutableStateOf(false) }
-    var usageMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var historyVisible by rememberSaveable { mutableStateOf(false) }
     var autoFollow by rememberSaveable { mutableStateOf(true) }
     val listState = rememberLazyListState()
@@ -252,224 +250,23 @@ fun AgentScreen(
             .imePadding()
             .padding(horizontal = 13.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Box {
-                AssistChip(
-                    onClick = { modelMenuExpanded = true },
-                    enabled = !state.modelsLoading,
-                    modifier = Modifier.widthIn(max = 190.dp),
-                    label = {
-                        Text(
-                            listOfNotNull(
-                                activeProfileName,
-                                state.settings.model.ifBlank { "获取模型" },
-                                reasoningEffortLabel(state.settings.reasoningEffort),
-                            ).joinToString(" · "),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
-                    trailingIcon = {
-                        Icon(
-                            Icons.Filled.ArrowDropDown,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                )
-                DropdownMenu(
-                    expanded = modelMenuExpanded,
-                    onDismissRequest = { modelMenuExpanded = false },
-                ) {
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                "模型配置",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        },
-                        onClick = {},
-                        enabled = false,
-                    )
-                    state.modelProfiles.forEach { profile ->
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text(
-                                        profile.name,
-                                        color = if (profile.id == state.activeProfileId) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        },
-                                    )
-                                    Text(
-                                        "${profile.model} · ${profile.baseUrl}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                            },
-                            onClick = {
-                                onProfileSelected(profile.id)
-                                modelMenuExpanded = false
-                            },
-                        )
-                    }
-                    HorizontalDivider()
-                    if (state.availableModels.isEmpty()) {
-                        DropdownMenuItem(
-                            text = {
-                                Text(if (state.modelsLoading) "正在获取模型…" else "没有可用模型")
-                            },
-                            onClick = { modelMenuExpanded = false },
-                        )
-                    } else {
-                        state.availableModels.forEach { model ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        model,
-                                        color = if (model == state.settings.model) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        },
-                                    )
-                                },
-                                onClick = {
-                                    onModelSelected(model)
-                                    modelMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                "思考等级",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        },
-                        onClick = {},
-                        enabled = false,
-                    )
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                "自动",
-                                color = if (state.settings.reasoningEffort == "auto") {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                            )
-                        },
-                        onClick = {
-                            onReasoningEffortSelected("auto")
-                            modelMenuExpanded = false
-                        },
-                    )
-                    state.modelReasoningEfforts[state.settings.model].orEmpty()
-                        .forEach { effort ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        reasoningEffortLabel(effort),
-                                        color = if (
-                                            state.settings.reasoningEffort == effort
-                                        ) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        },
-                                    )
-                                },
-                                onClick = {
-                                    onReasoningEffortSelected(effort)
-                                    modelMenuExpanded = false
-                                },
-                            )
-                        }
-                    if (state.modelReasoningEfforts[state.settings.model].isNullOrEmpty()) {
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    "该模型未声明可调等级",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            onClick = {},
-                            enabled = false,
-                        )
-                    }
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text("刷新模型列表") },
-                        leadingIcon = {
-                            Icon(Icons.Filled.Refresh, contentDescription = null)
-                        },
-                        onClick = {
-                            onRefreshModels()
-                            modelMenuExpanded = false
-                        },
-                    )
-                }
-            }
-            if (state.modelsLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(14.dp),
-                    strokeWidth = 2.dp,
-                )
-            }
-            Spacer(Modifier.width(6.dp))
-            UsageBadge(
-                usage = latestRequestUsage,
-                taskUsage = taskUsage,
-                sessionUsage = sessionUsage,
-                expanded = usageMenuExpanded,
-                onExpandedChange = { usageMenuExpanded = it },
-            )
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = { historyVisible = true }) {
-                Icon(Icons.Outlined.History, contentDescription = "历史对话")
-            }
-            IconButton(
-                onClick = onNewConversation,
-                enabled = !state.agentRunning,
-            ) {
-                Icon(Icons.Outlined.AddComment, contentDescription = "新对话")
-            }
-        }
-
-        ContextProgress(
-            usedTokens = latestRequestUsage?.promptTokens ?: 0,
+        AgentHeaderBar(
+            state = state,
+            permissions = state.permissions,
+            onPermissionsChanged = onPermissionsChanged,
             contextLimit = contextLimit,
+            contextTokens = state.agentContextTokens,
+            tokensPerSecond = state.agentTokensPerSecond,
+            latestRequestUsage = latestRequestUsage,
             taskUsage = taskUsage,
-            lastRequestAt = latestUsageEntry?.lastRequestAt,
+            sessionUsage = sessionUsage,
+            onModelSelected = onModelSelected,
+            onProfileSelected = onProfileSelected,
+            onReasoningEffortSelected = onReasoningEffortSelected,
+            onRefreshModels = onRefreshModels,
+            onNewConversation = onNewConversation,
+            onOpenHistory = { historyVisible = true },
         )
-
-        if (state.agentCompacting) {
-            CompactionProgressBanner(
-                startedAt = state.agentCompactionStartedAt,
-                beforeTokens = state.agentCompactionBeforeTokens,
-                contextLimit = state.agentCompactionLimit,
-                status = state.agentStatus,
-                onStop = onStopAgent,
-            )
-        }
 
         Box(
             modifier = Modifier
@@ -499,6 +296,15 @@ fun AgentScreen(
                         },
                         liveRetry = if (entry.id == lastEntry?.id && entry.pending) {
                             state.agentRetry
+                        } else {
+                            null
+                        },
+                        liveCompacting = if (
+                            entry.id == lastEntry?.id &&
+                            entry.pending &&
+                            state.agentCompactStatus != null
+                        ) {
+                            state.agentCompactStatus
                         } else {
                             null
                         },
@@ -733,78 +539,6 @@ fun AgentScreen(
 }
 
 @Composable
-private fun CompactionProgressBanner(
-    startedAt: Long?,
-    beforeTokens: Int,
-    contextLimit: Int,
-    status: String?,
-    onStop: () -> Unit,
-) {
-    var elapsedSeconds by remember(startedAt) { mutableStateOf(0L) }
-    LaunchedEffect(startedAt) {
-        while (true) {
-            elapsedSeconds = startedAt
-                ?.let { ((System.currentTimeMillis() - it) / 1_000).coerceAtLeast(0) }
-                ?: 0L
-            delay(1_000)
-        }
-    }
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 7.dp),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.tertiaryContainer,
-        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(9.dp),
-            ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer,
-                )
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "正在压缩上下文",
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                    )
-                    Text(
-                        "${formatTokenCount(beforeTokens)} / " +
-                            "${formatTokenCount(contextLimit)} · 已等待 ${elapsedSeconds}s",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                        ),
-                    )
-                }
-                TextButton(onClick = onStop) {
-                    Text("停止")
-                }
-            }
-            LinearProgressIndicator(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(3.dp),
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                trackColor = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.16f),
-            )
-            Text(
-                status ?: "正在生成可继续任务所需的检查点，完成后会自动继续",
-                style = MaterialTheme.typography.labelSmall,
-            )
-        }
-    }
-}
-
-@Composable
 private fun ConversationHistory(
     conversations: List<ConversationSummary>,
     currentId: Long?,
@@ -894,6 +628,7 @@ private fun ChatBubble(
     liveStatus: String?,
     liveStartedAt: Long?,
     liveRetry: AgentRetryState?,
+    liveCompacting: String? = null,
 ) {
     if (entry.role == ChatRole.SYSTEM) {
         Text(
@@ -996,6 +731,7 @@ private fun ChatBubble(
                 liveStatus = liveStatus,
                 liveStartedAt = liveStartedAt,
                 liveRetry = liveRetry,
+                liveCompacting = liveCompacting,
             )
 
             if (entry.content.isNotBlank() && !entry.pending) {
@@ -1222,6 +958,26 @@ private fun AgentLiveStatus(
 }
 
 @Composable
+private fun AgentCompactingRow(text: String) {
+    Row(
+        modifier = Modifier.padding(start = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(12.dp),
+            strokeWidth = 1.6.dp,
+            color = MaterialTheme.colorScheme.tertiary,
+        )
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun AgentRetryCard(retry: AgentRetryState) {
     var remainingSeconds by remember(retry.retryAt) {
         mutableStateOf(((retry.retryAt - System.currentTimeMillis() + 999) / 1_000).coerceAtLeast(0))
@@ -1442,6 +1198,7 @@ private fun AgentTimeline(
     liveStatus: String?,
     liveStartedAt: Long?,
     liveRetry: AgentRetryState?,
+    liveCompacting: String?,
 ) {
     var cursor = 0
     Column(
@@ -1465,11 +1222,14 @@ private fun AgentTimeline(
         }
         if (liveRetry != null) {
             AgentRetryCard(liveRetry)
-        } else if (entry.activities.isEmpty() && liveStatus != null) {
+        } else if (liveStatus != null) {
             AgentLiveStatus(
                 status = liveStatus,
                 startedAt = liveStartedAt,
             )
+        }
+        if (liveCompacting != null) {
+            AgentCompactingRow(liveCompacting)
         }
     }
 }
@@ -1480,13 +1240,15 @@ private fun InlineActivity(
     index: Int,
     activity: ToolActivity,
 ) {
-    var expanded by rememberSaveable(entryId, index) { mutableStateOf(false) }
+    var expanded by rememberSaveable(entryId, index) { mutableStateOf(true) }
     val running = activity.success == null
+    val visual = activityVisual(activity.name)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .padding(start = 10.dp)
             .clickable { expanded = !expanded },
-        shape = RoundedCornerShape(11.dp),
+        shape = RoundedCornerShape(9.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
     ) {
         Column(
@@ -1503,23 +1265,19 @@ private fun InlineActivity(
                         strokeWidth = 1.7.dp,
                         color = MaterialTheme.colorScheme.tertiary,
                     )
-                    activity.success == false -> Text(
-                        "×",
-                        modifier = Modifier.width(14.dp),
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                        ),
-                        color = MaterialTheme.colorScheme.error,
-                    )
                     else -> Icon(
-                        Icons.Filled.CheckCircle,
+                        visual.icon,
                         contentDescription = null,
-                        modifier = Modifier.size(15.dp),
-                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp),
+                        tint = if (activity.success == false) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            visual.tint
+                        },
                     )
                 }
                 Text(
-                    activity.name,
+                    activityDisplayName(activity.name),
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.SemiBold,
@@ -1533,7 +1291,6 @@ private fun InlineActivity(
                     overflow = TextOverflow.Ellipsis,
                 )
                 activity.durationMs
-                    ?.takeIf { activity.name != "上下文压缩" }
                     ?.let(::formatActivityDuration)
                     ?.let { duration ->
                         Text(
@@ -1556,7 +1313,7 @@ private fun InlineActivity(
                     lineHeight = 16.sp,
                 ),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = if (expanded) 12 else 4,
+                maxLines = if (expanded) 4 else 2,
                 overflow = TextOverflow.Ellipsis,
             )
             if (expanded) {
@@ -1564,16 +1321,20 @@ private fun InlineActivity(
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
                     )
-                    Text(
-                        result,
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            lineHeight = 16.sp,
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 12,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    SelectionContainer {
+                        Text(
+                            result,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 320.dp)
+                                .verticalScroll(rememberScrollState()),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                lineHeight = 16.sp,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
                 }
             }
         }
@@ -1587,292 +1348,31 @@ private fun formatActivityDuration(durationMs: Long): String =
         String.format(Locale.US, "%.1fs", durationMs / 1_000.0)
     }
 
-@Composable
-private fun ContextProgress(
-    usedTokens: Int,
-    contextLimit: Int,
-    taskUsage: TokenUsage?,
-    lastRequestAt: Long?,
-) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    val ratio = if (usedTokens > 0 && contextLimit > 0) {
-        (usedTokens.toFloat() / contextLimit.toFloat()).coerceIn(0f, 1f)
-    } else {
-        0f
-    }
-    val progressColor = when {
-        ratio >= 0.72f -> MaterialTheme.colorScheme.tertiary
-        ratio >= 0.5f -> MaterialTheme.colorScheme.primary
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    Box {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = true }
-                .padding(top = 1.dp, bottom = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                "模型上下文 ⓘ",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            LinearProgressIndicator(
-                progress = { ratio },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(4.dp),
-                color = progressColor,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-            )
-            Text(
-                if (usedTokens > 0) {
-                    "${formatTokenCount(usedTokens)} / ${formatTokenCount(contextLimit)} · " +
-                        "${(ratio * 100).roundToInt()}%"
-                } else {
-                    "-- / ${formatTokenCount(contextLimit)}"
-                },
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontFamily = FontFamily.Monospace,
-                ),
-                color = progressColor,
-            )
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            Column(
-                modifier = Modifier
-                    .width(275.dp)
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                Text(
-                    "当前请求上下文",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                Text(
-                    "取最近一次模型响应里的 usage.prompt_tokens，不是累计计费 Token。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                UsageDetailRow("本请求输入", formatTokenCount(usedTokens))
-                UsageDetailRow("模型窗口", formatTokenCount(contextLimit))
-                UsageDetailRow(
-                    "剩余空间",
-                    formatTokenCount((contextLimit - usedTokens).coerceAtLeast(0)),
-                )
-                UsageDetailRow(
-                    "自动压缩线",
-                    formatTokenCount((contextLimit * 0.72f).roundToInt()),
-                )
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
-                )
-                Text(
-                    "包含系统提示、历史消息、计划、工具结果和当前工作状态。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                taskUsage?.let {
-                    UsageDetailRow("本次任务累计输入", formatTokenCount(it.promptTokens))
-                    UsageDetailRow("本次任务请求数", it.requests.toString())
-                }
-                lastRequestAt?.let {
-                    UsageDetailRow(
-                        "更新时间",
-                        SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(it)),
-                    )
-                }
-            }
-        }
-    }
+private fun activityDisplayName(name: String): String = when (name) {
+    "list_files" -> "浏览目录"
+    "read_file" -> "读取文件"
+    "search_files" -> "搜索代码"
+    "edit_file" -> "编辑文件"
+    "write_file" -> "写入文件"
+    "device_info" -> "读取设备信息"
+    "list_system_dir" -> "浏览系统目录"
+    "read_system_file" -> "读取系统文件"
+    "run_command" -> "运行命令"
+    "模型请求" -> "模型请求"
+    "update_plan" -> "更新任务计划"
+    else -> name
 }
 
-@Composable
-private fun UsageBadge(
-    usage: TokenUsage?,
-    taskUsage: TokenUsage?,
-    sessionUsage: TokenUsage?,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-) {
-    val cacheRate = usage?.cacheHitRate
-    val hasCacheMetrics = usage?.cacheMetricsAvailable == true && cacheRate != null
-    val accent = if (hasCacheMetrics) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Box {
-        Surface(
-            modifier = Modifier.clickable { onExpandedChange(true) },
-            shape = RoundedCornerShape(50),
-            color = if (hasCacheMetrics) {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-            },
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 9.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                Text("●", style = MaterialTheme.typography.labelSmall, color = accent)
-                Text(
-                    if (hasCacheMetrics) {
-                        "缓存 ${(cacheRate!! * 100).roundToInt()}%"
-                    } else {
-                        "缓存 --"
-                    },
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.Medium,
-                    ),
-                    color = accent,
-                    maxLines = 1,
-                )
-            }
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { onExpandedChange(false) },
-        ) {
-            Column(
-                modifier = Modifier
-                    .width(230.dp)
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                Text(
-                    "Token 与缓存",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                if (usage == null) {
-                    Text(
-                        "服务商尚未返回 usage 数据。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    Text(
-                        "当前请求",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    UsageDetailRow("输入", formatTokenCount(usage.promptTokens))
-                    UsageDetailRow("输出", formatTokenCount(usage.completionTokens))
-                    UsageDetailRow(
-                        "缓存命中",
-                        if (hasCacheMetrics) {
-                            "${formatTokenCount(usage.cacheHitTokens)} · " +
-                                "${(cacheRate!! * 100).roundToInt()}%"
-                        } else {
-                            "服务商未返回"
-                        },
-                        accent = if (hasCacheMetrics) accent else null,
-                    )
-                    if (usage.cacheMetricsAvailable) {
-                        UsageDetailRow(
-                            "缓存未命中",
-                            formatTokenCount(usage.cacheMissTokens),
-                        )
-                    }
-                    if (usage.reasoningTokens > 0) {
-                        UsageDetailRow(
-                            "推理",
-                            formatTokenCount(usage.reasoningTokens),
-                        )
-                    }
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
-                    )
-                    taskUsage?.let {
-                        Text(
-                            "本次任务累计",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.SemiBold,
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        UsageDetailRow(
-                            "输入 / 输出",
-                            "${formatTokenCount(it.promptTokens)} / " +
-                                formatTokenCount(it.completionTokens),
-                        )
-                        UsageDetailRow(
-                            "缓存命中率",
-                            formatCacheRate(it),
-                            accent = MaterialTheme.colorScheme.primary,
-                        )
-                        UsageDetailRow("请求次数", it.requests.toString())
-                    }
-                    sessionUsage?.takeIf { it.requests > (taskUsage?.requests ?: 0) }?.let {
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
-                        )
-                        Text(
-                            "当前会话累计",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.SemiBold,
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        UsageDetailRow(
-                            "输入 / 输出",
-                            "${formatTokenCount(it.promptTokens)} / " +
-                                formatTokenCount(it.completionTokens),
-                        )
-                        UsageDetailRow(
-                            "缓存命中率",
-                            formatCacheRate(it),
-                            accent = MaterialTheme.colorScheme.primary,
-                        )
-                        UsageDetailRow("请求次数", it.requests.toString())
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun formatCacheRate(usage: TokenUsage): String {
-    val rate = usage.cacheHitRate ?: return "服务商未返回"
-    return "${(rate * 100).roundToInt()}% · ${formatTokenCount(usage.cacheHitTokens)}"
-}
+private data class ActivityVisual(val icon: ImageVector, val tint: Color)
 
 @Composable
-private fun UsageDetailRow(
-    label: String,
-    value: String,
-    accent: Color? = null,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            label,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            value,
-            style = MaterialTheme.typography.labelMedium.copy(
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Medium,
-            ),
-            color = accent ?: MaterialTheme.colorScheme.onSurface,
-        )
-    }
+private fun activityVisual(name: String): ActivityVisual = when (name) {
+    "list_files" -> ActivityVisual(Icons.Outlined.FolderOpen, MaterialTheme.colorScheme.secondary)
+    "read_file" -> ActivityVisual(Icons.Outlined.Description, MaterialTheme.colorScheme.secondary)
+    "search_files" -> ActivityVisual(Icons.Outlined.Search, MaterialTheme.colorScheme.primary)
+    "edit_file", "write_file" -> ActivityVisual(Icons.Outlined.Edit, MaterialTheme.colorScheme.tertiary)
+    "run_command" -> ActivityVisual(Icons.Outlined.Terminal, MaterialTheme.colorScheme.primary)
+    else -> ActivityVisual(Icons.Outlined.CheckCircle, MaterialTheme.colorScheme.primary)
 }
 
 @Composable
@@ -2172,21 +1672,3 @@ private fun inlineMarkdown(text: String, inlineCodeBackground: Color): Annotated
             }
         }
     }
-
-private fun formatTokenCount(value: Int): String =
-    when {
-        value >= 1_000_000 -> String.format(Locale.US, "%.1fM", value / 1_000_000.0)
-        value >= 1_000 -> String.format(Locale.US, "%.1fk", value / 1_000.0)
-        else -> value.toString()
-    }
-
-private fun reasoningEffortLabel(effort: String): String = when (effort) {
-    "minimal" -> "极低"
-    "low" -> "低"
-    "medium" -> "中"
-    "high" -> "高"
-    "xhigh" -> "极高"
-    "max" -> "最高"
-    "none" -> "关闭"
-    else -> "自动"
-}

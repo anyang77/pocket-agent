@@ -21,6 +21,7 @@ class AgentEngine(
     private val commandRunner: CommandRunner,
     private val systemAccess: SystemAccessRepository,
     private val rootAvailable: () -> Boolean = { false },
+    private val permissions: () -> AgentPermissions = { workspace.agentPermissions() },
     private val aiClient: AiClient = AiClient(),
     private val auditLog: AuditLog,
 ) {
@@ -85,6 +86,7 @@ class AgentEngine(
             var lastPromptTokens = 0
             while (true) {
                 currentCoroutineContext().ensureActive()
+                ensureSystemMessage()
                 val contextLimit = ModelContextBudget.limitFor(
                     settings.model,
                     settings.contextWindow,
@@ -122,6 +124,8 @@ class AgentEngine(
                         model = settings.model,
                         round = step,
                         messageCount = conversation.size,
+                        contextTokens = lastPromptTokens.takeIf { it > 0 }
+                            ?: estimateConversationTokens(),
                     ),
                 )
                 val requestStartedAt = System.currentTimeMillis()
@@ -212,6 +216,7 @@ class AgentEngine(
                         contentChars = turn.content?.length ?: streamedChars,
                         toolCallCount = turn.toolCalls.size,
                         retryCount = lastRetryCount,
+                        completionTokens = turn.usage?.completionTokens ?: 0,
                     ),
                 )
                 turn.reasoningContent
@@ -287,6 +292,7 @@ class AgentEngine(
                             name = call.name,
                             summary = result.preview,
                             success = result.success,
+                            output = result.content,
                         ),
                     )
                     result.plan?.let { onEvent(AgentEvent.PlanUpdated(it)) }
@@ -585,14 +591,18 @@ class AgentEngine(
                     if (it.isDirectory) "${it.relativePath}/" else it.relativePath
                 }
                 auditLog.append("file", "列目录", "path=$path count=${files.size}", "success")
-                ToolResult(text.ifBlank { "(目录为空)" }, success = true, preview = "${files.size} 个条目")
+                ToolResult(
+                    text.ifBlank { "(目录为空)" },
+                    success = true,
+                    preview = "浏览 $path · ${files.size} 个条目",
+                )
             }
 
             "read_file" -> {
                 val path = arguments.optString("path")
                 val text = workspace.readText(path, maxChars = 80_000)
                 auditLog.append("file", "读取文件", "path=$path chars=${text.length}", "success")
-                ToolResult(text, success = true, preview = path)
+                ToolResult(text, success = true, preview = "读取 $path · ${text.length} 字符")
             }
 
             "search_files" -> {
@@ -623,7 +633,7 @@ class AgentEngine(
                     ToolResult(
                         output,
                         success = true,
-                        preview = "${output.lineSequence().count()} 行匹配",
+                        preview = "搜索 $query · ${output.lineSequence().count()} 行匹配",
                     )
                 }
             }
@@ -679,7 +689,7 @@ class AgentEngine(
                 ToolResult(
                     "Edited $path: replaced $occurrences occurrence(s)",
                     success = true,
-                    preview = "$path · $occurrences 处修改",
+                    preview = "编辑 $path · $occurrences 处修改",
                 )
             }
 
@@ -840,7 +850,7 @@ class AgentEngine(
                 ToolResult(
                     "Wrote ${content.length} characters to $path",
                     success = true,
-                    preview = path,
+                    preview = "写入 $path · ${content.length} 字符",
                 )
             }
 
@@ -866,15 +876,20 @@ class AgentEngine(
                     CommandRisk.DESTRUCTIVE, CommandRisk.UNKNOWN -> PermissionKind.DESTRUCTIVE
                     else -> PermissionKind.RUN_COMMAND
                 }
+                val environment = arguments.optString("environment", "termux").lowercase()
+                val wantsRoot = environment == "root"
+                val requestedKind = if (wantsRoot) PermissionKind.ROOT else kind
                 val permission = authorize(
                     PermissionRequest(
-                        kind = kind,
-                        title = when (kind) {
+                        kind = requestedKind,
+                        title = when (requestedKind) {
+                            PermissionKind.ROOT -> "在 Root 环境中执行命令"
                             PermissionKind.NETWORK -> "允许联网/安装依赖"
                             PermissionKind.DESTRUCTIVE -> "允许高风险命令"
                             else -> "执行命令"
                         },
-                        detail = "cwd=$cwdText\ncommand=$command",
+                        detail = "environment=${arguments.optString("environment", "termux")}\n" +
+                            "cwd=$cwdText\ncommand=$command",
                         risk = assessment.risk.name.lowercase(),
                     ),
                 )
@@ -891,7 +906,11 @@ class AgentEngine(
                         preview = "命令未获授权",
                     )
                 }
-                val cwd = workspace.resolve(cwdText)
+                val cwd = if (AgentAccessPolicy.hasFullAccess(permissions()) && File(cwdText).isAbsolute) {
+                    File(cwdText).canonicalFile
+                } else {
+                    workspace.resolve(cwdText)
+                }
                 require(cwd.isDirectory) { "cwd 不是目录: $cwdText" }
                 auditLog.append(
                     "command",
@@ -901,6 +920,8 @@ class AgentEngine(
                 val result = commandRunner.run(
                     command = command,
                     workingDir = cwd,
+                    asRoot = wantsRoot,
+                    useInternalRuntime = environment != "system",
                     timeoutMs = 120_000,
                 )
                 auditLog.append(
@@ -979,15 +1000,15 @@ class AgentEngine(
               storage, kernel, or runtime environment, call device_info first.
             - Use list_system_dir and read_system_file for absolute system paths. These tools are
               read-only, require the app's system-read permission, and are audited.
-            - Never write to a system path. Workspace writes must use write_file.
-            - The app automatically uses Root when it has already been granted and otherwise uses
-              the app UID. Do not ask the user to run su manually. Use device_info when root status
-              or device capabilities matter.
+            ${AgentAccessPolicy.instructions(permissions())}
+            - Regular commands run as the app UID inside the bundled Termux environment. Root is
+              reserved for explicit system operations and never selected automatically. Do not use
+              su inside a normal command merely because Root access is available.
 
             Safety rules:
             - The shell supports the complete Android shell syntax: pipes, redirection, chaining,
-              scripts, package manager commands, settings and other system utilities. Commands use
-              the app UID normally and the already-granted root UID automatically when available.
+              scripts and package manager commands. Use Android system utilities only when they are
+              relevant to the task, and do not assume they share the Termux package manager.
             - Network operations follow the separate network permission. Destructive commands are
               approved per action in ask mode and fully audited. Raw device nodes are not exposed
               through the system-read tools, but shell behavior is not artificially restricted.
@@ -1174,11 +1195,15 @@ class AgentEngine(
             ),
             ToolDefinition(
                 name = "run_command",
-                description = "Run commands through the complete Android shell, including pipelines, redirection, chaining and system utilities. Root is used automatically when granted. Every command is audited.",
+                description = "Run a command in the selected environment. termux is the normal package/toolchain shell; system is the Android phone shell; root runs in Termux with UID 0 and requires explicit approval. Every command is audited.",
                 parameters = schema(
                     properties = mapOf(
                         "command" to stringProperty("Shell command or script. Full shell syntax is supported."),
-                        "cwd" to stringProperty("Workspace-relative directory, defaults to ."),
+                        "cwd" to stringProperty("Working directory, defaults to .; workspace-relative, or an absolute path when full access is enabled."),
+                        "environment" to enumProperty(
+                            description = "Execution environment. Use termux for pkg/apt and project tools, system for Android shell utilities, root only for an operation that genuinely needs UID 0.",
+                            values = listOf("termux", "system", "root"),
+                        ),
                     ),
                     required = listOf("command"),
                 ),
@@ -1200,6 +1225,13 @@ class AgentEngine(
         private fun stringProperty(description: String): JSONObject = JSONObject().apply {
             put("type", "string")
             put("description", description)
+        }
+
+        private fun enumProperty(description: String, values: List<String>): JSONObject = JSONObject().apply {
+            put("type", "string")
+            put("description", description)
+            put("enum", org.json.JSONArray(values))
+            put("default", values.first())
         }
     }
 }

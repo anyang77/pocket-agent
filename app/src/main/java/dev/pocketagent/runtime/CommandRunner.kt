@@ -19,7 +19,6 @@ data class CommandResult(
 class CommandRunner(
     private val rootDetector: RootDetector = RootDetector(),
     private val internalRuntime: TermuxRuntime? = null,
-    private val useRoot: () -> Boolean = { false },
 ) {
     @Volatile
     private var activeProcess: Process? = null
@@ -30,13 +29,14 @@ class CommandRunner(
         command: String,
         workingDir: File,
         asRoot: Boolean = false,
+        useInternalRuntime: Boolean = true,
         timeoutMs: Long = 120_000,
         extraEnv: Map<String, String> = emptyMap(),
         onOutput: (String) -> Unit = {},
     ): CommandResult = withContext(Dispatchers.IO) {
         val start = System.currentTimeMillis()
-        val effectiveRoot = asRoot || useRoot()
-        if (!effectiveRoot && internalRuntime?.isBaseReady() == true) {
+        val effectiveRoot = asRoot
+        if (!effectiveRoot && useInternalRuntime && internalRuntime?.isBaseReady() == true) {
             return@withContext internalRuntime.run(
                 command = command,
                 workingDir = workingDir,

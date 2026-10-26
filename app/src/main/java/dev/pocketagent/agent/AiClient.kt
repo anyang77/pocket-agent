@@ -22,7 +22,6 @@ class AiClient(
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(90, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(30, TimeUnit.SECONDS)
         .build(),
 ) {
     @Volatile
@@ -219,10 +218,6 @@ class AiClient(
                     ?: throw AgentException("模型返回没有响应体")
                 val contentType = response.header("Content-Type").orEmpty()
                 if (contentType.contains("text/event-stream", ignoreCase = true)) {
-                    call.timeout().timeout(
-                        STREAM_TOTAL_TIMEOUT_SECONDS.toLong(),
-                        TimeUnit.SECONDS,
-                    )
                     return parseStreamingResponse(
                         source = responseBody.source(),
                         onDelta = onDelta,
@@ -564,8 +559,7 @@ class AiClient(
 
     companion object {
         private const val MAX_TRANSIENT_ATTEMPTS = 3
-        private const val REQUEST_TIMEOUT_SECONDS = 30
-        private const val STREAM_TOTAL_TIMEOUT_SECONDS = 300
+        private const val REQUEST_TIMEOUT_SECONDS = 90
     }
 }
 

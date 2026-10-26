@@ -16,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -361,7 +362,16 @@ fun CodeEditorWebView(
                 loadUrl("file:///android_asset/editor/editor.html")
             }
         },
-        modifier = modifier,
+        modifier = modifier.onSizeChanged { size ->
+            if (size.width > 0 && size.height > 0) {
+                webView.post {
+                    webView.evaluateJavascript(
+                        "if (window.PocketEditor) PocketEditor.refresh();",
+                        null,
+                    )
+                }
+            }
+        },
         update = {
             it.setBackgroundColor(Color.rgb(9, 13, 18))
         },

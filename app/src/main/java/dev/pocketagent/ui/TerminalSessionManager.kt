@@ -17,6 +17,7 @@ import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import dev.pocketagent.data.AuditLog
 import dev.pocketagent.runtime.RootDetector
+import dev.pocketagent.runtime.RuntimeKind
 import dev.pocketagent.runtime.TermuxRuntime
 import java.io.File
 
@@ -44,7 +45,7 @@ class TerminalSessionManager(
     private var view: TerminalView? = null
     private var session: TerminalSession? = null
     private val terminalInput = StringBuilder()
-    private var useRoot = false
+    private var runtimeKind = RuntimeKind.TERMUX
 
     init {
         configureTerminalColors()
@@ -54,12 +55,17 @@ class TerminalSessionManager(
     fun currentSession(): TerminalSession {
         val existing = session
         if (existing != null && existing.isRunning) return existing
+        val useRoot = runtimeKind == RuntimeKind.ROOT_TERMUX
+        val useSystemShell = runtimeKind == RuntimeKind.SYSTEM_SHELL
         val su = if (useRoot) rootDetector.findSuBinary() else null
         val shellPath: String
         val arguments: Array<String>
         if (su != null) {
             shellPath = su.absolutePath
             arguments = arrayOf("su", "-c", buildRootShellCommand(workspace()))
+        } else if (useSystemShell) {
+            shellPath = "/system/bin/sh"
+            arguments = arrayOf("sh", "-i")
         } else {
             val terminalShell = runtime.terminalShell()
             shellPath = terminalShell.first
@@ -78,7 +84,7 @@ class TerminalSessionManager(
         auditLog.append(
             "terminal",
             "启动 Shell",
-            "cwd=${workspace().absolutePath} root=${su != null}",
+            "cwd=${workspace().absolutePath} runtime=$runtimeKind",
         )
         view?.attachSession(created)
         return created
@@ -110,15 +116,20 @@ class TerminalSessionManager(
     }
 
     @Synchronized
-    fun setUseRoot(enabled: Boolean) {
-        if (useRoot == enabled) return
-        useRoot = enabled
-        auditLog.append("terminal", "切换 Root 模式", "root=$enabled")
+    fun setRuntimeKind(kind: RuntimeKind) {
+        if (runtimeKind == kind) return
+        runtimeKind = kind
+        auditLog.append("terminal", "切换执行环境", "runtime=$kind")
         if (session != null) {
             session?.finishIfRunning()
             session = null
             view?.let { attach(it) }
         }
+    }
+
+    @Synchronized
+    fun setUseRoot(enabled: Boolean) {
+        setRuntimeKind(if (enabled) RuntimeKind.ROOT_TERMUX else RuntimeKind.TERMUX)
     }
 
     fun increaseFont() {

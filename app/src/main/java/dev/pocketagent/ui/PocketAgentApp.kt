@@ -41,10 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
@@ -55,12 +52,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.pocketagent.runtime.AgentForegroundService
-import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PocketAgentApp(viewModel: AppViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    if (!state.welcomeAccepted || state.welcomeVisible) {
+        WelcomeScreen(onContinue = viewModel::acceptWelcome)
+        return
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -154,10 +154,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
     }
     val requestNotificationAccess: () -> Unit = {
         AgentForegroundService.ensureNotificationChannel(context)
-        val targetSdk = context.applicationInfo.targetSdkVersion
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            targetSdk >= Build.VERSION_CODES.TIRAMISU &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -172,40 +170,11 @@ fun PocketAgentApp(viewModel: AppViewModel) {
         }
         Unit
     }
-    var storagePromptOpened by rememberSaveable { mutableStateOf(false) }
-    var notificationPromptOpened by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(
-        state.rootProbing,
-        state.storageAccessGranted,
-        state.capabilities.rootGranted,
-        state.notificationPermissionGranted,
-    ) {
-        if (state.rootProbing) return@LaunchedEffect
-        // Let the asynchronous root probe finish before showing an unnecessary prompt.
-        while (
-            !lifecycleOwner.lifecycle.currentState.isAtLeast(
-                Lifecycle.State.RESUMED,
-            )
-        ) {
-            delay(100)
-        }
-        delay(300)
-        val fileAccessGranted =
-            state.storageAccessGranted || state.capabilities.rootGranted
-        if (!fileAccessGranted && !storagePromptOpened) {
-            storagePromptOpened = true
-            requestStorageAccess()
-        } else if (fileAccessGranted && !state.notificationPermissionGranted &&
-            !notificationPromptOpened
-        ) {
-            notificationPromptOpened = true
-            requestNotificationAccess()
-        }
-    }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshSystemPermissions()
+                viewModel.refreshRootAccess()
                 if (viewModel.state.value.tab == AppTab.GIT) {
                     viewModel.refreshGit()
                 }
@@ -221,6 +190,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
             viewModel.consumeNotice()
         }
     }
+
+
 
     if (!state.onboardingCompleted) {
         OnboardingScreen(
@@ -247,6 +218,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
             onRequestAccess = requestStorageAccess,
             onOpenStorageSettings = { openStorageSettings() },
             onRequestNotifications = requestNotificationAccess,
+            onRequestRootAccess = { viewModel.probeRoot() },
+            rootProbing = state.rootProbing,
             onRefresh = viewModel::refreshSystemPermissions,
         )
         return
@@ -326,6 +299,7 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onPauseGoal = viewModel::pauseGoal,
                 onResumeGoal = viewModel::resumeGoal,
                 onClearGoal = viewModel::clearGoal,
+                onPermissionsChanged = viewModel::savePermissions,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),
@@ -384,6 +358,7 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 state = state,
                 terminalManager = viewModel.terminalManager,
                 onInstallRuntime = viewModel::installInternalRuntime,
+                onRuntimeSelected = viewModel::setTerminalRuntime,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),
@@ -409,6 +384,8 @@ private fun FileAccessPermissionGate(
     onRequestAccess: () -> Unit,
     onOpenStorageSettings: () -> Unit,
     onRequestNotifications: () -> Unit,
+    onRequestRootAccess: () -> Unit,
+    rootProbing: Boolean,
     onRefresh: () -> Unit,
 ) {
     Surface(
@@ -428,13 +405,12 @@ private fun FileAccessPermissionGate(
             Text("首次运行需要系统权限", style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.padding(top = 8.dp))
             Text(
-                "以下权限全部完成后才能继续。应用会打开系统授权的标准页面，" +
-                    "不同品牌可能将其显示在“权限”或“特殊应用权限”中。",
+                "点击“去授权”后申请相应权限，授权完成后返回应用即可继续。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "若没有自动进入“所有文件访问”，请前往 " +
+                "文件读写需要“所有文件访问”，也可前往 " +
                     "设置 > 应用 > Pocket Agent > 权限",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
@@ -446,10 +422,13 @@ private fun FileAccessPermissionGate(
             )
             if (!fileAccessGranted) {
                 Button(onClick = onRequestAccess) {
-                    Text("打开所有文件访问")
+                    Text("文件读写：去授权")
                 }
                 OutlinedButton(onClick = onOpenStorageSettings) {
                     Text("打开应用设置")
+                }
+                OutlinedButton(onClick = onRequestRootAccess, enabled = !rootProbing) {
+                    Text(if (rootProbing) "正在请求 Root…" else "使用 Root 授权")
                 }
             }
             Text(
@@ -458,7 +437,7 @@ private fun FileAccessPermissionGate(
             )
             if (!notificationGranted) {
                 Button(onClick = onRequestNotifications) {
-                    Text("打开通知授权")
+                    Text("通知权限：去授权")
                 }
             }
             OutlinedButton(onClick = onRefresh) {
