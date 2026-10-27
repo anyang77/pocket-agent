@@ -122,7 +122,7 @@ class AiClient(
         var lastError: Exception? = null
         var receivedStreamOutput = false
         var streamedContentChars = 0
-        for (attempt in 1..MAX_TRANSIENT_ATTEMPTS) {
+        for (attempt in 1..MAX_REQUEST_ATTEMPTS) {
             receivedStreamOutput = false
             streamedContentChars = 0
             try {
@@ -141,7 +141,7 @@ class AiClient(
             } catch (error: IOException) {
                 lastError = error
                 val interrupted = receivedStreamOutput
-                if (attempt == MAX_TRANSIENT_ATTEMPTS || !error.isTransientNetworkError()) {
+                if (attempt == MAX_REQUEST_ATTEMPTS || !error.isTransientNetworkError()) {
                     throw AgentException(
                         if (interrupted) {
                             "模型输出中断：${error.message ?: "网络连接已断开"}"
@@ -153,40 +153,67 @@ class AiClient(
                         },
                     )
                 }
-                val waitMs = (1_000L shl (attempt - 1)).coerceAtMost(4_000L)
+                val waitMs = retryDelayMs(attempt)
                 if (streamedContentChars > 0) {
                     onStreamReset(streamedContentChars)
                 }
                 onRetry(
                     RetryNotice(
                         attempt = attempt,
-                        maxAttempts = MAX_TRANSIENT_ATTEMPTS - 1,
+                        maxAttempts = MAX_RETRIES,
                         delaySeconds = (waitMs / 1_000).toInt(),
                         reason = if (interrupted) {
-                            "模型输出中断，将重新生成"
+                            "模型输出意外中断，正在重新生成"
                         } else if (error.isTimeout()) {
-                            "等待 ${REQUEST_TIMEOUT_SECONDS} 秒没有收到首包"
+                            "等待 ${REQUEST_TIMEOUT_SECONDS} 秒没有收到响应"
                         } else {
-                            "网络连接中断"
+                            "网络连接中断，正在重新连接"
                         },
                     ),
                 )
                 delay(waitMs)
             } catch (error: AgentHttpException) {
                 lastError = error
-                if (attempt == MAX_TRANSIENT_ATTEMPTS || !error.isRetryable()) {
-                    throw error
+                if (attempt == MAX_REQUEST_ATTEMPTS || !error.isRetryable()) {
+                    throw AgentException(
+                        message = error.message.orEmpty(),
+                        retryAfterSeconds = error.retryAfterSeconds,
+                    ).also { it.retryAttempts = attempt - 1 }
                 }
                 val waitMs = error.retryAfterSeconds
                     ?.times(1_000)
                     ?.coerceIn(1_000, 30_000)
-                    ?: (1_000L shl (attempt - 1)).coerceAtMost(8_000)
+                    ?: retryDelayMs(attempt)
+                if (streamedContentChars > 0) {
+                    onStreamReset(streamedContentChars)
+                }
                 onRetry(
                     RetryNotice(
                         attempt = attempt,
-                        maxAttempts = MAX_TRANSIENT_ATTEMPTS - 1,
+                        maxAttempts = MAX_RETRIES,
                         delaySeconds = (waitMs / 1_000).toInt(),
-                        reason = "服务暂时不可用 · HTTP ${error.statusCode}",
+                        reason = error.retryReason(),
+                    ),
+                )
+                delay(waitMs)
+            } catch (error: AgentException) {
+                lastError = error
+                if (attempt == MAX_REQUEST_ATTEMPTS || !error.isRetryable()) {
+                    throw error.withRetryAttempts(attempt - 1)
+                }
+                val waitMs = error.retryAfterSeconds
+                    ?.times(1_000)
+                    ?.coerceIn(1_000, 30_000)
+                    ?: retryDelayMs(attempt)
+                if (streamedContentChars > 0) {
+                    onStreamReset(streamedContentChars)
+                }
+                onRetry(
+                    RetryNotice(
+                        attempt = attempt,
+                        maxAttempts = MAX_RETRIES,
+                        delaySeconds = (waitMs / 1_000).toInt(),
+                        reason = error.retryReason(),
                     ),
                 )
                 delay(waitMs)
@@ -297,9 +324,12 @@ class AiClient(
             }
             val json = runCatching { JSONObject(data) }.getOrNull() ?: continue
             json.optJSONObject("error")?.let { error ->
+                val message = error.optString("message").ifBlank {
+                    error.optString("detail").ifBlank { error.toString() }
+                }
                 throw AgentException(
-                    "模型流式响应失败: " +
-                        error.optString("message").ifBlank { error.toString() },
+                    "模型流式响应失败: $message",
+                    retryAfterSeconds = streamRetryAfterSeconds(error),
                 )
             }
             json.optJSONObject("usage")?.let { usage = it.toTokenUsage() }
@@ -558,7 +588,8 @@ class AiClient(
     }
 
     companion object {
-        private const val MAX_TRANSIENT_ATTEMPTS = 3
+        private const val MAX_RETRIES = 5
+        private const val MAX_REQUEST_ATTEMPTS = MAX_RETRIES + 1
         private const val REQUEST_TIMEOUT_SECONDS = 90
     }
 }
@@ -569,3 +600,85 @@ internal fun AgentHttpException.isRetryable(): Boolean =
         statusCode == 425 ||
         statusCode == 429 ||
         statusCode >= 500
+
+private fun AgentException.withRetryAttempts(attempts: Int): AgentException =
+    if (retryAttempts == attempts) {
+        this
+    } else {
+        AgentException(message.orEmpty(), retryAfterSeconds)
+            .also { it.retryAttempts = attempts }
+    }
+
+internal fun AgentException.isRetryable(): Boolean {
+    if (this is AgentHttpException) return isRetryable()
+    val text = message.orEmpty().lowercase()
+    return RETRYABLE_SERVICE_ERROR_MARKERS.any(text::contains)
+}
+
+private fun AgentException.retryReason(): String {
+    val text = message.orEmpty()
+    val lower = text.lowercase()
+    return when {
+        "concurrency" in lower ||
+            "too many" in lower ||
+            "rate limit" in lower ||
+            "request limit" in lower ||
+            "quota exceeded" in lower ||
+            "429" in lower ->
+            "服务并发请求已达上限，正在等待后重连"
+        "overloaded" in lower ||
+            "temporarily unavailable" in lower ||
+            "service unavailable" in lower ||
+            "internal server error" in lower ||
+            "bad gateway" in lower ||
+            "gateway timeout" in lower ||
+            this is AgentHttpException && statusCode >= 500 ->
+            "模型服务暂时不可用，正在等待后重连"
+        "stream interrupted" in lower ||
+            "stream closed" in lower ||
+            "connection reset" in lower ||
+            "模型流式响应意外中断" in text ->
+            "模型输出意外中断，正在重新生成"
+        else -> "服务暂时不可用，正在等待后重连"
+    }
+}
+
+private fun retryDelayMs(attempt: Int): Long {
+    val baseDelayMs = 1_000L
+    val maxDelayMs = 30_000L
+    val multiplier = 1L shl (attempt - 1).coerceIn(0, 5)
+    return (baseDelayMs * multiplier).coerceAtMost(maxDelayMs)
+}
+
+private fun streamRetryAfterSeconds(error: JSONObject): Long? =
+    (error.opt("retry_after") ?: error.opt("retry_after_seconds"))
+        .takeUnless { it == null || it == JSONObject.NULL }
+        ?.toString()
+        ?.toDoubleOrNull()
+        ?.let { seconds ->
+            if (seconds >= 1_000) {
+                (seconds / 1_000).toLong()
+            } else {
+                seconds.toLong()
+            }
+        }
+        ?.coerceIn(1, 30)
+
+private val RETRYABLE_SERVICE_ERROR_MARKERS = listOf(
+    "concurrency limit",
+    "rate limit",
+    "too many requests",
+    "request limit",
+    "quota exceeded",
+    "temporarily unavailable",
+    "service unavailable",
+    "overloaded",
+    "server busy",
+    "internal server error",
+    "bad gateway",
+    "gateway timeout",
+    "upstream",
+    "stream interrupted",
+    "stream closed",
+    "模型流式响应意外中断",
+)

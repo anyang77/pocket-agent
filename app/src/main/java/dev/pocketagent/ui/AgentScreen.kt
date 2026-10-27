@@ -53,7 +53,11 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -130,6 +134,8 @@ fun AgentScreen(
     onDeleteConversation: (Long) -> Unit,
     onApprovePending: () -> Unit,
     onDenyPending: () -> Unit,
+    onSelectChoice: (String) -> Unit,
+    onDismissChoice: () -> Unit,
     onPauseGoal: () -> Unit,
     onResumeGoal: () -> Unit,
     onClearGoal: () -> Unit,
@@ -191,6 +197,14 @@ fun AgentScreen(
         if (state.chat.isNotEmpty()) {
             listState.scrollToItem(bottomAnchorIndex)
         }
+    }
+
+    state.pendingUserChoice?.let { pending ->
+        UserChoiceDialog(
+            pending = pending,
+            onSelect = onSelectChoice,
+            onDismiss = onDismissChoice,
+        )
     }
 
     state.pendingApproval?.let { pending ->
@@ -1048,6 +1062,69 @@ private fun AgentRetryCard(retry: AgentRetryState) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun UserChoiceDialog(
+    pending: PendingUserChoice,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("需要你决定")
+                Text(
+                    "选择后 Agent 会继续原任务",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    pending.question,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                pending.options.forEachIndexed { index, option ->
+                    OutlinedButton(
+                        onClick = { onSelect(option.id) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                        ),
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 3.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                            horizontalAlignment = Alignment.Start,
+                        ) {
+                            Text(
+                                "${index + 1}. ${option.title}",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            if (option.detail.isNotBlank()) {
+                                Text(
+                                    option.detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("暂不选择") }
+        },
+    )
+}
+
 @Composable
 private fun AgentErrorCard(
     message: String,
@@ -1081,7 +1158,7 @@ private fun AgentErrorCard(
                 )
                 if (retryCount > 0) {
                     Text(
-                        "已重试 $retryCount 次",
+                        "已重试 $retryCount/5 次",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1110,6 +1187,8 @@ private fun AgentErrorCard(
 
 private fun agentErrorTitle(message: String): String = when {
     "401" in message || "403" in message -> "API 鉴权失败"
+    "concurrency limit" in message.lowercase() ||
+        "并发请求已达上限" in message -> "模型并发已满"
     "429" in message -> "请求过于频繁"
     "30 秒内" in message || "timeout" in message.lowercase() -> "模型响应超时"
     "HTTP 400" in message -> "接口拒绝了请求"
@@ -1121,14 +1200,17 @@ private fun agentErrorTitle(message: String): String = when {
 private fun agentErrorHint(message: String): String? = when {
     "401" in message || "403" in message ->
         "检查 API Key 是否有效、额度是否可用。"
+    "concurrency limit" in message.lowercase() ||
+        "并发请求已达上限" in message ->
+        "已自动等待并重连 5 次；当前账号仍被并发限制，请稍后再试或切换模型。"
     "429" in message ->
-        "服务正在限流，稍后再试或切换模型。"
+        "已自动退避重连 5 次；服务仍在限流，请稍后再试或切换模型。"
     "30 秒内" in message || "timeout" in message.lowercase() ->
         "服务端没有及时返回首个数据包，检查模型是否可用或网络连接。"
     "HTTP 400" in message ->
         "检查 Base URL、模型名称以及该接口是否兼容 OpenAI Chat Completions。"
     "输出中断" in message ->
-        "连接在流式输出过程中断开；已有内容已保留。"
+        "已自动重新生成 5 次；连接仍不稳定，请稍后重试。"
     "HTTP 5" in message ->
         "上游模型服务异常，稍后重试或切换模型。"
     else -> null
@@ -1238,14 +1320,16 @@ private fun InlineActivity(
     index: Int,
     activity: ToolActivity,
 ) {
-    var expanded by rememberSaveable(entryId, index) { mutableStateOf(true) }
+    var expanded by rememberSaveable(entryId, index) { mutableStateOf(false) }
     val running = activity.success == null
+    val hasFileChanges = activity.additions > 0 || activity.deletions > 0
+    val hasDetails = activity.result?.isNotBlank() == true
     val visual = activityVisual(activity.name)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 10.dp)
-            .clickable { expanded = !expanded },
+            .clickable(enabled = hasDetails) { expanded = !expanded },
         shape = RoundedCornerShape(9.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
     ) {
@@ -1288,6 +1372,22 @@ private fun InlineActivity(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (hasFileChanges) {
+                    Text(
+                        "+${activity.additions}",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        "−${activity.deletions}",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 activity.durationMs
                     ?.let(::formatActivityDuration)
                     ?.let { duration ->
@@ -1297,12 +1397,14 @@ private fun InlineActivity(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                Icon(
-                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                    contentDescription = if (expanded) "收起" else "展开",
-                    modifier = Modifier.size(17.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (hasDetails) {
+                    Icon(
+                        if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = if (expanded) "收起" else "展开",
+                        modifier = Modifier.size(17.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Text(
                 activity.summary,

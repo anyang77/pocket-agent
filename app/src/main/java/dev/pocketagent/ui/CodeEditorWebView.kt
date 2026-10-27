@@ -31,6 +31,7 @@ data class EditorDiagnostic(
     val column: Int,
     val message: String,
     val replacement: String? = null,
+    val projectLevel: Boolean = false,
 )
 
 object EditorDiagnosticParser {
@@ -45,10 +46,26 @@ object EditorDiagnosticParser {
             setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
         )
         compilerPattern.findAll(clean).forEach { match ->
+            val message = match.groupValues[3].trim().take(500)
             diagnostics += EditorDiagnostic(
                 line = match.groupValues[1].toIntOrNull() ?: 1,
                 column = match.groupValues[2].toIntOrNull() ?: 1,
-                message = match.groupValues[3].trim().take(500),
+                message = message,
+                projectLevel = message.isDependencyResolutionDiagnostic(),
+            )
+        }
+
+        val javacWithoutColumn = Regex(
+            """^当前文件:(\d+):\s*(?:error|warning):\s*(.+)$""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
+        )
+        javacWithoutColumn.findAll(clean).forEach { match ->
+            val message = match.groupValues[2].trim().take(500)
+            diagnostics += EditorDiagnostic(
+                line = match.groupValues[1].toIntOrNull() ?: 1,
+                column = 1,
+                message = message,
+                projectLevel = message.isDependencyResolutionDiagnostic(),
             )
         }
 
@@ -145,6 +162,12 @@ object EditorDiagnosticParser {
             ),
         )
     }
+
+    private fun String.isDependencyResolutionDiagnostic(): Boolean =
+        contains("cannot find symbol", ignoreCase = true) ||
+            contains("package ", ignoreCase = true) &&
+            contains("does not exist", ignoreCase = true) ||
+            contains("class file for", ignoreCase = true)
 
     private fun relevantMessageAfter(lines: List<String>, startIndex: Int): String {
         val following = lines.drop(startIndex + 1).map { it.trim() }.filter { it.isNotEmpty() }
@@ -263,6 +286,7 @@ fun CodeEditorWebView(
             diagnostics.forEach { diagnostic ->
                 put(
                     JSONObject().apply {
+                        if (diagnostic.projectLevel) return@forEach
                         put("line", diagnostic.line.coerceAtLeast(1) - 1)
                         put("ch", diagnostic.column.coerceAtLeast(1) - 1)
                         put("message", diagnostic.message)

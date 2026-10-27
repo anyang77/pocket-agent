@@ -16,6 +16,85 @@ import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 
+internal data class LineDiffStats(
+    val additions: Int,
+    val deletions: Int,
+)
+
+internal fun commandLaunchesExternalApp(command: String): Boolean {
+    val withoutPocketAgent = command.replace(
+        Regex("""(?:/system/bin/)?am\s+start(?:-activity)?\s+-W\s+-n\s+dev\.pocketagent/\.MainActivity"""),
+        "",
+    )
+    val launchesActivity = Regex(
+        """(?:^|[;&|]\s*)(?:/system/bin/)?am\s+start(?:-activity)?\b(?!\s+-W\s+-n\s+dev\.pocketagent/)""",
+        RegexOption.IGNORE_CASE,
+    ).containsMatchIn(withoutPocketAgent) ||
+        Regex(
+            """(?:^|[;&|]\s*)su\s+(?:-\S+\s+)*-c\s+["'][^"']*\bam\s+start\b""",
+            RegexOption.IGNORE_CASE,
+        ).containsMatchIn(withoutPocketAgent)
+    return launchesActivity ||
+        Regex(
+            """(?:^|[;&|]\s*)(?:/system/bin/)?monkey\b""",
+            RegexOption.IGNORE_CASE,
+        ).containsMatchIn(withoutPocketAgent)
+}
+
+/** Device controls that fail under the app UID on several Android ROMs, including MIUI. */
+internal fun commandNeedsRootForSystemShell(command: String): Boolean =
+    Regex(
+        """(?:^|[;&|]\s*)(?:/system/bin/)?(?:am\s+(?:start(?:-activity)?|force-stop)|monkey)\b""",
+        RegexOption.IGNORE_CASE,
+    ).containsMatchIn(command) &&
+        !Regex(
+            """(?:^|[;&|]\s*)su\s+(?:-\S+\s+)*-c\s+["'][^"']*""",
+            RegexOption.IGNORE_CASE,
+        ).containsMatchIn(command)
+
+internal fun compactToolResultForModel(content: String, maxChars: Int): String {
+    if (content.length <= maxChars) return content
+    require(maxChars >= 64) { "maxChars must be at least 64" }
+    val marker = "\n\n[... ${content.length} characters omitted; showing start and end ...]\n\n"
+    val contentBudget = maxChars - marker.length
+    if (contentBudget <= 0) {
+        return "[... ${content.length} characters omitted; requested limit is too small ...]"
+            .take(maxChars)
+    }
+    val headChars = contentBudget * 2 / 3
+    val tailChars = contentBudget - headChars
+    return content.take(headChars) + marker + content.takeLast(tailChars)
+}
+
+/**
+ * Leaves enough room for the next model turn while using the longer windows effectively.
+ * The 32K reserve dominates small windows; larger windows rise toward 92%.
+ */
+internal fun contextCompactionThreshold(contextLimit: Int): Int {
+    val safeLimit = contextLimit.coerceAtLeast(1)
+    if (safeLimit <= 64_000) return safeLimit
+    return (safeLimit - 32_000).coerceIn(1, safeLimit)
+}
+
+internal fun countLineDiff(before: String, after: String): LineDiffStats {
+    val beforeLines = if (before.isEmpty()) emptyList() else before.lines()
+    val afterLines = if (after.isEmpty()) emptyList() else after.lines()
+    if (beforeLines == afterLines) return LineDiffStats(0, 0)
+    val prefix = beforeLines.zip(afterLines)
+        .takeWhile { (oldLine, newLine) -> oldLine == newLine }
+        .size
+    val suffixLimit = minOf(beforeLines.size, afterLines.size) - prefix
+    val suffix = beforeLines.asReversed()
+        .zip(afterLines.asReversed())
+        .take(suffixLimit)
+        .takeWhile { (oldLine, newLine) -> oldLine == newLine }
+        .size
+    return LineDiffStats(
+        additions = afterLines.size - prefix - suffix,
+        deletions = beforeLines.size - prefix - suffix,
+    )
+}
+
 class AgentEngine(
     private val workspace: WorkspaceRepository,
     private val commandRunner: CommandRunner,
@@ -74,6 +153,7 @@ class AgentEngine(
         userText: String,
         settings: AiSettings,
         authorize: suspend (PermissionRequest) -> PermissionDecision,
+        choose: suspend (UserQuestion) -> AgentChoice? = { null },
         onEvent: (AgentEvent) -> Unit,
     ) {
         ensureSystemMessage()
@@ -82,18 +162,20 @@ class AgentEngine(
 
         var step = 0
         var lastRetryCount = 0
+        val completedToolCalls = mutableMapOf<String, ToolResult>()
         try {
             var lastPromptTokens = 0
             while (true) {
                 currentCoroutineContext().ensureActive()
                 ensureSystemMessage()
+                compactStaleToolResults()
                 val contextLimit = ModelContextBudget.limitFor(
                     settings.model,
                     settings.contextWindow,
                 )
                 val effectivePromptTokens = lastPromptTokens.takeIf { it > 0 }
                     ?: estimateConversationTokens()
-                if (effectivePromptTokens >= contextLimit * CONTEXT_COMPACT_RATIO) {
+                if (effectivePromptTokens >= contextCompactionThreshold(contextLimit)) {
                     val usage = compactConversation(
                         settings = settings,
                         originalUserText = userText,
@@ -268,10 +350,27 @@ class AgentEngine(
                 for (call in turn.toolCalls) {
                     currentCoroutineContext().ensureActive()
                     val summary = summarizeArguments(call.arguments)
-                    auditLog.append("tool", "调用 ${call.name}", summary)
+                    val signature = reusableToolSignature(call)
+                    val cachedResult = signature?.let(completedToolCalls::get)
+                    auditLog.append(
+                        "tool",
+                        if (cachedResult == null) "调用 ${call.name}" else "跳过重复 ${call.name}",
+                        summary,
+                    )
                     onEvent(AgentEvent.ToolStarted(call.name, summary))
-                    val result = try {
-                        executeTool(call, authorize)
+                    val result = cachedResult?.let {
+                        ToolResult(
+                            content = "DUPLICATE_TOOL_CALL_SUPPRESSED: This exact " +
+                                "${call.name} request already completed successfully in " +
+                                "this task. Reuse its earlier result and continue with the next " +
+                                "required action instead of repeating it.",
+                            success = true,
+                            preview = "已跳过重复 ${toolDisplayName(call.name)}",
+                            additions = 0,
+                            deletions = 0,
+                        )
+                    } ?: try {
+                        executeTool(call, authorize, choose)
                     } catch (error: CancellationException) {
                         throw error
                     } catch (error: Exception) {
@@ -281,9 +380,18 @@ class AgentEngine(
                             preview = "工具调用失败",
                         )
                     }
+                    if (cachedResult == null && signature != null && result.success) {
+                        completedToolCalls[signature] = result
+                    }
+                    if (call.name == "edit_file" || call.name == "write_file") {
+                        invalidateFileToolResults(completedToolCalls)
+                    }
                     conversation += AgentMessage(
                         role = "tool",
-                        content = result.content.take(MAX_TOOL_RESULT_CHARS),
+                        content = compactToolResultForModel(
+                            result.content,
+                            MAX_TOOL_RESULT_CHARS,
+                        ),
                         name = call.name,
                         toolCallId = call.id,
                     )
@@ -293,6 +401,8 @@ class AgentEngine(
                             summary = result.preview,
                             success = result.success,
                             output = result.content,
+                            additions = result.additions,
+                            deletions = result.deletions,
                         ),
                     )
                     result.plan?.let { onEvent(AgentEvent.PlanUpdated(it)) }
@@ -312,7 +422,10 @@ class AgentEngine(
             onEvent(
                 AgentEvent.Failed(
                     message = error.message ?: "Agent 执行失败",
-                    retryCount = lastRetryCount,
+                    retryCount = (error as? AgentException)
+                        ?.retryAttempts
+                        ?.coerceAtLeast(lastRetryCount)
+                        ?: lastRetryCount,
                 ),
             )
         }
@@ -538,6 +651,7 @@ class AgentEngine(
     private suspend fun executeTool(
         call: AgentToolCall,
         authorize: suspend (PermissionRequest) -> PermissionDecision,
+        choose: suspend (UserQuestion) -> AgentChoice?,
     ): ToolResult {
         val arguments = JSONObject(call.arguments.ifBlank { "{}" })
         return when (call.name) {
@@ -679,17 +793,75 @@ class AgentEngine(
                     )
                 }
                 workspace.writeText(path, updated)
+                val lineStats = lineDiffStats(original, updated)
                 auditLog.append(
                     "file",
                     "局部修改文件",
                     "path=$path replacements=$occurrences chars=${updated.length} " +
+                        "+${lineStats.additions} -${lineStats.deletions} " +
                         "sha256=${sha256(updated)}",
                     "success",
                 )
                 ToolResult(
-                    "Edited $path: replaced $occurrences occurrence(s)",
+                    "Edited $path: replaced $occurrences occurrence(s)\n" +
+                        "+${lineStats.additions} -${lineStats.deletions}",
                     success = true,
-                    preview = "编辑 $path · $occurrences 处修改",
+                    preview = "编辑 $path · +${lineStats.additions} -${lineStats.deletions}",
+                    additions = lineStats.additions,
+                    deletions = lineStats.deletions,
+                )
+            }
+
+            "ask_user" -> {
+                val question = arguments.optString("question").trim()
+                require(question.isNotBlank()) { "question 不能为空" }
+                val rawOptions = arguments.optJSONArray("options") ?: JSONArray()
+                val options = buildList {
+                    for (index in 0 until rawOptions.length()) {
+                        val item = rawOptions.optJSONObject(index) ?: continue
+                        val id = item.optString("id").trim()
+                        val title = item.optString("title").trim()
+                        if (id.isBlank() || title.isBlank()) continue
+                        add(
+                            AgentChoice(
+                                id = id.take(80),
+                                title = title.take(160),
+                                detail = item.optString("detail").trim().take(320),
+                            ),
+                        )
+                    }
+                }
+                require(options.size in 2..3) { "ask_user 必须提供 2 到 3 个有效选项" }
+                require(options.map { it.id }.distinct().size == options.size) {
+                    "ask_user 选项 id 必须唯一"
+                }
+                auditLog.append(
+                    "agent",
+                    "等待用户选择",
+                    "$question | ${options.joinToString { "${it.id}:${it.title}" }}",
+                    "waiting",
+                )
+                val selected = choose(UserQuestion(question, options))
+                    ?: return ToolResult(
+                        "USER_CHOICE_CANCELLED: The user dismissed this choice. Do not guess a " +
+                            "material branch; stop and ask again with a concise question.",
+                        success = false,
+                        preview = "用户未选择",
+                    )
+                require(options.any { it.id == selected.id }) {
+                    "用户选择不在可选范围内"
+                }
+                auditLog.append(
+                    "agent",
+                    "用户已选择",
+                    "$question | ${selected.id}:${selected.title}",
+                    "success",
+                )
+                ToolResult(
+                    "USER_SELECTION: ${selected.id} | ${selected.title}\n" +
+                        selected.detail + "\nContinue the original task using this choice.",
+                    success = true,
+                    preview = "已选择 · ${selected.title}",
                 )
             }
 
@@ -840,17 +1012,30 @@ class AgentEngine(
                         preview = "写入未获授权",
                     )
                 }
+                val original = runCatching {
+                    workspace.readText(
+                        path = path,
+                        maxChars = WorkspaceRepository.MAX_FILE_CHARS,
+                        requireComplete = true,
+                    )
+                }.getOrDefault("")
                 workspace.writeText(path, content)
+                val lineStats = lineDiffStats(original, content)
                 auditLog.append(
                     "file",
                     "写入文件",
-                    "path=$path chars=${content.length} sha256=${sha256(content)}",
+                    "path=$path chars=${content.length} " +
+                        "+${lineStats.additions} -${lineStats.deletions} " +
+                        "sha256=${sha256(content)}",
                     "success",
                 )
                 ToolResult(
-                    "Wrote ${content.length} characters to $path",
+                    "Wrote ${content.length} characters to $path\n" +
+                        "+${lineStats.additions} -${lineStats.deletions}",
                     success = true,
-                    preview = "写入 $path · ${content.length} 字符",
+                    preview = "写入 $path · +${lineStats.additions} -${lineStats.deletions}",
+                    additions = lineStats.additions,
+                    deletions = lineStats.deletions,
                 )
             }
 
@@ -876,19 +1061,29 @@ class AgentEngine(
                     CommandRisk.DESTRUCTIVE, CommandRisk.UNKNOWN -> PermissionKind.DESTRUCTIVE
                     else -> PermissionKind.RUN_COMMAND
                 }
-                val environment = arguments.optString("environment", "termux").lowercase()
-                val wantsRoot = environment == "root"
-                val requestedKind = if (wantsRoot) PermissionKind.ROOT else kind
+                val requestedEnvironment = arguments.optString("environment", "termux").lowercase()
+                val autoRootForAppTest = requestedEnvironment == "system" &&
+                    rootAvailable() &&
+                    commandNeedsRootForSystemShell(command)
+                // Keep pkg/project commands in their requested runtime. Android activity control
+                // is the narrow exception: MIUI rejects it under the app UID even with storage
+                // access, then the app would otherwise wander through manual su attempts.
+                val wantsRoot = requestedEnvironment == "root" || autoRootForAppTest
+                val permissionKind = when {
+                    requestedEnvironment == "root" -> PermissionKind.ROOT
+                    wantsRoot -> PermissionKind.DESTRUCTIVE
+                    else -> kind
+                }
                 val permission = authorize(
                     PermissionRequest(
-                        kind = requestedKind,
-                        title = when (requestedKind) {
+                        kind = permissionKind,
+                        title = when (permissionKind) {
                             PermissionKind.ROOT -> "在 Root 环境中执行命令"
                             PermissionKind.NETWORK -> "允许联网/安装依赖"
-                            PermissionKind.DESTRUCTIVE -> "允许高风险命令"
+                            PermissionKind.DESTRUCTIVE -> "允许测试外部应用"
                             else -> "执行命令"
                         },
-                        detail = "environment=${arguments.optString("environment", "termux")}\n" +
+                        detail = "environment=${if (wantsRoot) "root" else requestedEnvironment}\n" +
                             "cwd=$cwdText\ncommand=$command",
                         risk = assessment.risk.name.lowercase(),
                     ),
@@ -921,7 +1116,7 @@ class AgentEngine(
                     command = command,
                     workingDir = cwd,
                     asRoot = wantsRoot,
-                    useInternalRuntime = environment != "system",
+                    useInternalRuntime = requestedEnvironment != "system",
                     timeoutMs = 120_000,
                 )
                 auditLog.append(
@@ -938,8 +1133,28 @@ class AgentEngine(
                     appendLine("output:")
                     append(result.output.take(24_000))
                 }
+                val returnedToAgent = if (commandLaunchesExternalApp(command)) {
+                    commandRunner.run(
+                        command = "/system/bin/am start -W -n dev.pocketagent/.MainActivity " +
+                            ">/dev/null 2>&1",
+                        workingDir = File("/"),
+                        asRoot = rootAvailable(),
+                        useInternalRuntime = false,
+                        timeoutMs = 15_000,
+                    ).let { it.exitCode == 0 && !it.timedOut }
+                } else {
+                    false
+                }
+                if (returnedToAgent) {
+                    auditLog.append(
+                        "command",
+                        "测试后返回 Pocket Agent",
+                        "external app test command finished",
+                        "success",
+                    )
+                }
                 ToolResult(
-                    payload,
+                    payload + if (returnedToAgent) "returned_to_pocket_agent=true\n" else "",
                     success = result.exitCode == 0 && !result.timedOut,
                     preview = buildString {
                         append("exit ")
@@ -947,6 +1162,7 @@ class AgentEngine(
                         append(" · ")
                         append(result.durationMs)
                         append("ms")
+                        if (returnedToAgent) append(" · 已返回")
                     },
                 )
             }
@@ -980,40 +1196,55 @@ class AgentEngine(
         }
     }
 
-    private fun buildSystemPrompt(): String {
-        return """
-            You are Pocket Agent, a coding and device-inspection agent running on an Android phone.
-            Treat the latest user request as the active task goal. Keep work aligned with that goal,
-            mark plan steps accurately as you progress, and verify the result against the goal before
-            claiming completion.
-            Inspect relevant files before editing. Use write_file for workspace changes and
-            prefer edit_file for focused changes. Use search_files to locate code before reading
-            many files. Use update_plan only for a genuinely multi-phase task or when the user
-            explicitly asks for a plan. Do not create a plan for simple questions, one lookup,
-            one edit, or one command. Reuse and update the existing plan during follow-up work
-            instead of recreating it unless the goal has materially changed.
-            Use run_command for builds/tests. Never claim a task succeeded without running an
-            available relevant build or test command.
+    private fun buildSystemPrompt(): String = agentSystemPrompt(permissions())
 
-            Phone and system information:
-            - When the user asks about the phone, device, Android version, hardware, memory, CPU,
-              storage, kernel, or runtime environment, call device_info first.
-            - Use list_system_dir and read_system_file for absolute system paths. These tools are
-              read-only, require the app's system-read permission, and are audited.
-            ${AgentAccessPolicy.instructions(permissions())}
-            - Regular commands run as the app UID inside the bundled Termux environment. Root is
-              reserved for explicit system operations and never selected automatically. Do not use
-              su inside a normal command merely because Root access is available.
+    private fun compactStaleToolResults() {
+        var keepFull = RECENT_TOOL_RESULTS_FULL
+        for (index in conversation.indices.reversed()) {
+            val message = conversation[index]
+            if (message.role != "tool") continue
+            if (keepFull > 0) {
+                keepFull--
+                continue
+            }
+            val content = message.content.orEmpty()
+            if (content.length <= STALE_TOOL_RESULT_CHARS) continue
+            conversation[index] = message.copy(
+                content = compactToolResultForModel(content, STALE_TOOL_RESULT_CHARS),
+            )
+        }
+    }
 
-            Safety rules:
-            - The shell supports the complete Android shell syntax: pipes, redirection, chaining,
-              scripts and package manager commands. Use Android system utilities only when they are
-              relevant to the task, and do not assume they share the Termux package manager.
-            - Network operations follow the separate network permission. Destructive commands are
-              approved per action in ask mode and fully audited. Raw device nodes are not exposed
-              through the system-read tools, but shell behavior is not artificially restricted.
-            - Keep edits focused and explain remaining limitations briefly.
-        """.trimIndent()
+    private fun invalidateFileToolResults(results: MutableMap<String, ToolResult>) {
+        results.keys
+            .filter { signature ->
+                signature.startsWith("read_file:") ||
+                    signature.startsWith("list_files:") ||
+                    signature.startsWith("search_files:") ||
+                    signature.startsWith("read_system_file:") ||
+                    signature.startsWith("list_system_dir:")
+            }
+            .forEach(results::remove)
+    }
+
+    private fun reusableToolSignature(call: AgentToolCall): String? {
+        if (call.name !in REUSABLE_TOOL_NAMES) return null
+        val normalizedArguments = runCatching {
+            JSONObject(call.arguments.ifBlank { "{}" }).toString()
+        }.getOrElse { call.arguments.trim() }
+        return "${call.name}:$normalizedArguments"
+    }
+
+    private fun toolDisplayName(name: String): String = when (name) {
+        "read_file" -> "读取"
+        "list_files" -> "列目录"
+        "search_files" -> "搜索"
+        "read_system_file" -> "系统文件读取"
+        "list_system_dir" -> "系统目录读取"
+        "run_command" -> "命令"
+        "device_info" -> "设备信息读取"
+        "ask_user" -> "等待选择"
+        else -> name
     }
 
     private fun summarizeArguments(raw: String): String = runCatching {
@@ -1048,15 +1279,30 @@ class AgentEngine(
         val success: Boolean,
         val preview: String,
         val plan: List<AgentPlanStep>? = null,
+        val additions: Int = 0,
+        val deletions: Int = 0,
     )
 
+    private fun lineDiffStats(before: String, after: String): LineDiffStats =
+        countLineDiff(before, after)
+
     companion object {
-        private const val CONTEXT_COMPACT_RATIO = 0.72
         private const val LOCAL_CHECKPOINT_MESSAGES = 18
         private const val LOCAL_CHECKPOINT_MESSAGE_CHARS = 3_000
         private const val LOCAL_CHECKPOINT_MAX_CHARS = 36_000
-        private const val MAX_TOOL_RESULT_CHARS = 30_000
+        private const val MAX_TOOL_RESULT_CHARS = 16_000
+        private const val STALE_TOOL_RESULT_CHARS = 3_000
+        private const val RECENT_TOOL_RESULTS_FULL = 10
         private const val MAX_HISTORY_MESSAGES = 80
+        private val REUSABLE_TOOL_NAMES = setOf(
+            "read_file",
+            "list_files",
+            "search_files",
+            "read_system_file",
+            "list_system_dir",
+            "run_command",
+            "device_info",
+        )
 
         private val TOOLS = listOf(
             ToolDefinition(
@@ -1158,6 +1404,40 @@ class AgentEngine(
                 ),
             ),
             ToolDefinition(
+                name = "ask_user",
+                description = "Ask the user to choose between 2–3 concrete options when a complex task has a material branch that cannot be resolved from context. Use only for real product, design, compatibility, or risk decisions.",
+                parameters = schema(
+                    properties = mapOf(
+                        "question" to stringProperty("A concise question explaining the decision"),
+                        "options" to JSONObject().apply {
+                            put("type", "array")
+                            put("minItems", 2)
+                            put("maxItems", 3)
+                            put(
+                                "items",
+                                JSONObject().apply {
+                                    put("type", "object")
+                                    put(
+                                        "properties",
+                                        JSONObject().apply {
+                                            put("id", stringProperty("Stable short identifier"))
+                                            put("title", stringProperty("User-facing option label"))
+                                            put("detail", stringProperty("Tradeoff or effect of this option"))
+                                        },
+                                    )
+                                    put(
+                                        "required",
+                                        JSONArray(listOf("id", "title", "detail")),
+                                    )
+                                    put("additionalProperties", false)
+                                },
+                            )
+                        },
+                    ),
+                    required = listOf("question", "options"),
+                ),
+            ),
+            ToolDefinition(
                 name = "device_info",
                 description = "Read phone/device information such as manufacturer, model, Android version, CPU, memory, storage, display and runtime.",
                 parameters = schema(emptyMap()),
@@ -1235,3 +1515,62 @@ class AgentEngine(
         }
     }
 }
+
+internal fun agentSystemPrompt(permissions: AgentPermissions): String = """
+You are Pocket Agent, a coding and device-inspection agent running on an Android phone.
+        Treat the latest user request as the active task goal. Keep work aligned with that goal,
+        mark plan steps accurately as you progress, and verify the result against the goal before
+        claiming completion.
+        Inspect relevant files before editing. Use write_file for workspace changes and
+        prefer edit_file for focused changes. Use search_files to locate code before reading
+        many files. Use update_plan only for a genuinely multi-phase task or when the user
+        explicitly asks for a plan. Do not create a plan for simple questions, one lookup,
+        one edit, or one command. Reuse and update the existing plan during follow-up work
+        instead of recreating it unless the goal has materially changed.
+        Use run_command for builds/tests. Never claim a task succeeded without running an
+        available relevant build or test command.
+
+        Efficiency rules:
+        - Resolve the active request with the shortest reliable tool path. For a focused
+          request, inspect only the files that can affect the answer.
+        - When several inspections are independent, issue them together in one assistant
+          response so they execute in the same agent round. In particular, combine related
+          file reads, status checks, searches, and shell diagnostics into one run_command
+          script when that does not hide errors.
+        - After an edit, prefer the smallest relevant build, test, or targeted check. Do not
+          repeat a successful inspection or command unless a file or runtime state changed.
+        - A tool result marked DUPLICATE_TOOL_CALL_SUPPRESSED means that exact request already
+          ran. Use the prior result; do not investigate the duplicate marker itself.
+        - Do not call update_plan just to narrate progress. Answer a simple informational
+          request directly when no tool is needed.
+        - When testing another Android app, combine launch, interaction or inspection, and
+          screenshot/log collection into the same run_command so it finishes atomically. The
+          app returns to Pocket Agent automatically when that command ends. Do not leave an
+          app under test in the foreground.
+        - If a complex task has a material product, design, compatibility, or risk choice that
+          cannot be resolved from the request or repository, call ask_user with 2–3 concrete
+          options. Do not guess between materially different outcomes. Ask only when the choice
+          changes implementation or user experience; do not ask for routine confirmations.
+
+        Phone and system information:
+        - When the user asks about the phone, device, Android version, hardware, memory, CPU,
+          storage, kernel, or runtime environment, call device_info first.
+        - Use list_system_dir and read_system_file for absolute system paths. These tools are
+          read-only, require the app's system-read permission, and are audited.
+        ${AgentAccessPolicy.instructions(permissions)}
+        - Termux, Android system shell, and Root are independent environments. Installing tools
+          with pkg in Termux does not require disabling Root, and Root does not replace pkg.
+          Use termux for project tools, system for Android utilities, and root only for an
+          operation that genuinely needs UID 0. Do not use su manually inside termux or system.
+        - A normal command remains usable when Root is available. Switch environments based on
+          the command's needs instead of treating Root as a global mode.
+
+        Safety rules:
+        - The shell supports the complete Android shell syntax: pipes, redirection, chaining,
+          scripts and package manager commands. Use Android system utilities only when they are
+          relevant to the task, and do not assume they share the Termux package manager.
+        - Network operations follow the separate network permission. Destructive commands are
+          approved per action in ask mode and fully audited. Raw device nodes are not exposed
+          through the system-read tools, but shell behavior is not artificially restricted.
+        - Keep edits focused and explain remaining limitations briefly.
+    """.trimIndent()

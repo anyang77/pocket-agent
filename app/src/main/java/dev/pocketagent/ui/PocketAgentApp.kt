@@ -297,6 +297,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onDeleteConversation = viewModel::deleteConversation,
                 onApprovePending = viewModel::approvePending,
                 onDenyPending = viewModel::denyPending,
+                onSelectChoice = viewModel::selectPendingChoice,
+                onDismissChoice = viewModel::dismissPendingChoice,
                 onPauseGoal = viewModel::pauseGoal,
                 onResumeGoal = viewModel::resumeGoal,
                 onClearGoal = viewModel::clearGoal,

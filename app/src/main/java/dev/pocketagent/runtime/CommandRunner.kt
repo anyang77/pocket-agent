@@ -62,7 +62,7 @@ class CommandRunner(
             ProcessBuilder(
                 su!!.absolutePath,
                 "-c",
-                buildRootCommand(command, workingDir, extraEnv),
+                buildRootCommand(command, workingDir, extraEnv, useInternalRuntime),
             )
         } else {
             ProcessBuilder("/system/bin/sh", "-lc", command)
@@ -165,8 +165,9 @@ class CommandRunner(
         command: String,
         workingDir: File,
         extraEnv: Map<String, String>,
+        useInternalRuntime: Boolean,
     ): String {
-        val runtime = internalRuntime ?: return command
+        val runtime = internalRuntime?.takeIf { useInternalRuntime } ?: return command
         if (!runtime.isReady()) return command
         val environment = (runtime.environmentArray() + extraEnv.map { "${it.key}=${it.value}" })
             .joinToString(" ") { shellQuote(it) }

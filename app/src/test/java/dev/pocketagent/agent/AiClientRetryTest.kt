@@ -13,6 +13,17 @@ class AiClientRetryTest {
     }
 
     @Test
+    fun retriesServiceErrorsReportedInsideSuccessfulStreams() {
+        assertTrue(
+            AgentException(
+                "模型流式响应失败: Concurrency limit exceeded for user, please retry later",
+            ).isRetryable(),
+        )
+        assertTrue(AgentException("Service temporarily unavailable").isRetryable())
+        assertFalse(AgentException("模型流式响应结束，但没有返回内容").isRetryable())
+    }
+
+    @Test
     fun doesNotRetryRequestValidationErrors() {
         assertFalse(AgentHttpException(400, "").isRetryable())
         assertFalse(AgentHttpException(401, "").isRetryable())

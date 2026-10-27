@@ -70,6 +70,33 @@ class EditorDiagnosticParserTest {
     }
 
     @Test
+    fun marksUnresolvedJavaDependenciesAsProjectIssues() {
+        val diagnostic = EditorDiagnosticParser.parse(
+            """/tmp/Main.java:5: error: cannot find symbol
+                    MissingType value;
+                    ^
+              symbol: class MissingType
+            """.trimIndent(),
+            "/tmp/Main.java",
+        ).single()
+
+        assertEquals(5, diagnostic.line)
+        assertEquals(true, diagnostic.projectLevel)
+    }
+
+    @Test
+    fun keepsRealJavaSyntaxErrorsAsFileIssues() {
+        val diagnostic = EditorDiagnosticParser.parse(
+            "/tmp/Main.java:7: error: ';' expected",
+            "/tmp/Main.java",
+        ).single()
+
+        assertEquals(7, diagnostic.line)
+        assertEquals(1, diagnostic.column)
+        assertEquals(false, diagnostic.projectLevel)
+    }
+
+    @Test
     fun parsesJavacErrorWithoutColumn() {
         val diagnostic = EditorDiagnosticParser.parse(
             """

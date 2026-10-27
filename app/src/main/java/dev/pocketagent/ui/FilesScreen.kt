@@ -680,9 +680,16 @@ private fun Editor(
                 ) {
                     Text(
                         text = buildString {
-                            append("第 ${diagnostic.line} 行：${diagnostic.message}")
+                            append(
+                                if (diagnostic.projectLevel) {
+                                    "项目依赖未解析："
+                                } else {
+                                    "第 ${diagnostic.line} 行："
+                                },
+                            )
+                            append(diagnostic.message)
                             if (diagnostics.size > 1) {
-                                append("（另有 ${diagnostics.size - 1} 个错误）")
+                                append("（另有 ${diagnostics.size - 1} 个问题）")
                             }
                         },
                         modifier = Modifier.weight(1f),
@@ -742,7 +749,7 @@ private fun SyntaxDiagnosticsDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text("语法问题 · ${diagnostics.size}")
+            Text("代码检查 · ${diagnostics.size}")
         },
         text = {
             Column(
@@ -764,9 +771,17 @@ private fun SyntaxDiagnosticsDialog(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                         ) {
                             Text(
-                                "第 ${diagnostic.line} 行，第 ${diagnostic.column} 列",
+                                if (diagnostic.projectLevel) {
+                                    "项目依赖未解析 · 不是当前文件的语法错误"
+                                } else {
+                                    "第 ${diagnostic.line} 行，第 ${diagnostic.column} 列"
+                                },
                                 style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.error,
+                                color = if (diagnostic.projectLevel) {
+                                    MaterialTheme.colorScheme.tertiary
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                },
                             )
                             Text(
                                 diagnostic.message,

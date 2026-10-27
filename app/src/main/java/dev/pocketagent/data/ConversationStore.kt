@@ -127,6 +127,8 @@ class ConversationStore(context: Context) {
                                             durationMs = activity.optLong("duration_ms")
                                                 .takeIf { it >= 0 && activity.has("duration_ms") },
                                             contentOffset = activity.optInt("content_offset", 0),
+                                            additions = activity.optInt("additions", 0),
+                                            deletions = activity.optInt("deletions", 0),
                                         ),
                                     )
                                 }
@@ -232,6 +234,12 @@ class ConversationStore(context: Context) {
                                                 activity.startedAt?.let { put("started_at", it) }
                                                 activity.durationMs?.let { put("duration_ms", it) }
                                                 put("content_offset", activity.contentOffset)
+                                                if (activity.additions > 0) {
+                                                    put("additions", activity.additions)
+                                                }
+                                                if (activity.deletions > 0) {
+                                                    put("deletions", activity.deletions)
+                                                }
                                             },
                                         )
                                     }

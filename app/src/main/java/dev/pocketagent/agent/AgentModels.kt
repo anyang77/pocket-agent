@@ -88,6 +88,8 @@ data class ToolActivity(
     val startedAt: Long? = null,
     val durationMs: Long? = null,
     val contentOffset: Int = 0,
+    val additions: Int = 0,
+    val deletions: Int = 0,
 )
 
 /** Keeps an older measured speed visible while a new request is still warming up. */
@@ -111,6 +113,17 @@ data class AssistantTurn(
     val finishReason: String?,
     val usage: TokenUsage? = null,
     val contentWasStreamed: Boolean = false,
+)
+
+data class AgentChoice(
+    val id: String,
+    val title: String,
+    val detail: String = "",
+)
+
+data class UserQuestion(
+    val question: String,
+    val options: List<AgentChoice>,
 )
 
 data class RetryNotice(
@@ -208,6 +221,8 @@ sealed interface AgentEvent {
         val summary: String,
         val success: Boolean,
         val output: String = "",
+        val additions: Int = 0,
+        val deletions: Int = 0,
     ) : AgentEvent
     data class State(val text: String) : AgentEvent
     data object Completed : AgentEvent
@@ -218,10 +233,19 @@ sealed interface AgentEvent {
     ) : AgentEvent
 }
 
-open class AgentException(message: String) : Exception(message)
+open class AgentException(
+    message: String,
+    val retryAfterSeconds: Long? = null,
+) : Exception(message) {
+    var retryAttempts: Int = 0
+        internal set
+}
 
 class AgentHttpException(
     val statusCode: Int,
     body: String,
-    val retryAfterSeconds: Long? = null,
-) : AgentException("模型请求失败 HTTP $statusCode: ${body.take(1_000)}")
+    retryAfterSeconds: Long? = null,
+) : AgentException(
+    message = "模型请求失败 HTTP $statusCode: ${body.take(1_000)}",
+    retryAfterSeconds = retryAfterSeconds,
+)

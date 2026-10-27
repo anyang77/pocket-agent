@@ -15,6 +15,8 @@ import dev.pocketagent.agent.AgentEvent
 import dev.pocketagent.agent.AgentPermissions
 import dev.pocketagent.agent.AgentPlanStep
 import dev.pocketagent.agent.AgentMessage
+import dev.pocketagent.agent.AgentChoice
+import dev.pocketagent.agent.UserQuestion
 import dev.pocketagent.agent.AiClient
 import dev.pocketagent.agent.PermissionDecision
 import dev.pocketagent.agent.PermissionKind
@@ -125,6 +127,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auditLog = auditLog,
     )
     private var pendingApprovalDeferred: CompletableDeferred<Boolean>? = null
+    private var pendingChoiceDeferred: CompletableDeferred<AgentChoice?>? = null
     private var agentJob: Job? = null
     private var editorLintJob: Job? = null
     private var githubLoginJob: Job? = null
@@ -774,6 +777,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun denyPending() {
         activeAssistantId?.let { setTurnPhase(it, AgentTurnPhase.THINKING) }
         pendingApprovalDeferred?.complete(false)
+    }
+
+    fun selectPendingChoice(choiceId: String) {
+        val pending = _state.value.pendingUserChoice ?: return
+        val choice = pending.options.firstOrNull { it.id == choiceId } ?: return
+        auditLog.append(
+            "agent",
+            "选择任务方案",
+            "${choice.id}: ${choice.title}",
+            "selected",
+        )
+        _state.update { it.copy(pendingUserChoice = null) }
+        activeAssistantId?.let { setTurnPhase(it, AgentTurnPhase.THINKING) }
+        pendingChoiceDeferred?.complete(choice)
+    }
+
+    fun dismissPendingChoice() {
+        if (_state.value.pendingUserChoice == null) return
+        auditLog.append("agent", "取消任务方案选择", "用户关闭了选择卡片", "cancelled")
+        _state.update { it.copy(pendingUserChoice = null) }
+        activeAssistantId?.let { setTurnPhase(it, AgentTurnPhase.THINKING) }
+        pendingChoiceDeferred?.complete(null)
+    }
+
+    private suspend fun requestUserChoice(question: UserQuestion): AgentChoice? {
+        if (pendingChoiceDeferred != null) {
+            return null
+        }
+        val deferred = CompletableDeferred<AgentChoice?>()
+        pendingChoiceDeferred = deferred
+        activeAssistantId?.let { setTurnPhase(it, AgentTurnPhase.WAITING_APPROVAL) }
+        _state.update {
+            it.copy(
+                pendingUserChoice = PendingUserChoice(
+                    question = question.question,
+                    options = question.options,
+                ),
+                agentStatus = "等待你选择下一步",
+            )
+        }
+        return try {
+            withTimeoutOrNull(USER_CHOICE_TIMEOUT_MS) { deferred.await() }
+        } finally {
+            pendingChoiceDeferred = null
+            _state.update { it.copy(pendingUserChoice = null) }
+        }
     }
 
     private suspend fun authorizeAgentAction(request: PermissionRequest): PermissionDecision {
@@ -1917,7 +1966,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             EditorLintLanguage.JAVA -> { file ->
                 val classesDir = File(File(file).parentFile, "classes")
-                "javac -encoding UTF-8 -proc:none -XDshould-stop.at=PARSE " +
+                val projectRoot = workspace.root.absolutePath
+                val sourceRoots = listOf(
+                    workspace.root,
+                    File(workspace.root, "src/main/java"),
+                    File(workspace.root, "src/test/java"),
+                ).filter { it.isDirectory }
+                    .joinToString(File.pathSeparator) { it.absolutePath }
+                    .ifBlank { projectRoot }
+                // The embedded editor checks Java syntax without the project's full Gradle
+                // classpath. Stop before attribution once parsing succeeds so missing Android
+                // or dependency symbols are not reported as errors in an otherwise valid file.
+                "javac -encoding UTF-8 -proc:none " +
+                    "-XDshould-stop.ifNoError=PARSE " +
+                    "-sourcepath ${shellQuote(sourceRoots)} " +
                     "-d ${shellQuote(classesDir.absolutePath)} " +
                     shellQuote(file)
             }
@@ -2343,6 +2405,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     userText = prompt,
                     settings = _state.value.settings,
                     authorize = ::authorizeAgentAction,
+                    choose = ::requestUserChoice,
                 ) { event ->
                     when (event) {
                         is AgentEvent.AssistantText -> {
@@ -2668,6 +2731,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         pendingApprovalDeferred?.complete(false)
         pendingApprovalDeferred = null
+        pendingChoiceDeferred?.complete(null)
+        pendingChoiceDeferred = null
         aiClient.cancel()
         commandRunner.cancel()
         agentJob?.cancel()
@@ -2697,6 +2762,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun clearChat() {
         pendingApprovalDeferred?.complete(false)
         pendingApprovalDeferred = null
+        pendingChoiceDeferred?.complete(null)
+        pendingChoiceDeferred = null
         newConversation()
     }
 
@@ -2882,6 +2949,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         success: Boolean,
         output: String? = null,
         activitySummary: String? = null,
+        additions: Int = 0,
+        deletions: Int = 0,
     ) {
         _state.update { current ->
             current.copy(
@@ -2901,6 +2970,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                     success = success,
                                     durationMs = activity.startedAt
                                         ?.let { (finishedAt - it).coerceAtLeast(0) },
+                                    additions = additions,
+                                    deletions = deletions,
                                 )
                             } else {
                                 activity
@@ -2999,5 +3070,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private const val EDITOR_LINT_TAG = "PocketEditorLint"
         private const val MAX_TERMINAL_CHARS = 180_000
         private const val APPROVAL_TIMEOUT_MS = 5 * 60 * 1000L
+        private const val USER_CHOICE_TIMEOUT_MS = 10 * 60 * 1000L
     }
 }

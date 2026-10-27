@@ -13,16 +13,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.outlined.AddComment
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -36,14 +41,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.pocketagent.agent.TokenUsage
+import dev.pocketagent.agent.contextCompactionThreshold
 import java.util.Locale
 import kotlin.math.roundToInt
 
-const val AUTO_COMPACT_RATIO = 0.72f
-
-/** Single control strip for the agent tab: model, thinking level, cache hit rate, history. */
+/** Model, execution and usage controls grouped by purpose instead of wrapped into one crowded strip. */
 @Composable
 fun AgentHeaderBar(
     state: AppUiState,
@@ -63,7 +68,6 @@ fun AgentHeaderBar(
     onOpenHistory: () -> Unit,
 ) {
     var modelMenuExpanded by rememberSaveable { mutableStateOf(false) }
-    var effortMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var usageMenuExpanded by rememberSaveable { mutableStateOf(false) }
 
     val activeProfile = state.modelProfiles.firstOrNull { it.id == state.activeProfileId }
@@ -80,168 +84,214 @@ fun AgentHeaderBar(
         listOfNotNull(sessionUsage, taskUsage).maxByOrNull { it.requests }
     }
     val overallCacheRate = overallUsage?.takeIf { it.cacheMetricsAvailable }?.cacheHitRate
+    val compactAt = contextCompactionThreshold(contextLimit)
+    val compactRatio = compactAt.toFloat() / safeLimit
 
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(top = 3.dp, bottom = 7.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        Box(Modifier.weight(1f)) {
-            AgentPill(
-                label = modelLabel,
-                modifier = Modifier.fillMaxWidth(),
-                trailingIcon = Icons.Filled.ArrowDropDown,
-                active = true,
-                onClick = { modelMenuExpanded = true },
-            )
-            AgentDropdown(
-                expanded = modelMenuExpanded,
-                onDismiss = { modelMenuExpanded = false },
-            ) {
-                ModelMenuContent(
-                    state = state,
-                    activeProfile = activeProfile,
-                    onProfileSelected = {
-                        onProfileSelected(it)
-                        modelMenuExpanded = false
-                    },
-                    onModelSelected = {
-                        onModelSelected(it)
-                        modelMenuExpanded = false
-                    },
-                    onReasoningEffortSelected = {
-                        onReasoningEffortSelected(it)
-                        modelMenuExpanded = false
-                    },
-                    onRefreshModels = {
-                        onRefreshModels()
-                        modelMenuExpanded = false
-                    },
-                )
-            }
-        }
-
-        // Thinking level sits with the model so the pairing is visible without opening a menu.
-        Box {
-            val effortLabel = reasoningEffortLabel(state.settings.reasoningEffort)
-            AgentPill(
-                label = "思考 $effortLabel",
-                trailingIcon = Icons.Filled.ArrowDropDown,
-                active = state.settings.reasoningEffort != "auto",
-                onClick = { effortMenuExpanded = true },
-            )
-            AgentDropdown(
-                expanded = effortMenuExpanded,
-                onDismiss = { effortMenuExpanded = false },
-            ) {
-                EffortMenuContent(
-                    state = state,
-                    onSelected = {
-                        onReasoningEffortSelected(it)
-                        effortMenuExpanded = false
-                    },
-                )
-            }
-        }
-
-        Box {
-            AgentPill(
-                label = overallRateLabel(overallCacheRate),
-                dotColor = cacheDotColor(overallCacheRate),
-                active = overallCacheRate != null,
-                onClick = { usageMenuExpanded = true },
-            )
-            AgentDropdown(
-                expanded = usageMenuExpanded,
-                onDismiss = { usageMenuExpanded = false },
-            ) {
-                UsageMenuContent(
-                    usage = latestRequestUsage,
-                    overall = overallUsage,
-                    overallRate = overallCacheRate,
-                    usedTokens = usedTokens,
-                    contextLimit = contextLimit,
-                    tokensPerSecond = tokensPerSecond,
-                )
-            }
-        }
-
-        AgentIconAction(
-            icon = Icons.Outlined.History,
-            contentDescription = "历史对话",
-            onClick = onOpenHistory,
-        )
-        AgentIconAction(
-            icon = Icons.Outlined.AddComment,
-            contentDescription = "新对话",
-            enabled = !state.agentRunning,
-            onClick = onNewConversation,
-        )
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 6.dp, bottom = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        AgentPermissionControl(permissions, onPermissionsChanged)
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .height(AgentHeader.PillHeight)
-                .clip(RoundedCornerShape(AgentHeader.PillRadius))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f))
-                .clickable { usageMenuExpanded = true }
-                .padding(horizontal = 7.dp),
-            contentAlignment = Alignment.CenterStart,
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                LinearProgressIndicator(
-                    progress = { ratio },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp)),
-                    color = when {
-                        ratio <= 0f -> MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-                        ratio >= AUTO_COMPACT_RATIO -> MaterialTheme.colorScheme.error
-                        ratio >= 0.5f -> MaterialTheme.colorScheme.tertiary
-                        else -> MaterialTheme.colorScheme.primary
-                    },
-                    trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
-                    gapSize = 0.dp,
-                    drawStopIndicator = {},
+            Box(Modifier.weight(1f)) {
+                ModelControl(
+                    modelLabel = modelLabel,
+                    effortLabel = reasoningEffortLabel(state.settings.reasoningEffort),
+                    profileName = activeProfile?.name,
+                    onClick = { modelMenuExpanded = true },
                 )
+                AgentDropdown(
+                    expanded = modelMenuExpanded,
+                    onDismiss = { modelMenuExpanded = false },
+                ) {
+                    ModelMenuContent(
+                        state = state,
+                        activeProfile = activeProfile,
+                        onProfileSelected = {
+                            onProfileSelected(it)
+                            modelMenuExpanded = false
+                        },
+                        onModelSelected = {
+                            onModelSelected(it)
+                            modelMenuExpanded = false
+                        },
+                        onReasoningEffortSelected = {
+                            onReasoningEffortSelected(it)
+                            modelMenuExpanded = false
+                        },
+                        onRefreshModels = {
+                            onRefreshModels()
+                            modelMenuExpanded = false
+                        },
+                    )
+                }
+            }
+
+            Box {
+                AgentPill(
+                    label = overallRateLabel(overallCacheRate),
+                    dotColor = cacheDotColor(overallCacheRate),
+                    active = overallCacheRate != null,
+                    onClick = { usageMenuExpanded = true },
+                )
+                AgentDropdown(
+                    expanded = usageMenuExpanded,
+                    onDismiss = { usageMenuExpanded = false },
+                ) {
+                    UsageMenuContent(
+                        usage = latestRequestUsage,
+                        overall = overallUsage,
+                        overallRate = overallCacheRate,
+                        usedTokens = usedTokens,
+                        contextLimit = contextLimit,
+                        tokensPerSecond = tokensPerSecond,
+                    )
+                }
+            }
+            AgentIconAction(
+                icon = Icons.Outlined.History,
+                contentDescription = "历史对话",
+                onClick = onOpenHistory,
+            )
+            AgentIconAction(
+                icon = Icons.Outlined.AddComment,
+                contentDescription = "新对话",
+                enabled = !state.agentRunning,
+                onClick = onNewConversation,
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            AgentPermissionControl(permissions, onPermissionsChanged)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(AgentHeader.PillHeight)
+                    .clip(RoundedCornerShape(AgentHeader.PillRadius))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f))
+                    .clickable { usageMenuExpanded = true }
+                    .padding(horizontal = 9.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    LinearProgressIndicator(
+                        progress = { ratio },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(2.dp)),
+                        color = when {
+                            ratio <= 0f -> MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                            ratio >= compactRatio -> MaterialTheme.colorScheme.error
+                            ratio >= 0.5f -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.primary
+                        },
+                        trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f),
+                        gapSize = 0.dp,
+                        drawStopIndicator = {},
+                    )
+                    Text(
+                        text = if (usedTokens > 0) {
+                            String.format(Locale.US, "%.0f%%", ratio * 100)
+                        } else {
+                            "--"
+                        },
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = if (ratio >= compactRatio) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .height(12.dp),
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                    )
+                    Text(
+                        text = speedLabel(tokensPerSecond),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                        color = if (tokensPerSecond == null) {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelControl(
+    modelLabel: String,
+    effortLabel: String,
+    profileName: String?,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(40.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.22f),
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
                 Text(
-                    text = if (usedTokens > 0) "${(ratio * 100).roundToInt()}%" else "--",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontFamily = FontFamily.Monospace,
+                    modelLabel,
+                    style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.SemiBold,
                     ),
-                    color = when {
-                        usedTokens <= 0 -> MaterialTheme.colorScheme.onSurfaceVariant
-                        ratio >= AUTO_COMPACT_RATIO -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = speedLabel(tokensPerSecond),
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                    ),
-                    color = if (tokensPerSecond == null) {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    },
+                    listOfNotNull(
+                        profileName?.takeIf { it.isNotBlank() },
+                        "思考 $effortLabel",
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Icons.Filled.ArrowDropDown.let { arrow ->
+                androidx.compose.material3.Icon(
+                    arrow,
+                    contentDescription = "切换模型与思考等级",
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -404,6 +454,8 @@ private fun UsageMenuContent(
 ) {
     val safeLimit = contextLimit.coerceAtLeast(1)
     val ratio = (usedTokens.toFloat() / safeLimit).coerceIn(0f, 1f)
+    val compactAt = contextCompactionThreshold(contextLimit)
+    val compactRatio = compactAt.toFloat() / safeLimit
     val overallPercent = overallRate?.let { "${(it * 100).roundToInt()}%" } ?: "--"
 
     AgentMenuSection(text = "缓存命中率（整体）")
@@ -453,7 +505,7 @@ private fun UsageMenuContent(
     AgentMenuRow(
         label = "本请求输入",
         value = "${formatTokenCount(usedTokens)} / ${formatTokenCount(contextLimit)}",
-        accent = if (ratio >= AUTO_COMPACT_RATIO) MaterialTheme.colorScheme.error else null,
+        accent = if (ratio >= compactRatio) MaterialTheme.colorScheme.error else null,
     )
     AgentMenuRow(
         label = "剩余空间",
@@ -461,6 +513,6 @@ private fun UsageMenuContent(
     )
     AgentMenuRow(
         label = "自动压缩线",
-        value = formatTokenCount((contextLimit * AUTO_COMPACT_RATIO).roundToInt()),
+        value = formatTokenCount(compactAt),
     )
 }

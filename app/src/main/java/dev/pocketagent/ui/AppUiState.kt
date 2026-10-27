@@ -2,6 +2,7 @@ package dev.pocketagent.ui
 
 import dev.pocketagent.data.AiSettings
 import dev.pocketagent.data.AgentGoal
+import dev.pocketagent.agent.AgentChoice
 import dev.pocketagent.agent.AgentPermissions
 import dev.pocketagent.agent.AgentPlanStep
 import dev.pocketagent.data.AuditEntry
@@ -72,6 +73,11 @@ data class AgentRetryState(
     val retryAt: Long,
 )
 
+data class PendingUserChoice(
+    val question: String,
+    val options: List<AgentChoice>,
+)
+
 data class PendingApproval(
     val id: Long,
     val title: String,
@@ -98,6 +104,7 @@ data class AppUiState(
     val activeProfileId: String = "",
     val permissions: AgentPermissions = AgentPermissions(),
     val pendingApproval: PendingApproval? = null,
+    val pendingUserChoice: PendingUserChoice? = null,
     val auditEntries: List<AuditEntry> = emptyList(),
     val conversations: List<ConversationSummary> = emptyList(),
     val currentConversationId: Long? = null,

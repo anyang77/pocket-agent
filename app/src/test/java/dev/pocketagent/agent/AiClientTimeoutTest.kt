@@ -66,9 +66,9 @@ class AiClientTimeoutTest {
             responder.join(1_000)
         }
         val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
-        assertEquals(listOf(1, 2), retries.map { it.attempt })
-        assertEquals(listOf(2, 2), retries.map { it.maxAttempts })
-        assertEquals(listOf(1, 2), retries.map { it.delaySeconds })
-        assertTrue("Expected bounded retry time, was ${elapsedMs}ms", elapsedMs < 5_000)
+        assertEquals(listOf(1, 2, 3, 4, 5), retries.map { it.attempt })
+        assertEquals(listOf(5, 5, 5, 5, 5), retries.map { it.maxAttempts })
+        assertEquals(listOf(1, 2, 4, 8, 16), retries.map { it.delaySeconds })
+        assertTrue("Expected bounded retry time, was ${elapsedMs}ms", elapsedMs < 35_000)
     }
 }
