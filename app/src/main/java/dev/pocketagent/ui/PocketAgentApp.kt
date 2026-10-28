@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -327,7 +328,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onCloseWorkspacePicker = viewModel::closeWorkspacePicker,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding),
+                    .padding(innerPadding)
+                    .consumeWindowInsets(innerPadding),
             )
             AppTab.GIT -> GitScreen(
                 state = state,
@@ -364,7 +366,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onRuntimeSelected = viewModel::setTerminalRuntime,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding),
+                    .padding(innerPadding)
+                    .consumeWindowInsets(innerPadding),
             )
             AppTab.SETTINGS -> SettingsScreen(
                 state = state,

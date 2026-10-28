@@ -1,7 +1,9 @@
 package dev.pocketagent.ui
 
+import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,6 +11,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -19,6 +23,9 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -37,7 +44,11 @@ import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.termux.view.TerminalView
 import dev.pocketagent.runtime.RuntimeKind
@@ -64,7 +75,7 @@ fun TerminalScreen(
         }
     }
 
-    Column(modifier) {
+    Column(modifier.imePadding()) {
         Surface(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 2.dp,
@@ -141,6 +152,101 @@ fun TerminalScreen(
                 }
             },
         )
+        TerminalShortcutBar(terminalManager)
+    }
+}
+
+@Composable
+private fun TerminalShortcutBar(manager: TerminalSessionManager) {
+    var menuVisible by remember { mutableStateOf(false) }
+    val rows = listOf(
+        listOf("Esc", "Tab", "PgUp", "Home", "↑", "End", "⋮"),
+        listOf("Ctrl", "Alt", "PgDn", "←", "↓", "→", "⌨"),
+    )
+    val keyCodes = mapOf(
+        "Esc" to KeyEvent.KEYCODE_ESCAPE,
+        "Tab" to KeyEvent.KEYCODE_TAB,
+        "PgUp" to KeyEvent.KEYCODE_PAGE_UP,
+        "PgDn" to KeyEvent.KEYCODE_PAGE_DOWN,
+        "Home" to KeyEvent.KEYCODE_MOVE_HOME,
+        "End" to KeyEvent.KEYCODE_MOVE_END,
+        "↑" to KeyEvent.KEYCODE_DPAD_UP,
+        "↓" to KeyEvent.KEYCODE_DPAD_DOWN,
+        "←" to KeyEvent.KEYCODE_DPAD_LEFT,
+        "→" to KeyEvent.KEYCODE_DPAD_RIGHT,
+    )
+    Surface(color = MaterialTheme.colorScheme.surface) {
+        Column {
+            HorizontalDivider(thickness = 0.5.dp)
+            rows.forEach { keys ->
+                Row(Modifier.fillMaxWidth()) {
+                    keys.forEach { key ->
+                        val active = when (key) {
+                            "Ctrl" -> manager.controlPressed
+                            "Alt" -> manager.altPressed
+                            else -> false
+                        }
+                        Box(
+                            modifier = Modifier.weight(1f).height(36.dp)
+                                .background(
+                                    if (active) MaterialTheme.colorScheme.primaryContainer
+                                    else ComposeColor.Transparent,
+                                )
+                                .semantics {
+                                    contentDescription = when (key) {
+                                        "⋮" -> "终端快捷操作"
+                                        "⌨" -> "显示或隐藏键盘"
+                                        else -> key
+                                    }
+                                    if (key == "Ctrl" || key == "Alt") selected = active
+                                }
+                                .clickable {
+                                    when (key) {
+                                        "Ctrl" -> manager.toggleControl()
+                                        "Alt" -> manager.toggleAlt()
+                                        "⋮" -> menuVisible = true
+                                        "⌨" -> manager.toggleKeyboard()
+                                        else -> keyCodes[key]?.let(manager::sendShortcutKey)
+                                    }
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                key,
+                                fontSize = 13.sp,
+                                color = if (active) MaterialTheme.colorScheme.onPrimaryContainer
+                                    else MaterialTheme.colorScheme.onSurface,
+                            )
+                            if (key == "⋮") {
+                                DropdownMenu(
+                                    expanded = menuVisible,
+                                    onDismissRequest = { menuVisible = false },
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("粘贴") },
+                                        onClick = { menuVisible = false; manager.pasteClipboard() },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("中断 · Ctrl+C") },
+                                        onClick = {
+                                            menuVisible = false
+                                            manager.sendControlShortcut(KeyEvent.KEYCODE_C)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("清屏 · Ctrl+L") },
+                                        onClick = {
+                                            menuVisible = false
+                                            manager.sendControlShortcut(KeyEvent.KEYCODE_L)
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

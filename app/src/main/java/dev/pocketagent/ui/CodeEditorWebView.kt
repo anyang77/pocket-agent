@@ -17,7 +17,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
@@ -229,6 +228,16 @@ class CodeEditorController internal constructor(
         )
     }
 
+    fun insertText(text: String, cursorOffset: Int = text.length) {
+        webView.evaluateJavascript(
+            "PocketEditor.insertText(" +
+                "${JSONObject.quote(text)}, " +
+                "${cursorOffset.coerceIn(0, text.length)}" +
+                ");",
+            null,
+        )
+    }
+
     fun getContent(onResult: (String) -> Unit) {
         webView.evaluateJavascript(
             "PocketEditor.flush(); PocketEditor.getValue();",
@@ -397,16 +406,7 @@ fun CodeEditorWebView(
                 loadUrl("file:///android_asset/editor/editor.html")
             }
         },
-        modifier = modifier.onSizeChanged { size ->
-            if (size.width > 0 && size.height > 0) {
-                webView.post {
-                    webView.evaluateJavascript(
-                        "if (window.PocketEditor) PocketEditor.refresh();",
-                        null,
-                    )
-                }
-            }
-        },
+        modifier = modifier,
         update = {
             it.setBackgroundColor(editorBackground)
         },

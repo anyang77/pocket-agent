@@ -1148,6 +1148,21 @@
         editor.setCursor(CodeMirror.Pos(from.line, from.ch + String(replacement).length));
         editor.focus();
       },
+      insertText(text, cursorOffset) {
+        const value = String(text == null ? "" : text);
+        const start = editor.getCursor("from");
+        editor.focus();
+        editor.replaceSelection(value, "end", "+input");
+        const requested = Number(cursorOffset);
+        const offset = Number.isFinite(requested)
+          ? Math.max(0, Math.min(Math.floor(requested), value.length))
+          : value.length;
+        const cursor = positionAfter(start, value, offset);
+        editor.setCursor(cursor);
+        editor.scrollIntoView(cursor, 32);
+        sendPosition();
+        publishHistoryState();
+      },
       goToDefinition() {
         goToDefinition(editor);
       },
@@ -1170,8 +1185,7 @@
         flushContent();
       },
       refresh() {
-        editor.refresh();
-        editor.scrollIntoView(editor.getCursor(), 80);
+        refreshEditorViewport();
       },
       setTheme(theme) {
         if (!theme || typeof theme !== "object") return;
@@ -1186,12 +1200,28 @@
       }
     };
 
+    let viewportFrame = 0;
+    let previousEditorHeight = editor.getWrapperElement().clientHeight;
     function refreshEditorViewport() {
-      if (!window.PocketEditor) return;
-      requestAnimationFrame(() => {
-        window.PocketEditor.refresh();
-        setTimeout(() => window.PocketEditor.refresh(), 80);
+      if (viewportFrame) return;
+      viewportFrame = requestAnimationFrame(() => {
+        viewportFrame = 0;
+        const height = editor.getWrapperElement().clientHeight;
+        const shrinking = height < previousEditorHeight;
+        previousEditorHeight = height;
+        const scroll = editor.getScrollInfo();
+        editor.refresh();
+        editor.scrollTo(scroll.left, scroll.top);
+        // Keep the reading position when the keyboard closes or the user is
+        // browsing. While editing, move only as far as needed to reveal the caret.
+        if (shrinking && editor.hasFocus()) {
+          editor.scrollIntoView(editor.getCursor(), 8);
+        }
       });
+    }
+
+    if (window.ResizeObserver) {
+      new ResizeObserver(refreshEditorViewport).observe(editor.getWrapperElement());
     }
 
     window.addEventListener("resize", refreshEditorViewport);

@@ -9,6 +9,9 @@ import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.inputmethod.InputMethodManager
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import com.termux.terminal.TerminalColors
@@ -45,6 +48,56 @@ class TerminalSessionManager(
     private val terminalInput = StringBuilder()
     private var runtimeKind = RuntimeKind.TERMUX
     private var darkTheme = true
+    var controlPressed by mutableStateOf(false)
+        private set
+    var altPressed by mutableStateOf(false)
+        private set
+
+    fun toggleControl() { controlPressed = !controlPressed }
+    fun toggleAlt() { altPressed = !altPressed }
+
+    private fun releaseModifiers() {
+        controlPressed = false
+        altPressed = false
+    }
+
+    fun sendControlShortcut(keyCode: Int) {
+        releaseModifiers()
+        controlPressed = true
+        sendShortcutKey(keyCode)
+    }
+
+    fun sendShortcutKey(keyCode: Int) {
+        val target = view ?: run {
+            releaseModifiers()
+            return
+        }
+        target.requestFocus()
+        try {
+            target.onKeyDown(keyCode, KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+            target.onKeyUp(keyCode, KeyEvent(KeyEvent.ACTION_UP, keyCode))
+        } finally {
+            releaseModifiers()
+        }
+    }
+
+    fun toggleKeyboard() {
+        val target = view ?: return
+        target.requestFocus()
+        val imm = appContext.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        if (androidx.core.view.ViewCompat.getRootWindowInsets(target)
+                ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()) == true) {
+            imm.hideSoftInputFromWindow(target.windowToken, 0)
+        } else {
+            imm.showSoftInput(target, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    fun pasteClipboard() {
+        releaseModifiers()
+        view?.requestFocus()
+        onPasteTextFromClipboard(currentSession())
+    }
 
     init {
         configureTerminalColors()
@@ -118,6 +171,7 @@ class TerminalSessionManager(
     @Synchronized
     fun detach(oldView: TerminalView) {
         if (view === oldView) {
+            releaseModifiers()
             oldView.attachSession(null)
             view = null
         }
@@ -133,6 +187,7 @@ class TerminalSessionManager(
     @Synchronized
     fun setRuntimeKind(kind: RuntimeKind) {
         if (runtimeKind == kind) return
+        releaseModifiers()
         runtimeKind = kind
         auditLog.append("terminal", "切换执行环境", "runtime=$kind")
         view?.attachSession(currentSession())
@@ -255,15 +310,21 @@ class TerminalSessionManager(
         if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
             flushTerminalCommand()
         }
+        if (keyCode != KeyEvent.KEYCODE_UNKNOWN && !KeyEvent.isModifierKey(keyCode)) {
+            // TerminalView reads modifiers after this callback, including for special keys.
+            view?.post { releaseModifiers() }
+        }
         return false
     }
     override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean = false
     override fun onLongPress(event: MotionEvent): Boolean = false
-    override fun readControlKey(): Boolean = false
-    override fun readAltKey(): Boolean = false
+    override fun readControlKey(): Boolean = controlPressed
+    override fun readAltKey(): Boolean = altPressed
     override fun readShiftKey(): Boolean = false
     override fun readFnKey(): Boolean = false
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
+        // TerminalView has already captured both modifiers for this code point.
+        releaseModifiers()
         when {
             codePoint == '\r'.code || codePoint == '\n'.code -> flushTerminalCommand()
             codePoint == 8 || codePoint == 127 -> {

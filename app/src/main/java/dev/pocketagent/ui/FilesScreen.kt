@@ -1,15 +1,22 @@
 package dev.pocketagent.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -49,9 +56,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.pocketagent.data.FileEntry
 import java.io.File
 
@@ -533,6 +542,7 @@ private fun Editor(
     var canRedo by remember(path) { mutableStateOf(false) }
     var controller by remember(path) { mutableStateOf<CodeEditorController?>(null) }
     var showProblems by rememberSaveable(path) { mutableStateOf(false) }
+    var symbolsExpanded by rememberSaveable(path) { mutableStateOf(false) }
     LaunchedEffect(dirty) {
         if (!dirty) localDirty = false
     }
@@ -735,6 +745,132 @@ private fun Editor(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
+        )
+        SymbolPad(
+            expanded = symbolsExpanded,
+            onExpandedChange = { symbolsExpanded = it },
+            onInsert = { text, cursorOffset -> controller?.insertText(text, cursorOffset) },
+        )
+    }
+}
+
+private data class SymbolKey(val label: String, val text: String, val cursorOffset: Int)
+
+private val compactSymbolKeys = listOf(
+    SymbolKey("→", "\t", 1),
+    SymbolKey("/", "/", 1),
+    SymbolKey("+", "+", 1),
+    SymbolKey("-", "-", 1),
+    SymbolKey("*", "*", 1),
+    SymbolKey("=", "=", 1),
+    SymbolKey("<", "<", 1),
+)
+
+private val expandedSymbolRows = listOf(
+    compactSymbolKeys,
+    listOf(
+        SymbolKey(">", ">", 1),
+        SymbolKey("\"", "\"\"", 1),
+        SymbolKey("'", "''", 1),
+        SymbolKey(";", ";", 1),
+        SymbolKey("|", "|", 1),
+        SymbolKey("\\", "\\", 1),
+        SymbolKey("_", "_", 1),
+    ),
+    listOf(
+        SymbolKey("()", "()", 1),
+        SymbolKey("[]", "[]", 1),
+        SymbolKey("{}", "{}", 1),
+        SymbolKey("…", "…", 1),
+    ),
+)
+
+@Composable
+private fun SymbolPad(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onInsert: (String, Int) -> Unit,
+) {
+    BackHandler(enabled = expanded) { onExpandedChange(false) }
+    val rows = if (expanded) expandedSymbolRows else listOf(compactSymbolKeys)
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pointerInput(expanded) {
+                var dragDistance = 0f
+                val threshold = 20.dp.toPx()
+                detectVerticalDragGestures(
+                    onDragStart = { dragDistance = 0f },
+                    onVerticalDrag = { change, amount ->
+                        change.consume()
+                        dragDistance += amount
+                    },
+                    onDragEnd = {
+                        if (dragDistance < -threshold) onExpandedChange(true)
+                        else if (dragDistance > threshold) onExpandedChange(false)
+                    },
+                )
+            },
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            HorizontalDivider(thickness = 0.5.dp)
+            if (expanded) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(28.dp)
+                        .clickable { onExpandedChange(false) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "默认",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(
+                        Modifier.align(Alignment.BottomCenter)
+                            .width(48.dp).height(2.dp)
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                }
+            }
+            rows.forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    row.forEach { key ->
+                        SymbolKeyButton(
+                            key = key,
+                            modifier = Modifier.weight(1f),
+                            onClick = { onInsert(key.text, key.cursorOffset) },
+                        )
+                    }
+                    repeat(7 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SymbolKeyButton(
+    key: SymbolKey,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .height(38.dp)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = key.label,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 16.sp,
+            color = MaterialTheme.colorScheme.onSurface,
         )
     }
 }
