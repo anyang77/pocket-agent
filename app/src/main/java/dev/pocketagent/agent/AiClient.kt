@@ -3,6 +3,8 @@ package dev.pocketagent.agent
 import dev.pocketagent.data.AiSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Call
@@ -13,6 +15,8 @@ import okio.BufferedSource
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.io.EOFException
+import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
@@ -123,6 +127,7 @@ class AiClient(
         var receivedStreamOutput = false
         var streamedContentChars = 0
         for (attempt in 1..MAX_REQUEST_ATTEMPTS) {
+            currentCoroutineContext().ensureActive()
             receivedStreamOutput = false
             streamedContentChars = 0
             try {
@@ -139,6 +144,7 @@ class AiClient(
                     },
                 )
             } catch (error: IOException) {
+                currentCoroutineContext().ensureActive()
                 lastError = error
                 val interrupted = receivedStreamOutput
                 if (attempt == MAX_REQUEST_ATTEMPTS || !error.isTransientNetworkError()) {
@@ -151,7 +157,7 @@ class AiClient(
                         } else {
                             error.message ?: "模型网络请求失败"
                         },
-                    )
+                    ).also { it.retryAttempts = attempt - 1 }
                 }
                 val waitMs = retryDelayMs(attempt)
                 if (streamedContentChars > 0) {
@@ -415,23 +421,6 @@ class AiClient(
         val arguments: StringBuilder = StringBuilder(),
     )
 
-    private fun IOException.isTransientNetworkError(): Boolean {
-        val message = message.orEmpty().lowercase()
-        return this is UnknownHostException ||
-            this is java.io.InterruptedIOException ||
-            this is SocketTimeoutException ||
-            "unable to resolve host" in message ||
-            "timed out" in message ||
-            "connection reset" in message ||
-            "connect failed" in message ||
-            "software caused connection abort" in message ||
-            "connection abort" in message ||
-            "流式响应意外中断" in message ||
-            "broken pipe" in message ||
-            "unexpected end of stream" in message ||
-            "socket closed" in message
-    }
-
     private fun IOException.isTimeout(): Boolean =
         this is SocketTimeoutException ||
             this is java.io.InterruptedIOException ||
@@ -596,6 +585,22 @@ class AiClient(
         private const val MAX_REQUEST_ATTEMPTS = MAX_RETRIES + 1
         private const val REQUEST_TIMEOUT_SECONDS = 90
     }
+}
+
+/** Connection failures can be wrapped by a proxy or the HTTP stack; inspect their causes too. */
+internal fun IOException.isTransientNetworkError(): Boolean {
+    val causes = generateSequence<Throwable>(this) { it.cause }.take(8).toList()
+    if (causes.any { it is java.security.cert.CertificateException || it is javax.net.ssl.SSLPeerUnverifiedException || it is java.net.ProtocolException }) return false
+    val message = causes.joinToString(" ") { it.message.orEmpty() }.lowercase()
+    if ("canceled" in message || "cancelled" in message) return false
+    return causes.any {
+        it is SocketException || it is UnknownHostException ||
+            it is java.io.InterruptedIOException || it is EOFException
+    } || listOf(
+        "unable to resolve host", "timed out", "connection reset", "connect failed", "failed to connect",
+        "connection refused", "network is unreachable", "no route to host", "software caused connection abort",
+        "connection abort", "流式响应意外中断", "broken pipe", "unexpected end of stream", "socket closed",
+    ).any(message::contains)
 }
 
 internal fun AgentHttpException.isRetryable(): Boolean =

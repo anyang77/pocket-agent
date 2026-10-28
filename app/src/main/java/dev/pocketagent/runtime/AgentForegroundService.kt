@@ -3,12 +3,14 @@ package dev.pocketagent.runtime
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import dev.pocketagent.MainActivity
 
 class AgentForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
@@ -20,10 +22,19 @@ class AgentForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         acquireWakeLock()
+        val openAgent = PendingIntent.getActivity(
+            this,
+            NOTIFICATION_ID,
+            Intent(this, MainActivity::class.java)
+                .setAction(MainActivity.ACTION_OPEN_AGENT)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle("CodeMate 正在执行")
             .setContentText("保持 Agent、构建和测试任务在后台运行")
+            .setContentIntent(openAgent)
             .setOngoing(true)
             .build()
         startForeground(NOTIFICATION_ID, notification)

@@ -5,6 +5,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -12,18 +13,21 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.pocketagent.ui.AppViewModel
+import dev.pocketagent.ui.AppTab
 import dev.pocketagent.ui.PocketAgentApp
 import dev.pocketagent.ui.theme.PocketAgentTheme
 import dev.pocketagent.ui.theme.isDarkTheme
 
 class MainActivity : ComponentActivity() {
+    private val appViewModel: AppViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handleNavigationIntent(intent)
         setContent {
-            val viewModel: AppViewModel = viewModel()
+            val viewModel = appViewModel
             val state by viewModel.state.collectAsStateWithLifecycle()
             PocketAgentTheme(preference = state.themePreference) {
                 val darkTheme = isDarkTheme(state.themePreference)
@@ -81,4 +85,21 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNavigationIntent(intent)
+    }
+
+    private fun handleNavigationIntent(intent: Intent) {
+        if (intent.action == ACTION_OPEN_AGENT) {
+            appViewModel.selectTab(AppTab.AGENT)
+        }
+    }
+
+    companion object {
+        const val ACTION_OPEN_AGENT = "dev.pocketagent.action.OPEN_AGENT"
+    }
+
 }

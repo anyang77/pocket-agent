@@ -22,26 +22,6 @@ internal data class LineDiffStats(
     val deletions: Int,
 )
 
-internal fun commandLaunchesExternalApp(command: String): Boolean {
-    val withoutPocketAgent = command.replace(
-        Regex("""(?:/system/bin/)?am\s+start(?:-activity)?\s+-W\s+-n\s+dev\.pocketagent/\.MainActivity"""),
-        "",
-    )
-    val launchesActivity = Regex(
-        """(?:^|[;&|]\s*)(?:/system/bin/)?am\s+start(?:-activity)?\b(?!\s+-W\s+-n\s+dev\.pocketagent/)""",
-        RegexOption.IGNORE_CASE,
-    ).containsMatchIn(withoutPocketAgent) ||
-        Regex(
-            """(?:^|[;&|]\s*)su\s+(?:-\S+\s+)*-c\s+["'][^"']*\bam\s+start\b""",
-            RegexOption.IGNORE_CASE,
-        ).containsMatchIn(withoutPocketAgent)
-    return launchesActivity ||
-        Regex(
-            """(?:^|[;&|]\s*)(?:/system/bin/)?monkey\b""",
-            RegexOption.IGNORE_CASE,
-        ).containsMatchIn(withoutPocketAgent)
-}
-
 /** Device controls that fail under the app UID on several Android ROMs, including MIUI. */
 internal fun commandNeedsRootForSystemShell(command: String): Boolean =
     Regex(
@@ -1173,28 +1153,8 @@ class AgentEngine(
                     appendLine("output:")
                     append(result.output.take(24_000))
                 }
-                val returnedToAgent = if (commandLaunchesExternalApp(command)) {
-                    commandRunner.run(
-                        command = "/system/bin/am start -W -n dev.pocketagent/.MainActivity " +
-                            ">/dev/null 2>&1",
-                        workingDir = File("/"),
-                        asRoot = rootAvailable(),
-                        useInternalRuntime = false,
-                        timeoutMs = 15_000,
-                    ).let { it.exitCode == 0 && !it.timedOut }
-                } else {
-                    false
-                }
-                if (returnedToAgent) {
-                    auditLog.append(
-                        "command",
-                        "测试后返回 CodeMate",
-                        "external app test command finished",
-                        "success",
-                    )
-                }
                 ToolResult(
-                    payload + if (returnedToAgent) "returned_to_pocket_agent=true\n" else "",
+                    payload,
                     success = result.exitCode == 0 && !result.timedOut,
                     preview = buildString {
                         append("exit ")
@@ -1202,7 +1162,6 @@ class AgentEngine(
                         append(" · ")
                         append(result.durationMs)
                         append("ms")
-                        if (returnedToAgent) append(" · 已返回")
                     },
                 )
             }
@@ -1586,9 +1545,9 @@ You are CodeMate, a coding and device-inspection agent running on an Android pho
         - Do not call update_plan just to narrate progress. Answer a simple informational
           request directly when no tool is needed.
         - When testing another Android app, combine launch, interaction or inspection, and
-          screenshot/log collection into the same run_command so it finishes atomically. The
-          app returns to CodeMate automatically when that command ends. Do not leave an
-          app under test in the foreground.
+          screenshot/log collection into the same run_command so it finishes atomically.
+          After the command ends, keep the tested app in the foreground. Return to CodeMate
+          only when the user explicitly requests it.
         - If a complex task has a material product, design, compatibility, or risk choice that
           cannot be resolved from the request or repository, call ask_user with 2–3 concrete
           options. Do not guess between materially different outcomes. Ask only when the choice

@@ -16,7 +16,7 @@ class AgentEngineEfficiencyPolicyTest {
         assertTrue(prompt.contains("Termux, Android system shell, and Root are independent"))
         assertTrue(prompt.contains("pkg in Termux does not require disabling Root"))
         assertTrue(prompt.contains("call ask_user with 2–3 concrete"))
-        assertTrue(prompt.contains("app returns to CodeMate automatically"))
+        assertTrue(prompt.contains("keep the tested app in the foreground"))
     }
 
     @Test
@@ -29,23 +29,4 @@ class AgentEngineEfficiencyPolicyTest {
         assertFalse(commandNeedsRootForSystemShell("pkg install python"))
     }
 
-    @Test
-    fun detectsExternalAppLaunchButNotReturningToPocketAgent() {
-        assertTrue(
-            commandLaunchesExternalApp(
-                "su -c 'am start -W -n com.example/.MainActivity'; sleep 2; am force-stop com.example",
-            ),
-        )
-        assertTrue(
-            commandLaunchesExternalApp(
-                "/system/bin/monkey -p com.example -c android.intent.category.LAUNCHER 1",
-            ),
-        )
-        assertFalse(
-            commandLaunchesExternalApp(
-                "am start -W -n dev.pocketagent/.MainActivity",
-            ),
-        )
-        assertFalse(commandLaunchesExternalApp("ls -la && grep 'am start' README.md"))
-    }
 }

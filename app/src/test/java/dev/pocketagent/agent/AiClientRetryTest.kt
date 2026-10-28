@@ -29,4 +29,29 @@ class AiClientRetryTest {
         assertFalse(AgentHttpException(401, "").isRetryable())
         assertFalse(AgentHttpException(404, "").isRetryable())
     }
+    @Test
+    fun retriesConnectionFailuresByTypeAndThroughWrappedCauses() {
+        listOf(
+            java.net.ConnectException("Failed to connect to yujianwudi.net/104.21.84.94:443"),
+            java.net.ConnectException(),
+            java.net.NoRouteToHostException(),
+            java.net.SocketException("Network is unreachable"),
+            java.io.EOFException(),
+            java.io.IOException("Failed to connect to yujianwudi.net/104.21.84.94:443"),
+            java.io.IOException("Request failed", java.net.ConnectException()),
+        ).forEach { assertTrue(it.isTransientNetworkError()) }
+    }
+
+    @Test
+    fun doesNotReconnectCanceledRequestsOrInvalidCertificatesAndProtocols() {
+        listOf(
+            java.io.IOException("Canceled"),
+            java.net.SocketException("Socket cancelled"),
+            javax.net.ssl.SSLPeerUnverifiedException("Certificate pinning failure"),
+            java.io.IOException("failed to connect", java.security.cert.CertificateException("Invalid certificate")),
+            java.net.ProtocolException("Invalid HTTP response"),
+            java.io.IOException("Attachment unavailable"),
+        ).forEach { assertFalse(it.isTransientNetworkError()) }
+    }
+
 }
