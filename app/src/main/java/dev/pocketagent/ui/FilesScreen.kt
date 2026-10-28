@@ -3,6 +3,13 @@ package dev.pocketagent.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.material3.FilterChip
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,15 +33,27 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.InsertDriveFile
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.SearchOff
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.UnfoldMore
+import androidx.compose.material.icons.outlined.Workspaces
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.HorizontalDivider
@@ -147,15 +166,9 @@ private fun FileList(
     LaunchedEffect(state.currentDirectory) {
         listState.scrollToItem(0)
     }
-    val currentPath = if (state.currentDirectory == ".") {
-        state.workspacePath
-    } else {
-        state.workspacePath.trimEnd('/') + "/" + state.currentDirectory
-    }
     var query by rememberSaveable { mutableStateOf("") }
     var searchVisible by rememberSaveable { mutableStateOf(false) }
     var createDialog by rememberSaveable { mutableStateOf(false) }
-    var actionEntry by remember { mutableStateOf<FileEntry?>(null) }
     var renameEntry by remember { mutableStateOf<FileEntry?>(null) }
     var deleteEntry by remember { mutableStateOf<FileEntry?>(null) }
     val filteredFiles = remember(state.files, query) {
@@ -171,31 +184,6 @@ private fun FileList(
             onCreate = { name, directory ->
                 createDialog = false
                 onCreateEntry(name, directory)
-            },
-        )
-    }
-    actionEntry?.let { entry ->
-        AlertDialog(
-            onDismissRequest = { actionEntry = null },
-            title = { Text(entry.relativePath.substringAfterLast('/')) },
-            text = { Text(if (entry.isDirectory) "目录操作" else "文件操作") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        actionEntry = null
-                        renameEntry = entry
-                    },
-                ) { Text("重命名") }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        actionEntry = null
-                        deleteEntry = entry
-                    },
-                ) {
-                    Text("删除", color = MaterialTheme.colorScheme.tertiary)
-                }
             },
         )
     }
@@ -225,7 +213,7 @@ private fun FileList(
                         onDeleteEntry(entry.relativePath)
                     },
                 ) {
-                    Text("删除", color = MaterialTheme.colorScheme.tertiary)
+                    Text("删除", color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
@@ -234,131 +222,169 @@ private fun FileList(
         )
     }
 
-    Column(modifier) {
+    BackHandler(enabled = state.currentDirectory != ".") { onGoParent() }
+
+    Column(modifier.background(MaterialTheme.colorScheme.surface)) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
+            Modifier.fillMaxWidth().height(56.dp).padding(start = 20.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (state.currentDirectory != ".") {
-                IconButton(onClick = onGoParent) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "返回上一级",
-                    )
-                }
-            }
-            Column(Modifier.weight(1f).clickable(onClick = onOpenWorkspacePicker)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        currentPath.trimEnd('/').substringAfterLast('/').ifBlank { "文件" },
-                        modifier = Modifier.weight(1f, fill = false),
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Icon(Icons.Filled.ArrowDropDown, "切换工作区", Modifier.size(18.dp))
-                }
-                Text(
-                    currentPath,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            IconButton(onClick = { createDialog = true }) {
-                Icon(Icons.Filled.Add, contentDescription = "新建")
-            }
+            Text("文件", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             IconButton(onClick = {
                 searchVisible = !searchVisible
                 if (!searchVisible) query = ""
-            }) {
-                Icon(Icons.Outlined.Search, contentDescription = "搜索当前目录")
-            }
-            IconButton(onClick = onRefresh) {
-                Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+            }) { Icon(Icons.Outlined.Search, "搜索当前目录", Modifier.size(21.dp)) }
+            IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "刷新", Modifier.size(21.dp)) }
+            IconButton(onClick = { createDialog = true }) { Icon(Icons.Outlined.Add, "新建", Modifier.size(23.dp)) }
+        }
+        Surface(
+            onClick = onOpenWorkspacePicker,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 6.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(12.dp),
+        ) {
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(9.dp)) {
+                    Icon(Icons.Outlined.Workspaces, null, Modifier.padding(8.dp).size(18.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(state.workspacePath.trimEnd('/').substringAfterLast('/').ifBlank { "工作区" },
+                        style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(state.workspacePath, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Icon(Icons.Outlined.UnfoldMore, "切换工作区", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (state.currentDirectory != ".") {
+            DirectoryBreadcrumb(state.workspacePath, state.currentDirectory, onOpenDirectory, onGoParent)
+        }
         if (searchVisible) OutlinedTextField(
             value = query,
             onValueChange = { query = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 6.dp),
-            placeholder = { Text("搜索当前目录") },
-            singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 10.dp),
+            placeholder = { Text("搜索当前目录") }, singleLine = true,
             textStyle = MaterialTheme.typography.bodyMedium,
             leadingIcon = { Icon(Icons.Outlined.Search, null, Modifier.size(20.dp)) },
-            trailingIcon = {
-                IconButton(onClick = { query = ""; searchVisible = false }) {
-                    Icon(Icons.Filled.Close, "关闭搜索", Modifier.size(20.dp))
-                }
-            },
-            shape = MaterialTheme.shapes.medium,
+            trailingIcon = { IconButton(onClick = { query = ""; searchVisible = false }) { Icon(Icons.Filled.Close, "关闭搜索", Modifier.size(20.dp)) } },
+            shape = RoundedCornerShape(12.dp),
         )
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            items(filteredFiles, key = { it.relativePath }) { entry ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            if (entry.isDirectory) {
-                                onOpenDirectory(entry.relativePath)
-                            } else {
-                                onOpenFile(entry.relativePath)
-                            }
-                        }
-                        .heightIn(min = 52.dp)
-                        .padding(horizontal = 16.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(11.dp),
-                ) {
-                    Icon(
-                        imageVector = if (entry.isDirectory) {
-                            Icons.Outlined.Folder
-                        } else {
-                            Icons.Outlined.InsertDriveFile
-                        },
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = if (entry.isDirectory) {
-                            MaterialTheme.colorScheme.tertiary
-                        } else {
-                            MaterialTheme.colorScheme.secondary
-                        },
-                    )
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            text = entry.relativePath.substringAfterLast('/'),
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (!entry.isDirectory) {
-                            Text(
-                                text = formatBytes(entry.sizeBytes),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                    IconButton(onClick = { actionEntry = entry }, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "更多操作")
-                    }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f), thickness = 0.5.dp)
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (query.isBlank()) "${filteredFiles.count { it.isDirectory }} 个文件夹 · ${filteredFiles.count { !it.isDirectory }} 个文件" else "${filteredFiles.size} 个搜索结果",
+                Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (filteredFiles.isEmpty()) {
+            Column(Modifier.fillMaxWidth().weight(1f).padding(28.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(20.dp)) {
+                    Icon(if (query.isBlank()) Icons.Outlined.FolderOpen else Icons.Outlined.SearchOff, null,
+                        Modifier.padding(20.dp).size(32.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                HorizontalDivider(
-                    modifier = Modifier.padding(start = 50.dp),
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f),
-                )
+                Text(if (query.isBlank()) "此文件夹为空" else "没有找到匹配的文件", Modifier.padding(top = 18.dp), style = MaterialTheme.typography.titleSmall)
+                Text(if (query.isBlank()) "新建文件或文件夹，开始整理项目" else "试试其他名称，或清除搜索条件", Modifier.padding(top = 6.dp),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = { if (query.isBlank()) createDialog = true else { query = ""; searchVisible = false } }, Modifier.padding(top = 8.dp)) {
+                    Text(if (query.isBlank()) "新建" else "清除搜索")
+                }
+            }
+        } else LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(bottom = 12.dp)) {
+            items(filteredFiles, key = { it.relativePath }) { entry ->
+                FileBrowserRow(entry,
+                    onOpen = { if (entry.isDirectory) onOpenDirectory(entry.relativePath) else onOpenFile(entry.relativePath) },
+                    onRename = { renameEntry = entry }, onDelete = { deleteEntry = entry })
             }
         }
     }
+
+}
+
+@Composable
+private fun DirectoryBreadcrumb(workspace: String, directory: String, onOpen: (String) -> Unit, onParent: () -> Unit) {
+    val scroll = rememberScrollState()
+    LaunchedEffect(directory) { scroll.animateScrollTo(scroll.maxValue) }
+    val segments = remember(directory) { if (directory == ".") emptyList() else directory.split('/').filter { it.isNotBlank() } }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onParent, enabled = directory != ".", modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Outlined.ArrowUpward, "返回上一级", Modifier.size(18.dp))
+        }
+        Row(Modifier.weight(1f).horizontalScroll(scroll), verticalAlignment = Alignment.CenterVertically) {
+            Text(workspace.trimEnd('/').substringAfterLast('/').ifBlank { "工作区" },
+                Modifier.clickable { onOpen(".") }.padding(horizontal = 8.dp, vertical = 11.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = if (segments.isEmpty()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+            segments.forEachIndexed { index, segment ->
+                Icon(Icons.Outlined.ChevronRight, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.outline)
+                Text(segment, Modifier.clickable { onOpen(segments.take(index + 1).joinToString("/")) }.padding(horizontal = 8.dp, vertical = 11.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (index == segments.lastIndex) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun FileBrowserRow(entry: FileEntry, onOpen: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    val name = entry.relativePath.substringAfterLast('/')
+    val extension = name.substringAfterLast('.', "").lowercase()
+    val type = when {
+        entry.isDirectory -> "文件夹"
+        name.startsWith('.') && extension == name.removePrefix(".") -> "配置文件"
+        extension in setOf("kt", "kts") -> "Kotlin"
+        extension == "java" -> "Java"
+        extension == "py" -> "Python"
+        extension in setOf("js", "jsx", "mjs", "cjs") -> "JavaScript"
+        extension in setOf("ts", "tsx") -> "TypeScript"
+        extension in setOf("c", "h", "cpp", "hpp") -> "C / C++"
+        extension in setOf("sh", "bash") -> "Shell 脚本"
+        extension == "md" -> "Markdown"
+        extension in setOf("json", "yaml", "yml", "toml", "xml", "properties") -> "配置文件"
+        extension in setOf("png", "jpg", "jpeg", "webp", "gif", "svg", "ico") -> "图片"
+        extension in setOf("zip", "gz", "xz", "tar", "7z", "apk", "jar", "aar") -> "归档文件"
+        extension.isNotBlank() -> extension.uppercase() + " 文件"
+        else -> "文件"
+    }
+    val icon: ImageVector = when {
+        entry.isDirectory -> Icons.Outlined.Folder
+        type == "图片" -> Icons.Outlined.Image
+        type == "归档文件" -> Icons.Outlined.Inventory2
+        type == "配置文件" -> Icons.Outlined.Tune
+        type == "Shell 脚本" -> Icons.Outlined.Terminal
+        type in setOf("Kotlin", "Java", "Python", "JavaScript", "TypeScript", "C / C++") -> Icons.Outlined.Code
+        else -> Icons.Outlined.Description
+    }
+    val tint = when {
+        entry.isDirectory -> MaterialTheme.colorScheme.tertiary
+        type == "图片" -> MaterialTheme.colorScheme.secondary
+        icon == Icons.Outlined.Code || type == "Shell 脚本" -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(Modifier.fillMaxWidth().combinedClickable(onClick = onOpen, onLongClick = { menu = true })
+        .heightIn(min = 64.dp).padding(start = 20.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Surface(color = tint.copy(alpha = 0.09f), shape = RoundedCornerShape(10.dp)) {
+            Icon(icon, null, Modifier.padding(8.dp).size(22.dp), tint = tint)
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(if (entry.isDirectory) type else "$type · ${formatBytes(entry.sizeBytes)}",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Box {
+            IconButton(onClick = { menu = true }, modifier = Modifier.size(44.dp)) {
+                Icon(Icons.Filled.MoreVert, "更多操作：$name", Modifier.size(19.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem(text = { Text("重命名") }, leadingIcon = { Icon(Icons.Outlined.Edit, null, Modifier.size(18.dp)) },
+                    onClick = { menu = false; onRename() })
+                DropdownMenuItem(text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                    leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error) },
+                    onClick = { menu = false; onDelete() })
+            }
+        }
+    }
+    HorizontalDivider(Modifier.padding(start = 70.dp, end = 20.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
 }
 
 @Composable
@@ -384,26 +410,10 @@ private fun CreateEntryDialog(
                     singleLine = true,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { directory = false }) {
-                        Text(
-                            "文件",
-                            color = if (!directory) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            },
-                        )
-                    }
-                    TextButton(onClick = { directory = true }) {
-                        Text(
-                            "文件夹",
-                            color = if (directory) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            },
-                        )
-                    }
+                    FilterChip(selected = !directory, onClick = { directory = false }, label = { Text("文件") },
+                        leadingIcon = { Icon(Icons.Outlined.Description, null, Modifier.size(17.dp)) })
+                    FilterChip(selected = directory, onClick = { directory = true }, label = { Text("文件夹") },
+                        leadingIcon = { Icon(Icons.Outlined.Folder, null, Modifier.size(17.dp)) })
                 }
             }
         },
