@@ -89,7 +89,7 @@ fun GitScreen(
     state: AppUiState,
     onRefresh: () -> Unit,
     onInit: () -> Unit,
-    onClone: (String, String, String, String, String?) -> Unit,
+    onClone: (String, String, String, String, String?, String?) -> Unit,
     onStage: (GitChange) -> Unit,
     onStageAll: () -> Unit,
     onUnstage: (GitChange) -> Unit,
@@ -108,13 +108,15 @@ fun GitScreen(
     onCancelGitHubLogin: () -> Unit,
     onSaveGitHubClientId: (String) -> Unit,
     onRefreshGitHubRepositories: () -> Unit,
-    onCloneGitHubRepository: (GitHubRepository) -> Unit,
+    onLoadCloneBranches: suspend (String) -> dev.pocketagent.data.GitRemoteBranches,
     onSwitchRepository: (String) -> Unit,
     onRemoveRepository: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var commitMessage by rememberSaveable { mutableStateOf("") }
     var cloneDialog by rememberSaveable { mutableStateOf(false) }
+    var cloneUrl by rememberSaveable { mutableStateOf("") }
+    var cloneFolder by rememberSaveable { mutableStateOf("") }
     var branchDialog by rememberSaveable { mutableStateOf(false) }
     var localRepositoriesVisible by rememberSaveable { mutableStateOf(false) }
     var repositoriesVisible by rememberSaveable { mutableStateOf(false) }
@@ -122,10 +124,10 @@ fun GitScreen(
     var historyVisible by rememberSaveable { mutableStateOf(false) }
     var expandedCommit by rememberSaveable { mutableStateOf<String?>(null) }
     var actionCommit by remember { mutableStateOf<GitCommit?>(null) }
-    var openedLoginCode by rememberSaveable { mutableStateOf("") }
-    var githubClientId by rememberSaveable { mutableStateOf("") }
     var discardTarget by remember { mutableStateOf<GitChange?>(null) }
     var discardAllTarget by remember { mutableStateOf<List<GitChange>>(emptyList()) }
+    var openedLoginCode by rememberSaveable { mutableStateOf("") }
+    var githubClientId by rememberSaveable { mutableStateOf("") }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val git = state.gitState
     val activeGitAccount = state.gitAccounts.firstOrNull {
@@ -178,8 +180,6 @@ fun GitScreen(
         )
     }
 
-    if (state.gitDiffTitle != null) {
-        ModalBottomSheet(
     discardTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { discardTarget = null },
@@ -238,6 +238,8 @@ fun GitScreen(
         )
     }
 
+    if (state.gitDiffTitle != null) {
+        ModalBottomSheet(
             onDismissRequest = onCloseDiff,
             sheetState = sheetState,
         ) {
@@ -392,11 +394,11 @@ fun GitScreen(
 
     if (cloneDialog) {
         CloneDialog(
-            onDismiss = { cloneDialog = false },
-            onClone = { url, folder, username, token, sshAccountId ->
-                cloneDialog = false
-                onClone(url, folder, username, token, sshAccountId)
-            },
+            initialUrl = cloneUrl,
+            initialFolder = cloneFolder,
+            onLoadBranches = onLoadCloneBranches,
+            onDismiss = { cloneDialog = false; cloneUrl = ""; cloneFolder = "" },
+            onClone = onClone,
         )
     }
 
@@ -410,7 +412,9 @@ fun GitScreen(
                 onRefresh = onRefreshGitHubRepositories,
                 onClone = { repository ->
                     repositoriesVisible = false
-                    onCloneGitHubRepository(repository)
+                    cloneUrl = repository.cloneUrl
+                    cloneFolder = repository.name
+                    cloneDialog = true
                 },
             )
         }
@@ -763,11 +767,11 @@ fun GitScreen(
                             action = "取消暂存",
                             onOpen = { onOpenDiff(change) },
                             onAction = { onUnstage(change) },
+                            onDiscard = { discardTarget = change },
                         )
                     }
                 }
             }
-                            onDiscard = { discardTarget = change },
         }
         if (section == GitSection.LOCAL && git.isRepository && git.changes.isNotEmpty()) {
             item {
@@ -786,11 +790,11 @@ fun GitScreen(
                             action = "暂存",
                             onOpen = { onOpenDiff(change) },
                             onAction = { onStage(change) },
+                            onDiscard = { discardTarget = change },
                         )
                     }
                 }
             }
-                            onDiscard = { discardTarget = change },
         }
         if (
             section == GitSection.LOCAL &&
@@ -914,13 +918,13 @@ private fun GitChangeRow(
     action: String,
     onOpen: () -> Unit,
     onAction: () -> Unit,
+    onDiscard: () -> Unit,
 ) {
+    var menu by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-    onDiscard: () -> Unit,
             .clickable(onClick = onOpen),
-    var menu by remember { mutableStateOf(false) }
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
         tonalElevation = 1.dp,
@@ -952,10 +956,6 @@ private fun GitChangeRow(
             )
             TextButton(onClick = onOpen) { Text("查看") }
             TextButton(onClick = onAction) { Text(action) }
-        }
-    }
-}
-
             Box {
                 IconButton(onClick = { menu = true }) {
                     Icon(Icons.Filled.MoreVert, contentDescription = "更多操作", Modifier.size(18.dp))
@@ -972,10 +972,10 @@ private fun GitChangeRow(
                     )
                 }
             }
-private fun GitChange.displayStatus(): String = when (status) {
-    "M" -> "M 修改"
-    "A" -> "A 新增"
-    "D" -> "D 删除"
+        }
+    }
+}
+
 @Composable
 private fun ChangesHeader(
     count: Int,
@@ -997,6 +997,10 @@ private fun ChangesHeader(
     }
 }
 
+private fun GitChange.displayStatus(): String = when (status) {
+    "M" -> "M 修改"
+    "A" -> "A 新增"
+    "D" -> "D 删除"
     "R" -> "R 重命名"
     "C" -> "C 复制"
     "U" -> "U 未跟踪"
@@ -1460,45 +1464,83 @@ private fun GitHubDeviceLoginDialog(
 
 @Composable
 private fun CloneDialog(
+    initialUrl: String,
+    initialFolder: String,
+    onLoadBranches: suspend (String) -> dev.pocketagent.data.GitRemoteBranches,
     onDismiss: () -> Unit,
-    onClone: (String, String, String, String, String?) -> Unit,
+    onClone: (String, String, String, String, String?, String?) -> Unit,
 ) {
-    var url by rememberSaveable { mutableStateOf("") }
-    var folder by rememberSaveable { mutableStateOf("repo") }
+    var url by rememberSaveable { mutableStateOf(initialUrl) }
+    var folder by rememberSaveable { mutableStateOf(initialFolder) }
+    var branches by remember { mutableStateOf<List<String>>(emptyList()) }
+    var selectedBranch by rememberSaveable { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var expanded by remember { mutableStateOf(false) }
+    var retry by remember { mutableStateOf(0) }
+    androidx.compose.runtime.LaunchedEffect(url, retry) {
+        branches = emptyList()
+        selectedBranch = ""
+        error = null
+        loading = url.isNotBlank()
+        if (url.isBlank()) return@LaunchedEffect
+        kotlinx.coroutines.delay(500)
+        try {
+            val result = onLoadBranches(url.trim())
+            branches = result.names
+            selectedBranch = result.defaultBranch?.takeIf { it in branches }
+                ?: branches.firstOrNull().orEmpty()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error = e.message ?: "读取分支失败"
+        } finally {
+            loading = false
+        }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("克隆 Git 仓库") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("仓库 URL") },
-                    placeholder = { Text("https://github.com/user/repo.git") },
-                    singleLine = true,
-                )
-                Text(
-                    "公开仓库可直接克隆。私有 GitHub 仓库会复用当前登录账号。",
-                    style = MaterialTheme.typography.labelSmall,
+                Text("自动读取远程分支，私有 GitHub 仓库复用当前登录账号。",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = folder,
-                    onValueChange = { folder = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("工作区内目标目录") },
-                    singleLine = true,
-                )
+                    style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(value = url, onValueChange = { url = it; branches = emptyList(); selectedBranch = "" },
+                    label = { Text("仓库 URL") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(value = folder, onValueChange = { folder = it },
+                    label = { Text("目录名") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                if (loading) {
+                    Text("正在读取远程分支…")
+                }
+                error?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { retry++ }) { Text("重试读取分支") }
+                }
+                Box {
+                    OutlinedButton(onClick = { expanded = true }, enabled = branches.isNotEmpty()) {
+                        Text(if (selectedBranch.isBlank()) "选择分支" else "分支：$selectedBranch")
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                    }
+                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false },
+                        modifier = Modifier.heightIn(max = 300.dp)) {
+                        branches.forEach { branch ->
+                            DropdownMenuItem(text = { Text(branch) }, onClick = {
+                                selectedBranch = branch
+                                expanded = false
+                            })
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
-            TextButton(
+            Button(enabled = url.isNotBlank() && folder.isNotBlank() &&
+                !loading && selectedBranch in branches,
                 onClick = {
-                    onClone(url, folder, "", "", null)
-                },
-                enabled = url.isNotBlank() && folder.isNotBlank(),
-            ) { Text("克隆") }
+                    onClone(url.trim(), folder.trim(), "", "", null, selectedBranch)
+                    onDismiss()
+                }) { Text("克隆") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )

@@ -2090,15 +2090,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun cloneGitHubRepository(repository: GitHubRepository) {
-        gitClone(
-            url = repository.cloneUrl,
-            folder = repository.name,
-            username = "",
-            token = "",
-            sshAccountId = null,
-        )
-    }
+    suspend fun loadGitCloneBranches(url: String): dev.pocketagent.data.GitRemoteBranches =
+        withContext(Dispatchers.IO) {
+            check(ensureGitToolchain()) { "Git 工具链安装失败" }
+            gitRepository.remoteBranches(url)
+        }
 
     private fun refreshGitAccounts() {
         val accounts = gitRepository.accounts()
@@ -2117,6 +2113,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         username: String,
         token: String,
         sshAccountId: String?,
+        branch: String?,
     ) {
         if (_state.value.gitLoading) return
         _state.update { it.copy(gitLoading = true, gitError = null) }
@@ -2131,7 +2128,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
             val result = runCatching {
-                gitRepository.clone(url, folder, username, token, sshAccountId)
+                gitRepository.clone(url, folder, username, token, sshAccountId, branch)
             }
                 .getOrElse { GitOperationResult(false, it.message ?: "克隆失败") }
             _state.update {

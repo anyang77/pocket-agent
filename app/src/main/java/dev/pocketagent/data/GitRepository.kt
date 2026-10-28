@@ -697,12 +697,28 @@ class GitRepository(
         }
     }
 
+    suspend fun remoteBranches(url: String): GitRemoteBranches {
+        validateCloneUrl(url)
+        val result = run(
+            "git ls-remote --symref -- ${shellQuote(url.trim())} HEAD 'refs/heads/*'",
+            60_000,
+            credentials.environmentFor(url),
+        )
+        check(result.exitCode == 0 && !result.timedOut) {
+            result.output.trim().ifBlank { result.error ?: "读取远程分支失败" }
+        }
+        return GitRemoteBranchParser.parse(result.output).also {
+            check(it.names.isNotEmpty()) { "远程仓库暂无可克隆的分支（可能是空仓库）" }
+        }
+    }
+
     suspend fun clone(
         url: String,
         folder: String,
         username: String,
         token: String,
         sshAccountId: String?,
+        branch: String? = null,
     ): GitOperationResult {
         val effectiveUrl = if (sshAccountId != null) {
             sshAccounts.remoteUrlFor(url, sshAccountId)
@@ -717,7 +733,10 @@ class GitRepository(
         }
         if (sshAccountId == null) credentials.save(url, username, token)
         return operation(
-            "git clone -- ${shellQuote(effectiveUrl)} " +
+            "git clone " +
+                (branch?.takeIf { it.isNotBlank() }?.let {
+                    "--branch ${shellQuote(it)} "
+                } ?: "") + "-- ${shellQuote(effectiveUrl)} " +
                 shellQuote(target.absolutePath),
             "仓库已克隆到 ${target.absolutePath}",
             10 * 60_000L,

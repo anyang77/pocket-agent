@@ -374,7 +374,7 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onCancelGitHubLogin = viewModel::cancelGitHubLogin,
                 onSaveGitHubClientId = viewModel::saveGitHubOAuthClientId,
                 onRefreshGitHubRepositories = viewModel::refreshGitHubRepositories,
-                onCloneGitHubRepository = viewModel::cloneGitHubRepository,
+                onLoadCloneBranches = viewModel::loadGitCloneBranches,
                 onSwitchRepository = viewModel::switchManagedRepository,
                 onRemoveRepository = viewModel::removeManagedRepository,
                 modifier = Modifier
