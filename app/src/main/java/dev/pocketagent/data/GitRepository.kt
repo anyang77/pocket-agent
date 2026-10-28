@@ -10,6 +10,8 @@ data class GitChange(
     val status: String,
     val staged: Boolean,
     val untracked: Boolean = false,
+    /** Rename/copy source path, when Git reports one. */
+    val originalPath: String? = null,
 )
 
 data class GitCommit(
@@ -109,9 +111,15 @@ object GitStatusParser {
             val x = entry[0]
             val y = entry[1]
             val path = entry.drop(2).removePrefix(" ")
-            appendChange(path, x, y, staged, changes)
+            val renamed = x == 'R' || x == 'C' || y == 'R' || y == 'C'
+            val original = if (renamed) {
+                entries.getOrNull(index + 1)?.trim('\n', '\r', ' ')
+            } else {
+                null
+            }
+            appendChange(path, x, y, staged, changes, original)
             // With -z, rename/copy status is followed by the original path.
-            if (x == 'R' || x == 'C' || y == 'R' || y == 'C') index++
+            if (renamed) index++
             index++
         }
         return result(header, staged, changes)
@@ -123,6 +131,7 @@ object GitStatusParser {
         y: Char,
         staged: MutableList<GitChange>,
         changes: MutableList<GitChange>,
+        originalPath: String? = null,
     ) {
         if (path.isBlank()) return
         if (x == '?' && y == '?') {
@@ -130,8 +139,12 @@ object GitStatusParser {
             return
         }
         if (x == '!') return
-        if (x != ' ') staged += GitChange(path, label(x), staged = true)
-        if (y != ' ') changes += GitChange(path, label(y), staged = false)
+        if (x != ' ') {
+            staged += GitChange(path, label(x), staged = true, originalPath = originalPath)
+        }
+        if (y != ' ') {
+            changes += GitChange(path, label(y), staged = false, originalPath = originalPath)
+        }
     }
 
     private fun result(
@@ -187,11 +200,17 @@ object GitNameStatusParser {
             val status = rawStatus.first()
             if (status == 'R' || status == 'C') {
                 if (index + 1 >= fields.size) break
-                index++ // Original path; the destination is what Source Control shows.
+                val original = fields[index].trim()
+                index++
                 val destination = fields[index].trim()
                 index++
                 if (destination.isNotBlank()) {
-                    changes += GitChange(destination, status.toString(), staged = staged)
+                    changes += GitChange(
+                        path = destination,
+                        status = status.toString(),
+                        staged = staged,
+                        originalPath = original.ifBlank { null },
+                    )
                 }
                 continue
             }
@@ -502,6 +521,71 @@ class GitRepository(
 
     suspend fun unstage(change: GitChange): GitOperationResult =
         operation("git restore --staged -- ${shellQuote(change.path)}", "已取消暂存 ${change.path}")
+
+    /**
+     * Discards local modifications for [change]: tracked files are restored from HEAD,
+     * untracked files are deleted. Renames also restore the original path.
+     */
+    suspend fun discard(change: GitChange): GitOperationResult {
+        val quoted = quoteAll(rawPaths(change))
+        return when {
+            change.untracked -> operation(
+                "git clean -f -d -- $quoted",
+                "已删除未跟踪的 ${change.path}",
+            )
+            hasHead() -> operation(
+                "git restore --source=HEAD --staged --worktree -- $quoted",
+                "已撤销 ${change.path} 的改动",
+            )
+            else -> operation(
+                "git rm -q -f -- $quoted",
+                "已撤销 ${change.path} 的改动",
+            )
+        }
+    }
+
+    suspend fun discardAll(changes: List<GitChange>): GitOperationResult {
+        if (changes.isEmpty()) return GitOperationResult(false, "没有需要撤销的改动")
+        val tracked = changes.filterNot { it.untracked }.flatMap { rawPaths(it) }.distinct()
+        val untracked = changes.filter { it.untracked }.flatMap { rawPaths(it) }.distinct()
+        if (tracked.isNotEmpty()) {
+            val command = if (hasHead()) {
+                "git restore --source=HEAD --staged --worktree -- " + quoteAll(tracked)
+            } else {
+                "git rm -q -f -- " + quoteAll(tracked)
+            }
+            val result = run(command, 120_000)
+            if (result.exitCode != 0) {
+                return GitOperationResult(
+                    false,
+                    result.output.trim().ifBlank { result.error ?: "无法撤销改动" },
+                )
+            }
+        }
+        if (untracked.isNotEmpty()) {
+            val result = run("git clean -f -d -- " + quoteAll(untracked), 120_000)
+            if (result.exitCode != 0) {
+                return GitOperationResult(
+                    false,
+                    result.output.trim().ifBlank { result.error ?: "无法删除未跟踪文件" },
+                )
+            }
+        }
+        return GitOperationResult(true, "已撤销 ${changes.size} 个文件的改动")
+    }
+
+    private fun rawPaths(change: GitChange): List<String> = buildList {
+        add(change.path)
+        change.originalPath
+            ?.takeIf { it.isNotBlank() && it != change.path }
+            ?.let { add(it) }
+    }
+
+    private fun quoteAll(paths: List<String>): String =
+        paths.joinToString(" ") { shellQuote(it) }
+
+    private suspend fun hasHead(): Boolean =
+        run("git rev-parse --verify --quiet HEAD", 20_000).exitCode == 0
 
     suspend fun commit(message: String): GitOperationResult {
         require(message.isNotBlank()) { "提交说明不能为空" }

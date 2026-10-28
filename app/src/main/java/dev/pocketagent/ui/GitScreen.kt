@@ -10,6 +10,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.SecondaryTabRow
@@ -35,6 +37,8 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -89,6 +93,8 @@ fun GitScreen(
     onStage: (GitChange) -> Unit,
     onStageAll: () -> Unit,
     onUnstage: (GitChange) -> Unit,
+    onDiscard: (GitChange) -> Unit,
+    onDiscardAll: (List<GitChange>) -> Unit,
     onCommit: (String) -> Unit,
     onSwitchBranch: (String, Boolean) -> Unit,
     onPull: () -> Unit,
@@ -118,6 +124,8 @@ fun GitScreen(
     var actionCommit by remember { mutableStateOf<GitCommit?>(null) }
     var openedLoginCode by rememberSaveable { mutableStateOf("") }
     var githubClientId by rememberSaveable { mutableStateOf("") }
+    var discardTarget by remember { mutableStateOf<GitChange?>(null) }
+    var discardAllTarget by remember { mutableStateOf<List<GitChange>>(emptyList()) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val git = state.gitState
     val activeGitAccount = state.gitAccounts.firstOrNull {
@@ -172,6 +180,64 @@ fun GitScreen(
 
     if (state.gitDiffTitle != null) {
         ModalBottomSheet(
+    discardTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { discardTarget = null },
+            title = { Text("撤销改动") },
+            text = {
+                Text(
+                    if (target.untracked) {
+                        "将删除未跟踪的文件 ${target.path}，删除后无法恢复。"
+                    } else {
+                        "将把 ${target.path} 恢复到上次提交的状态，本地改动会丢失且无法恢复。"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        discardTarget = null
+                        onDiscard(target)
+                    },
+                ) {
+                    Text("撤销", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { discardTarget = null }) { Text("取消") }
+            },
+        )
+    }
+
+    if (discardAllTarget.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { discardAllTarget = emptyList() },
+            title = { Text("撤销全部改动") },
+            text = {
+                Text(
+                    "将撤销 ${discardAllTarget.size} 个文件的改动，" +
+                        "其中未跟踪文件会被直接删除，操作无法恢复。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val targets = discardAllTarget
+                        discardAllTarget = emptyList()
+                        onDiscardAll(targets)
+                    },
+                ) {
+                    Text("全部撤销", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { discardAllTarget = emptyList() }) { Text("取消") }
+            },
+        )
+    }
+
             onDismissRequest = onCloseDiff,
             sheetState = sheetState,
         ) {
@@ -701,10 +767,16 @@ fun GitScreen(
                     }
                 }
             }
+                            onDiscard = { discardTarget = change },
         }
         if (section == GitSection.LOCAL && git.isRepository && git.changes.isNotEmpty()) {
             item {
-                SectionHeader("更改 · ${git.changes.size}", "全部暂存", onStageAll)
+                ChangesHeader(
+                    count = git.changes.size,
+                    enabled = !state.gitLoading,
+                    onStageAll = onStageAll,
+                    onDiscardAll = { discardAllTarget = git.changes + git.staged },
+                )
             }
             item(key = "working-changes-list") {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -718,6 +790,7 @@ fun GitScreen(
                     }
                 }
             }
+                            onDiscard = { discardTarget = change },
         }
         if (
             section == GitSection.LOCAL &&
@@ -845,7 +918,9 @@ private fun GitChangeRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+    onDiscard: () -> Unit,
             .clickable(onClick = onOpen),
+    var menu by remember { mutableStateOf(false) }
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
         tonalElevation = 1.dp,
@@ -881,10 +956,47 @@ private fun GitChangeRow(
     }
 }
 
+            Box {
+                IconButton(onClick = { menu = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "更多操作", Modifier.size(18.dp))
+                }
+                DropdownMenu(menu, { menu = false }) {
+                    DropdownMenuItem(
+                        text = {
+                            Text("撤销改动", color = MaterialTheme.colorScheme.error)
+                        },
+                        onClick = {
+                            menu = false
+                            onDiscard()
+                        },
+                    )
+                }
+            }
 private fun GitChange.displayStatus(): String = when (status) {
     "M" -> "M 修改"
     "A" -> "A 新增"
     "D" -> "D 删除"
+@Composable
+private fun ChangesHeader(
+    count: Int,
+    enabled: Boolean,
+    onStageAll: () -> Unit,
+    onDiscardAll: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "更改 · $count",
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleSmall,
+        )
+        TextButton(onClick = onDiscardAll, enabled = enabled) { Text("全部撤销") }
+        TextButton(onClick = onStageAll, enabled = enabled) { Text("全部暂存") }
+    }
+}
+
     "R" -> "R 重命名"
     "C" -> "C 复制"
     "U" -> "U 未跟踪"

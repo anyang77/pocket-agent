@@ -359,6 +359,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onStage = viewModel::gitStage,
                 onStageAll = viewModel::gitStageAll,
                 onUnstage = viewModel::gitUnstage,
+                onDiscard = viewModel::gitDiscard,
+                onDiscardAll = viewModel::gitDiscardAll,
                 onCommit = viewModel::gitCommit,
                 onSwitchBranch = viewModel::gitSwitchBranch,
                 onPull = viewModel::gitPull,

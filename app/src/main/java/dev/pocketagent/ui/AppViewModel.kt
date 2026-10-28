@@ -1858,6 +1858,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun gitUnstage(change: GitChange) = runGitAction { gitRepository.unstage(change) }
 
+    fun gitDiscard(change: GitChange) = runGitAction { gitRepository.discard(change) }
+
+    fun gitDiscardAll(changes: List<GitChange>) = runGitAction {
+        gitRepository.discardAll(changes)
+    }
+
     fun gitCommit(message: String) = runGitAction { gitRepository.commit(message) }
 
     fun gitSwitchBranch(branch: String, create: Boolean) = runGitAction {

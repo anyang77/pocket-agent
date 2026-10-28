@@ -57,4 +57,36 @@ class GitStatusParserTest {
         assertEquals(listOf("M", "A"), parsed.map { it.status })
         assertEquals(false, parsed.any { it.staged })
     }
+
+    @Test
+    fun keepsRenameSourcePathForDiscard() {
+        val output = "## main\u0000" + "R  new/name.kt\u0000old/name.kt\u0000"
+
+        val parsed = GitStatusParser.parse(output)
+
+        assertEquals(1, parsed.staged.size)
+        val change = parsed.staged.single()
+        assertEquals("new/name.kt", change.path)
+        assertEquals("old/name.kt", change.originalPath)
+    }
+
+    @Test
+    fun nameStatusParserKeepsRenameSourcePath() {
+        val parsed = GitNameStatusParser.parse(
+            "R100\u0000old/name.kt\u0000new/name.kt\u0000",
+            staged = true,
+        )
+
+        val change = parsed.single()
+        assertEquals("new/name.kt", change.path)
+        assertEquals("old/name.kt", change.originalPath)
+        assertEquals(true, change.staged)
+    }
+
+    @Test
+    fun plainChangesHaveNoRenameSourcePath() {
+        val parsed = GitStatusParser.parse("## main\u0000 M src/Main.kt\u0000")
+
+        assertEquals(null, parsed.changes.single().originalPath)
+    }
 }
