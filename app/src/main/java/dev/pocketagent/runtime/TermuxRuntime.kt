@@ -53,7 +53,9 @@ class TermuxRuntime(context: Context) {
             isUsableProgram(bash)
 
     fun isToolchainsReady(): Boolean =
-        isBaseReady() && requiredToolchains().all(::isUsableProgram)
+        isBaseReady() &&
+            toolchainsMarker.isFile && toolchainsMarker.readText().trim() == TOOLCHAIN_VERSION &&
+            requiredToolchains().all(::isUsableProgram)
 
     fun isGitReady(): Boolean =
         isBaseReady() && requiredGitTools().all(::isUsableProgram)
@@ -102,10 +104,11 @@ class TermuxRuntime(context: Context) {
         ensureAptConfig()
         if (!force && isToolchainsReady()) {
             toolchainsMarker.writeText(TOOLCHAIN_VERSION)
-            onProgress("Python、Node、Java、clang、ShellCheck 已就绪", 1f)
+            onProgress("Python、Node、Java、Rust、clang、ShellCheck 已就绪", 1f)
             return@withContext true
         }
 
+        toolchainsMarker.delete()
         onProgress("准备国内软件源", 0.35f)
         var downloadedBytes = 0L
         var packageCount = 0
@@ -134,7 +137,7 @@ class TermuxRuntime(context: Context) {
                     echo "所有软件源均连接失败" >&2
                     exit 1
                 }
-                apt-get install --download-only -y --no-install-recommends python python-pip npm nodejs clang make git openssh shellcheck openjdk-17
+                apt-get install --download-only -y --no-install-recommends python python-pip npm nodejs clang make git openssh shellcheck openjdk-17 rust
                 total=${'$'}(ls ${prefix.absolutePath}/var/cache/apt/archives/*.deb | wc -l)
                 index=0
                 for deb in ${prefix.absolutePath}/var/cache/apt/archives/*.deb; do
@@ -198,14 +201,24 @@ class TermuxRuntime(context: Context) {
         onProgress("迁移工具链运行路径", 0.94f)
         relocateTextAndSymlinks(prefix)
         ensureJavaLinks()
-        if (!isToolchainsReady()) {
+        if (!requiredToolchains().all(::isUsableProgram)) {
             Log.e(TAG, "toolchain validation failed after relocation")
             onProgress("开发工具链安装失败，可重试", 0f)
             return@withContext false
         }
-        onProgress("验证 Python、Node、Java、clang、ShellCheck", 0.98f)
+        onProgress("验证 Python、Node、Java、Rust、clang、ShellCheck", 0.98f)
+        val rustValidation = run(
+            command = "rustc --version && cargo --version && rustfmt --version",
+            workingDir = home,
+            timeoutMs = 30_000,
+        )
+        if (rustValidation.exitCode != 0) {
+            Log.e(TAG, "Rust toolchain validation failed: ${rustValidation.error.orEmpty()} ${rustValidation.output}")
+            onProgress("Rust 工具链验证失败，可重试", 0f)
+            return@withContext false
+        }
         toolchainsMarker.writeText(TOOLCHAIN_VERSION)
-        onProgress("Python、Node、Java、clang、ShellCheck、make 和 git 已安装", 1f)
+        onProgress("Python、Node、Java、Rust、clang、ShellCheck、make 和 git 已安装", 1f)
         true
         }
     }
@@ -548,6 +561,9 @@ class TermuxRuntime(context: Context) {
         File(prefix, "bin/javac"),
         File(prefix, "bin/clang"),
         File(prefix, "bin/shellcheck"),
+        File(prefix, "bin/rustc"),
+        File(prefix, "bin/cargo"),
+        File(prefix, "bin/rustfmt"),
         File(prefix, "bin/make"),
     ) + requiredGitTools()
 
@@ -562,7 +578,7 @@ class TermuxRuntime(context: Context) {
         private const val MAX_CAPTURE_CHARS = 256_000
         private const val RUNTIME_VERSION = "termux-bootstrap-dynamic-v6"
         private const val LEGACY_RUNTIME_PREFIX = "termux-bootstrap-python-pip-node-clang"
-        private const val TOOLCHAIN_VERSION = "apt-python-node-java-clang-shellcheck-v3"
+        private const val TOOLCHAIN_VERSION = "apt-python-node-java-rust-clang-shellcheck-v4"
         private data class AptMirror(val label: String, val url: String)
 
         private val APT_MIRRORS = listOf(

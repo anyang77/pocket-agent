@@ -689,7 +689,7 @@ private fun EnvironmentSetup(
     ToolGroup(
         icon = Icons.Outlined.Code,
         title = "语言与运行环境",
-        tools = listOf("Python", "Node.js", "Java", "C / C++"),
+        tools = listOf("Python", "Node.js", "Java", "Rust", "C / C++"),
     )
     ToolGroup(
         icon = Icons.Outlined.Terminal,

@@ -14,7 +14,7 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 - 上下文补全支持关键字、函数、类型、文档符号、Shell 变量、对象属性和代码片段，并提供模糊匹配与说明
 - 编辑器问题面板支持多错误定位、悬停提示、行列跳转和全角标点一键修复
 - Shell 使用 ShellCheck + 解释器解析检查；Python、JavaScript、Java、JSON、C/C++ 使用对应真实工具检查
-- Rust 支持关键字、常用类型和代码片段补全；内置环境安装 `rustfmt` 后，按 Cargo edition 检查当前缓冲区语法，不解析依赖、不修改文件
+- Rust 支持关键字、常用类型和代码片段补全；初始化自动安装 `rustfmt`，按 Cargo edition 检查当前缓冲区语法，不解析依赖、不修改文件
 - Shell、Python、Node 和 Java 可在编辑器内直接运行并查看输出与退出码
 - Termux `TerminalView` + PTY 交互式终端，字号可调
 - 每次启动后自动检测 `su`；检测到可用 Root 时启用设备管理能力，普通开发命令仍使用独立 Termux 用户环境
@@ -42,7 +42,8 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 - GitHub 浏览器设备授权登录：无需 SSH Key 或手动粘贴 Token，登录一次后 clone/pull/push 自动复用
 - API Key 使用 Android Keystore + AES/GCM 保存
 - App 自带精简 Termux bionic 基础用户态，不依赖外部 Termux、不需要 Ubuntu/PRoot
-- 首次初始化通过内置 apt 用户态一次性下载 Python、Node、Java/JDK、ShellCheck、clang/LLVM、Git 和 SSH
+- 首次初始化通过内置 apt 用户态一次性下载 Python、Node、Java/JDK、Rust（rustc / cargo / rustfmt）、ShellCheck、clang/LLVM、Git 和 SSH
+- 已初始化的旧环境会在下次启动时自动补齐缺失的 Rust 工具，无需重装基础环境
 - Java 使用 `javac` 解析阶段检查和 `java --source 17` 单文件运行，不依赖外部 Termux 或系统 JDK
 - 初始化会修复应用私有工具链的所有权与 SELinux 标签，工具链就绪后 Git 不再重复安装
 - apt 初始化优先使用清华 TUNA，失败时自动回退 BFSU、USTC、NJU 和 Termux 官方源
