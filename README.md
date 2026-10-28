@@ -10,12 +10,13 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 
 - Jetpack Compose 手机界面
 - `/sdcard` 工作区、目录搜索、文件/目录增删改和安全确认删除
-- CodeMirror 代码编辑器：支持 Rust / Cargo TOML 等语言，VS Code Dark+ 风格高亮、行号、括号匹配、输入自动补全、搜索/替换和撤销/重做
+- CodeMirror 代码编辑器：支持 Rust / Cargo TOML、Windows 批处理（.bat / .cmd）等语言，VS Code Dark+ 风格高亮、行号、括号匹配、输入自动补全、搜索/替换和撤销/重做
 - 上下文补全支持关键字、函数、类型、文档符号、Shell 变量、对象属性和代码片段，并提供模糊匹配与说明
 - 编辑器问题面板支持多错误定位、悬停提示、行列跳转和全角标点一键修复
 - Shell 使用 ShellCheck + 解释器解析检查；Python、JavaScript、Java、JSON、C/C++ 使用对应真实工具检查
 - Rust 支持关键字、常用类型和代码片段补全；初始化自动安装 `rustfmt`，按 Cargo edition 检查当前缓冲区语法，不解析依赖、不修改文件
 - Shell、Python、Node 和 Java 可在编辑器内直接运行并查看输出与退出码
+- Windows 批处理支持命令、注释、标签、变量高亮及代码片段补全；Android 内置环境不提供 cmd.exe，暂不支持批处理运行或语法纠错
 - Termux `TerminalView` + PTY 交互式终端，字号可调
 - 每次启动后自动检测 `su`；检测到可用 Root 时启用设备管理能力，普通开发命令仍使用独立 Termux 用户环境
 - OpenAI-compatible 模型接入

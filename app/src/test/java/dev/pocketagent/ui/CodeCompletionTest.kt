@@ -47,6 +47,15 @@ class CodeCompletionTest {
     }
 
     @Test
+    fun completesBatchCommandsRegardlessOfCase() {
+        val item = CodeCompletionEngine.suggestions(SyntaxLanguage.BATCH, "SET", 3)
+            .first { it.detail == "设置变量" }
+        val edit = CodeCompletionEngine.apply("SET", 3, item)
+        assertEquals("set \"=value\"", edit.text)
+        assertEquals(5, edit.cursor)
+    }
+
+    @Test
     fun reportsOneBasedLineAndColumn() {
         assertEquals(
             EditorCursorPosition(line = 2, column = 4),

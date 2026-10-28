@@ -31,6 +31,7 @@ enum class SyntaxLanguage(val label: String) {
     JAVASCRIPT("JavaScript"),
     TYPESCRIPT("TypeScript"),
     SHELL("Shell"),
+    BATCH("Batch"),
     JSON("JSON"),
     MARKDOWN("Markdown"),
     PLAIN("Text"),
@@ -48,6 +49,7 @@ fun syntaxLanguageFor(path: String): SyntaxLanguage = when (
     "js", "mjs", "cjs", "jsx" -> SyntaxLanguage.JAVASCRIPT
     "ts", "tsx" -> SyntaxLanguage.TYPESCRIPT
     "sh", "bash", "zsh" -> SyntaxLanguage.SHELL
+    "bat", "cmd" -> SyntaxLanguage.BATCH
     "json", "jsonc" -> SyntaxLanguage.JSON
     "md", "markdown" -> SyntaxLanguage.MARKDOWN
     else -> SyntaxLanguage.PLAIN
@@ -181,7 +183,7 @@ class SyntaxHighlightTransformation(
                     }
                     val next = source.getOrNull(nextIndex)
                     val style = when {
-                        word in keywords ->
+                        (if (language == SyntaxLanguage.BATCH) word.lowercase() else word) in keywords ->
                             SpanStyle(color = keyword, fontWeight = FontWeight.SemiBold)
                         next == '(' ->
                             SpanStyle(color = function)
@@ -268,6 +270,11 @@ class SyntaxHighlightTransformation(
         SyntaxLanguage.SHELL -> setOf(
             "if", "then", "else", "elif", "fi", "for", "while", "do", "done",
             "case", "esac", "function", "export", "local", "return",
+        )
+        SyntaxLanguage.BATCH -> setOf(
+            "echo", "set", "setlocal", "endlocal", "if", "else", "for", "in", "do", "call",
+            "goto", "exit", "pause", "rem", "not", "exist", "defined", "errorlevel", "off",
+            "on", "cd", "pushd", "popd", "copy", "del", "mkdir", "rmdir", "start",
         )
         SyntaxLanguage.JSON -> setOf("true", "false", "null")
         else -> emptySet()

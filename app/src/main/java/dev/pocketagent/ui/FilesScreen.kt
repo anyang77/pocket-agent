@@ -334,6 +334,7 @@ private fun FileBrowserRow(entry: FileEntry, onOpen: () -> Unit, onRename: () ->
         extension in setOf("kt", "kts") -> "Kotlin"
         extension == "java" -> "Java"
         extension == "rs" -> "Rust"
+        extension in setOf("bat", "cmd") -> "批处理脚本"
         extension == "py" -> "Python"
         extension in setOf("js", "jsx", "mjs", "cjs") -> "JavaScript"
         extension in setOf("ts", "tsx") -> "TypeScript"
@@ -351,14 +352,14 @@ private fun FileBrowserRow(entry: FileEntry, onOpen: () -> Unit, onRename: () ->
         type == "图片" -> Icons.Outlined.Image
         type == "归档文件" -> Icons.Outlined.Inventory2
         type == "配置文件" -> Icons.Outlined.Tune
-        type == "Shell 脚本" -> Icons.Outlined.Terminal
+        type in setOf("Shell 脚本", "批处理脚本") -> Icons.Outlined.Terminal
         type in setOf("Kotlin", "Java", "Python", "JavaScript", "TypeScript", "C / C++", "Rust") -> Icons.Outlined.Code
         else -> Icons.Outlined.Description
     }
     val tint = when {
         entry.isDirectory -> MaterialTheme.colorScheme.tertiary
         type == "图片" -> MaterialTheme.colorScheme.secondary
-        icon == Icons.Outlined.Code || type == "Shell 脚本" -> MaterialTheme.colorScheme.primary
+        icon == Icons.Outlined.Code || type in setOf("Shell 脚本", "批处理脚本") -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Row(Modifier.fillMaxWidth().combinedClickable(onClick = onOpen, onLongClick = { menu = true })

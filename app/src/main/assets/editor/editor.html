@@ -258,6 +258,7 @@
   <script src="addon/mode/simple.min.js"></script>
   <script src="mode/clike.min.js"></script>
   <script src="mode/javascript.min.js"></script>
+  <script src="mode/batch.js"></script>
   <script src="mode/rust.js"></script>
   <script src="mode/toml.js"></script>
   <script src="mode/python.min.js"></script>
@@ -296,12 +297,14 @@
       javascript: "javascript",
       typescript: "text/typescript",
       shell: "shell",
+      batch: "text/x-bat",
       json: {name: "javascript", json: true},
       markdown: "markdown",
       plain: null
     };
 
     const completions = {
+      batch: ["echo", "set", "setlocal", "endlocal", "if", "else", "for", "in", "do", "call", "goto", "exit", "pause", "rem", "not", "exist", "defined", "errorlevel", "off", "on", "cd", "pushd", "popd", "copy", "del", "mkdir", "rmdir", "start", "EnableDelayedExpansion"],
       rust: ["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "type", "unsafe", "use", "where", "while", "true", "false", "Some", "None", "Ok", "Err", "String", "Vec", "Option", "Result", "Box", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64", "bool", "char", "str"],
       toml: ["true", "false"],
       kotlin: ["package", "import", "class", "object", "interface", "fun", "val", "var", "if", "else", "when", "for", "while", "return", "try", "catch", "private", "public", "suspend", "data", "override", "String", "Int", "Long", "Boolean", "List", "Map", "Result"],
@@ -317,6 +320,16 @@
     };
 
     const completionMetadata = {
+      batch: {
+        echo: ["function", "输出文本", "echo message"],
+        set: ["snippet", "设置变量", "set \"NAME=value\""],
+        setlocal: ["snippet", "局部环境", "setlocal EnableDelayedExpansion"],
+        for: ["snippet", "循环", "for %%F in (files) do (...)"],
+        if: ["snippet", "条件判断", "if exist path (...)"],
+        call: ["function", "调用脚本或标签", "call :label args"],
+        goto: ["keyword", "跳转标签", "goto label"],
+        exit: ["keyword", "退出当前脚本", "exit /b 0"]
+      },
       rust: {
         fn: ["snippet", "函数定义", "fn name(args) -> Type {}"],
         let: ["keyword", "变量绑定", "let mut value = expression;"],
@@ -446,6 +459,12 @@
     };
 
     const snippets = {
+      batch: [
+        {label: "if", insertText: "if exist \"path\" (\n    \n)", cursorOffset: 10, detail: "文件存在判断"},
+        {label: "for", insertText: "for %%F in (*) do (\n    echo %%F\n)", cursorOffset: 12, detail: "文件循环"},
+        {label: "set", insertText: "set \"NAME=value\"", cursorOffset: 5, detail: "设置变量"},
+        {label: "setlocal", insertText: "setlocal EnableDelayedExpansion\n\nendlocal", cursorOffset: 32, detail: "局部环境与延迟展开"}
+      ],
       rust: [
         {label: "fn", insertText: "fn name() {\n    \n}", cursorOffset: 3, detail: "函数"},
         {label: "main", insertText: "fn main() {\n    \n}", cursorOffset: 16, detail: "入口函数"},

@@ -14,6 +14,8 @@ class SyntaxHighlighterTest {
         assertEquals(SyntaxLanguage.RUST, syntaxLanguageFor("src/main.rs"))
         assertEquals(SyntaxLanguage.RUST, syntaxLanguageFor("SRC/LIB.RS"))
         assertEquals(SyntaxLanguage.TOML, syntaxLanguageFor("Cargo.toml"))
+        assertEquals(SyntaxLanguage.BATCH, syntaxLanguageFor("build.bat"))
+        assertEquals(SyntaxLanguage.BATCH, syntaxLanguageFor("scripts/BUILD.CMD"))
         assertEquals(SyntaxLanguage.SHELL, syntaxLanguageFor("install.sh"))
         assertEquals(SyntaxLanguage.MARKDOWN, syntaxLanguageFor("README.md"))
         assertEquals(SyntaxLanguage.PLAIN, syntaxLanguageFor("notes"))

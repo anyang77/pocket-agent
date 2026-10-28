@@ -123,6 +123,12 @@ object CodeCompletionEngine {
     }
 
     private val snippets = mapOf(
+        SyntaxLanguage.BATCH to listOf(
+            snippet("if", "if exist \"%CURSOR%\" (\n    \n)", "文件存在判断"),
+            snippet("for", "for %%F in (%CURSOR%) do (\n    echo %%F\n)", "文件循环"),
+            snippet("set", "set \"%CURSOR%=value\"", "设置变量"),
+            snippet("setlocal", "setlocal EnableDelayedExpansion\n%CURSOR%\nendlocal", "局部环境与延迟展开"),
+        ),
         SyntaxLanguage.KOTLIN to listOf(
             snippet("fun()", "fun (%CURSOR%) {\n    \n}", "函数"),
             snippet("if()", "if (%CURSOR%) {\n    \n}", "条件"),
@@ -218,6 +224,11 @@ object CodeCompletionEngine {
     )
 
     private val keywords = mapOf(
+        SyntaxLanguage.BATCH to listOf(
+            "echo", "set", "setlocal", "endlocal", "if", "else", "for", "in", "do", "call",
+            "goto", "exit", "pause", "rem", "not", "exist", "defined", "errorlevel", "off",
+            "on", "cd", "pushd", "popd", "copy", "del", "mkdir", "rmdir", "start",
+        ),
         SyntaxLanguage.KOTLIN to listOf(
             "package", "import", "class", "object", "interface", "fun", "val", "var",
             "if", "else", "when", "for", "while", "return", "try", "catch", "finally",

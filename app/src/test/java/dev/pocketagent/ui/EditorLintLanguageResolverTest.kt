@@ -63,6 +63,12 @@ class EditorLintLanguageResolverTest {
     }
 
     @Test
+    fun neverTreatsWindowsBatchAsPosixShell() {
+        assertNull(EditorLintLanguageResolver.resolve("build.bat", "@echo off\n"))
+        assertNull(EditorLintLanguageResolver.resolve("BUILD.CMD", "REM comment\n"))
+    }
+
+    @Test
     fun ignoresUnsupportedTextFile() {
         assertNull(
             EditorLintLanguageResolver.resolve("notes.txt", "just text\n"),
