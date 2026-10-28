@@ -61,7 +61,7 @@ class SshAccountStore(
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val alias = "github-$id"
         val keyPath = File(sshDir, "pocket_$id")
-        val comment = "Pocket Agent ${label.ifBlank { alias }}"
+        val comment = "CodeMate ${label.ifBlank { alias }}"
         onStatus("生成 SSH Key")
         val result = commandRunner.run(
             command = "ssh-keygen -q -t ed25519 -N '' -C ${shellQuote(comment)} " +
@@ -118,7 +118,7 @@ class SshAccountStore(
     private fun writeConfig(accounts: List<SshAccount>) {
         configFile.writeText(
             buildString {
-                appendLine("# Managed by Pocket Agent")
+                appendLine("# Managed by CodeMate")
                 accounts.forEach { account ->
                     appendLine("Host ${account.alias}")
                     // Port 22 is blocked by some mobile carriers, VPNs and Wi-Fi

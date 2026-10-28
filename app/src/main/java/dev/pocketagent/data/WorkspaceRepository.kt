@@ -3,6 +3,9 @@ package dev.pocketagent.data
 import android.content.Context
 import dev.pocketagent.runtime.CommandRunner
 import dev.pocketagent.runtime.RootDetector
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -100,6 +103,38 @@ class WorkspaceRepository(
             }
         }
         require(root.isDirectory) { "工作区不是目录: ${root.absolutePath}" }
+    }
+
+    suspend fun searchMentionFiles(query: String): List<FileEntry> = withContext(Dispatchers.IO) {
+        val ignored = setOf(".git", ".gradle", ".idea", "node_modules", "build", ".pocketagent")
+        val needle = query.lowercase()
+        fun matches(path: String) = TextFileSupport.check(path) == null && (needle.isBlank() || path.lowercase().contains(needle))
+        fun entry(path: String) = FileEntry(path, false, 0)
+        val searchRoot = root.canonicalFile
+        val searchContext = currentCoroutineContext()
+        val direct = runCatching {
+            require(searchRoot.canRead())
+            searchRoot.walkTopDown().onEnter {
+                searchContext.ensureActive()
+                it == searchRoot || (it.name !in ignored && it.canonicalPath.startsWith(searchRoot.path + "/") && it.canonicalFile == it.absoluteFile)
+            }
+                .maxDepth(16).onEach { searchContext.ensureActive() }.filter { it.isFile && it.canonicalPath.startsWith(searchRoot.path + "/") }
+                .map { it.relativeTo(searchRoot).invariantSeparatorsPath }
+                .filter(::matches).take(60).map(::entry).toList()
+        }
+        direct.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+        if (direct.isSuccess) {
+            return@withContext direct.getOrThrow()
+        }
+        if (!useRoot()) return@withContext direct.getOrThrow()
+        val result = runRoot(
+            "cd -- ${shellQuote(root.absolutePath)} && " +
+                "find . -maxdepth 16 \\( -name .git -o -name .gradle -o -name .idea -o " +
+                "-name node_modules -o -name build -o -name .pocketagent \\) -prune -o -type f -print",
+        )
+        require(result.exitCode == 0) { result.error ?: "无法搜索工作区" }
+        result.output.lineSequence().map { it.removePrefix("./") }
+            .filter { it.isNotBlank() && matches(it) }.take(60).map(::entry).toList()
     }
 
     suspend fun listFiles(): List<FileEntry> = withContext(Dispatchers.IO) {

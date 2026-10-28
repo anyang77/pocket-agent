@@ -25,13 +25,14 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Save
@@ -152,6 +153,7 @@ private fun FileList(
         state.workspacePath.trimEnd('/') + "/" + state.currentDirectory
     }
     var query by rememberSaveable { mutableStateOf("") }
+    var searchVisible by rememberSaveable { mutableStateOf(false) }
     var createDialog by rememberSaveable { mutableStateOf(false) }
     var actionEntry by remember { mutableStateOf<FileEntry?>(null) }
     var renameEntry by remember { mutableStateOf<FileEntry?>(null) }
@@ -236,7 +238,7 @@ private fun FileList(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (state.currentDirectory != ".") {
@@ -247,26 +249,40 @@ private fun FileList(
                     )
                 }
             }
-            Column(Modifier.weight(1f)) {
-                Text("工作区", style = MaterialTheme.typography.titleSmall)
+            Column(Modifier.weight(1f).clickable(onClick = onOpenWorkspacePicker)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        currentPath.trimEnd('/').substringAfterLast('/').ifBlank { "文件" },
+                        modifier = Modifier.weight(1f, fill = false),
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Icon(Icons.Filled.ArrowDropDown, "切换工作区", Modifier.size(18.dp))
+                }
                 Text(
                     currentPath,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
             IconButton(onClick = { createDialog = true }) {
                 Icon(Icons.Filled.Add, contentDescription = "新建")
             }
-            TextButton(onClick = onOpenWorkspacePicker) { Text("更改") }
+            IconButton(onClick = {
+                searchVisible = !searchVisible
+                if (!searchVisible) query = ""
+            }) {
+                Icon(Icons.Outlined.Search, contentDescription = "搜索当前目录")
+            }
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Filled.Refresh, contentDescription = "刷新")
             }
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-        OutlinedTextField(
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (searchVisible) OutlinedTextField(
             value = query,
             onValueChange = { query = it },
             modifier = Modifier
@@ -274,7 +290,14 @@ private fun FileList(
                 .padding(horizontal = 14.dp, vertical = 6.dp),
             placeholder = { Text("搜索当前目录") },
             singleLine = true,
-            textStyle = MaterialTheme.typography.bodySmall,
+            textStyle = MaterialTheme.typography.bodyMedium,
+            leadingIcon = { Icon(Icons.Outlined.Search, null, Modifier.size(20.dp)) },
+            trailingIcon = {
+                IconButton(onClick = { query = ""; searchVisible = false }) {
+                    Icon(Icons.Filled.Close, "关闭搜索", Modifier.size(20.dp))
+                }
+            },
+            shape = MaterialTheme.shapes.medium,
         )
         LazyColumn(
             state = listState,
@@ -291,7 +314,8 @@ private fun FileList(
                                 onOpenFile(entry.relativePath)
                             }
                         }
-                        .padding(horizontal = 16.dp, vertical = 11.dp),
+                        .heightIn(min = 52.dp)
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(11.dp),
                 ) {
@@ -302,6 +326,7 @@ private fun FileList(
                             Icons.Outlined.InsertDriveFile
                         },
                         contentDescription = null,
+                        modifier = Modifier.size(20.dp),
                         tint = if (entry.isDirectory) {
                             MaterialTheme.colorScheme.tertiary
                         } else {
@@ -323,7 +348,7 @@ private fun FileList(
                             )
                         }
                     }
-                    IconButton(onClick = { actionEntry = entry }) {
+                    IconButton(onClick = { actionEntry = entry }, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Filled.MoreVert, contentDescription = "更多操作")
                     }
                 }
@@ -543,6 +568,7 @@ private fun Editor(
     var controller by remember(path) { mutableStateOf<CodeEditorController?>(null) }
     var showProblems by rememberSaveable(path) { mutableStateOf(false) }
     var symbolsExpanded by rememberSaveable(path) { mutableStateOf(false) }
+    var editorMenuVisible by remember { mutableStateOf(false) }
     LaunchedEffect(dirty) {
         if (!dirty) localDirty = false
     }
@@ -592,7 +618,7 @@ private fun Editor(
                 modifier = Modifier.weight(1f),
             ) {
                 Text(
-                    text = path + if (localDirty) " *" else "",
+                    text = path.substringAfterLast('/') + if (localDirty) " •" else "",
                     style = MaterialTheme.typography.labelLarge,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -625,41 +651,6 @@ private fun Editor(
                 )
             }
             IconButton(
-                onClick = { controller?.redo() },
-                modifier = Modifier.size(36.dp),
-                enabled = canRedo && controller != null,
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.Redo,
-                    contentDescription = "前进",
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            IconButton(
-                onClick = { controller?.showCompletions() },
-                modifier = Modifier.size(36.dp),
-                enabled = controller != null,
-            ) {
-                Icon(
-                    Icons.Outlined.AutoAwesome,
-                    contentDescription = "代码补全",
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            IconButton(
-                onClick = {
-                    controller?.getContent { latest -> onRun(latest) }
-                },
-                modifier = Modifier.size(36.dp),
-                enabled = canRun && controller != null,
-            ) {
-                Icon(
-                    Icons.Filled.PlayArrow,
-                    contentDescription = "运行脚本",
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-            IconButton(
                 onClick = {
                     controller?.getContent { latest -> onSave(latest) }
                 },
@@ -672,6 +663,35 @@ private fun Editor(
                     modifier = Modifier.size(20.dp),
                 )
             }
+            Box {
+                IconButton(onClick = { editorMenuVisible = true }, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Filled.MoreVert, "更多编辑操作", Modifier.size(20.dp))
+                }
+                DropdownMenu(
+                    expanded = editorMenuVisible,
+                    onDismissRequest = { editorMenuVisible = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("重做") },
+                        enabled = canRedo && controller != null,
+                        onClick = { editorMenuVisible = false; controller?.redo() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("代码补全") },
+                        enabled = controller != null,
+                        onClick = { editorMenuVisible = false; controller?.showCompletions() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("运行脚本") },
+                        enabled = canRun && controller != null,
+                        onClick = {
+                            editorMenuVisible = false
+                            controller?.getContent { latest -> onRun(latest) }
+                        },
+                    )
+                }
+            }
+
         }
         diagnostics.firstOrNull()?.let { diagnostic ->
             Surface(

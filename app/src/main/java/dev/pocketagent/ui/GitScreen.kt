@@ -27,9 +27,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -105,6 +110,7 @@ fun GitScreen(
     var commitMessage by rememberSaveable { mutableStateOf("") }
     var cloneDialog by rememberSaveable { mutableStateOf(false) }
     var branchDialog by rememberSaveable { mutableStateOf(false) }
+    var localRepositoriesVisible by rememberSaveable { mutableStateOf(false) }
     var repositoriesVisible by rememberSaveable { mutableStateOf(false) }
     var section by rememberSaveable { mutableStateOf(GitSection.LOCAL) }
     var historyVisible by rememberSaveable { mutableStateOf(false) }
@@ -356,91 +362,102 @@ fun GitScreen(
         )
     }
 
+    if (localRepositoriesVisible) {
+        ModalBottomSheet(
+            onDismissRequest = { localRepositoriesVisible = false },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Text(
+                "切换仓库",
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            ) {
+                items(state.managedRepositories, key = { it.path }) { repository ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(
+                            Modifier.weight(1f).clickable {
+                                localRepositoriesVisible = false
+                                onSwitchRepository(repository.path)
+                            }.padding(vertical = 12.dp),
+                        ) {
+                            Text(
+                                repository.path.trimEnd('/').substringAfterLast('/'),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (repository.path == state.workspacePath) {
+                                    MaterialTheme.colorScheme.primary
+                                } else MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                repository.path,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        TextButton(onClick = { onRemoveRepository(repository.path) }) { Text("移除") }
+                    }
+                }
+                if (state.managedRepositories.isEmpty()) item {
+                    Text("暂无已保存的仓库", modifier = Modifier.padding(16.dp))
+                }
+            }
+        }
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Git", style = MaterialTheme.typography.titleLarge)
+                Column(Modifier.weight(1f).clickable { localRepositoriesVisible = true }) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            state.workspacePath.trimEnd('/').substringAfterLast('/'),
+                            modifier = Modifier.weight(1f, fill = false),
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                        Icon(Icons.Filled.ArrowDropDown, "切换仓库", Modifier.size(18.dp))
+                    }
                     Text(
                         state.workspacePath,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
                 IconButton(onClick = onRefresh, enabled = !state.gitLoading) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "刷新 Git")
+                    Icon(Icons.Filled.Refresh, contentDescription = "刷新 Git", Modifier.size(22.dp))
                 }
             }
         }
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            SecondaryTabRow(
+                selectedTabIndex = section.ordinal,
+                containerColor = MaterialTheme.colorScheme.background,
+                divider = { HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant) },
             ) {
-                AssistChip(
-                    onClick = { section = GitSection.LOCAL },
-                    modifier = Modifier.weight(1f),
-                    label = { Text(if (section == GitSection.LOCAL) "本地 ✓" else "本地") },
-                )
-                AssistChip(
-                    onClick = { section = GitSection.REMOTE },
-                    modifier = Modifier.weight(1f),
-                    label = { Text(if (section == GitSection.REMOTE) "远程 ✓" else "远程") },
-                )
-            }
-        }
-        item {
-            if (section == GitSection.LOCAL && state.managedRepositories.isNotEmpty()) {
-                Card {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Text("本地仓库", style = MaterialTheme.typography.titleSmall)
-                        state.managedRepositories.forEach { repository ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    repository.path,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clickable {
-                                            onSwitchRepository(repository.path)
-                                        }
-                                        .padding(vertical = 8.dp),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (repository.path == state.workspacePath) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    },
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                TextButton(
-                                    onClick = { onRemoveRepository(repository.path) },
-                                ) { Text("移除") }
-                            }
-                        }
-                    }
-                }
+                Tab(selected = section == GitSection.LOCAL,
+                    onClick = { section = GitSection.LOCAL }, text = { Text("本地") })
+                Tab(selected = section == GitSection.REMOTE,
+                    onClick = { section = GitSection.REMOTE }, text = { Text("远程") })
             }
         }
         if (section == GitSection.REMOTE) item {
-            Card {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -455,7 +472,7 @@ fun GitScreen(
                             )
                             Text(
                                 if (activeGitAccount == null) {
-                                    "浏览器确认一次，Token 加密保存，仓库自动复用"
+                                    "登录后可浏览并克隆 GitHub 仓库"
                                 } else {
                                     "已登录 ${activeGitAccount.label}"
                                 },
@@ -480,7 +497,7 @@ fun GitScreen(
                     }
                     if (activeGitAccount == null && !state.githubOAuthClientConfigured) {
                         Text(
-                            "发布版应在构建时设置 Client ID。本地调试也可以在这里填写一次。",
+                            "连接 GitHub 需要 OAuth Client ID，可在 GitHub 开发者设置中创建。",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -526,7 +543,7 @@ fun GitScreen(
             }
         }
         if (section == GitSection.REMOTE) item {
-            Card {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -590,7 +607,7 @@ fun GitScreen(
         }
         state.gitError?.let { error ->
             item {
-                Card {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                     Text(
                         error,
                         modifier = Modifier.padding(12.dp),
@@ -602,7 +619,7 @@ fun GitScreen(
         }
         if (!git.isRepository) {
             item {
-                Card {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                     Column(
                         modifier = Modifier.padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -642,7 +659,7 @@ fun GitScreen(
         }
         if (section == GitSection.LOCAL && git.isRepository) {
             item {
-                Card {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -650,16 +667,16 @@ fun GitScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("本地仓库", style = MaterialTheme.typography.titleSmall)
+                            Text(git.branch.ifBlank { "未创建分支" }, style = MaterialTheme.typography.titleSmall)
                             Text(
-                                "分支 ${git.branch} · 已暂存 ${git.staged.size} · 更改 ${git.changes.size}",
+                                "已暂存 ${git.staged.size} · 更改 ${git.changes.size}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         AssistChip(
                             onClick = { branchDialog = true },
-                            label = { Text("切换分支") },
+                            label = { Text("分支") },
                         )
                         IconButton(onClick = { historyVisible = true }) {
                             Icon(Icons.Filled.History, contentDescription = "提交历史")
@@ -709,15 +726,21 @@ fun GitScreen(
             git.changes.isEmpty()
         ) {
             item {
-                Text(
-                    "工作区没有未提交的改动",
-                    modifier = Modifier.padding(vertical = 16.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(Icons.Outlined.CheckCircle, null, Modifier.size(28.dp),
+                        tint = MaterialTheme.colorScheme.primary)
+                    Text("没有待提交的改动", style = MaterialTheme.typography.bodyMedium)
+                    Text("文件修改后会显示在这里", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
-        if (section == GitSection.LOCAL && git.isRepository) item {
+        if (section == GitSection.LOCAL && git.isRepository &&
+            (git.changes.isNotEmpty() || git.staged.isNotEmpty() || commitMessage.isNotBlank())) item {
             OutlinedTextField(
                 value = commitMessage,
                 onValueChange = { commitMessage = it },
@@ -728,7 +751,8 @@ fun GitScreen(
                 shape = RoundedCornerShape(14.dp),
             )
         }
-        if (section == GitSection.LOCAL && git.isRepository) item {
+        if (section == GitSection.LOCAL && git.isRepository &&
+            (git.changes.isNotEmpty() || git.staged.isNotEmpty() || commitMessage.isNotBlank())) item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -747,7 +771,7 @@ fun GitScreen(
             }
         }
         if (section == GitSection.REMOTE && git.isRepository) item {
-            Card {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()

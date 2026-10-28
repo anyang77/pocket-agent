@@ -1,4 +1,4 @@
-# Pocket Agent
+# CodeMate
 
 Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，而是把下面这条闭环做稳：
 
@@ -50,8 +50,30 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 
 ## 当前限制
 
-- Root 授权后，终端提供 Termux、手机 Shell 和 Root 三种独立环境；Agent 只有请求系统级能力时才使用 Root，权限审批与审计仍然生效。
+- 终端提供 Termux 和手机 Shell 两种持久会话，可自行输入 su；Agent 按操作需要选择环境，权限审批与审计仍然生效。
 - 该构建面向侧载、F-Droid 或官网分发；使用全盘文件和动态工具链，不适合直接提交 Google Play。
+
+## Agent 扩展
+
+设置 > Agent 扩展提供技能、MCP 服务与子代理管理。
+
+- 技能：内置 Android 构建、Termux 环境选择和代码复核流程；支持在应用内创建 Markdown 技能，也自动发现工作区 `.agents/skills/<名称>/SKILL.md` 与 `.codemate/skills/<名称>/SKILL.md`。模型按需读取技能正文，启停可单独设置。
+- MCP：支持 Streamable HTTP 与本机 stdio，可手动添加或导入 `mcpServers` JSON 配置。请求头与环境变量使用 Android Keystore 加密保存。测试连接会进行 initialize、工具发现并显示工具清单；任务中工具调用沿用 Agent 权限与审计。
+- 子代理：使用当前模型、独立上下文并行读取工作区，默认最多 3 个，可调整或关闭。主 Agent 统一修改文件并收集分析结果。对话可查看每个子任务的进度、结果和 tokens，并单独停止；停止主任务会同时停止子任务。
+- 应用显示名称为 CodeMate；沿用原有应用 ID，覆盖安装保留配置、工具链与历史。
+
+MCP 配置示例：
+
+```json
+{
+  "mcpServers": {
+    "remote": {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer YOUR_TOKEN"}},
+    "local": {"command": "npx", "args": ["-y", "YOUR_MCP_PACKAGE"]}
+  }
+}
+```
+
+本机 stdio 使用应用内 Termux，需要先安装对应服务。远程服务使用 HTTPS；本地回环地址支持 HTTP。本版不支持旧版 HTTP+SSE 传输、OAuth 自动登录和 MCP prompts/resources 浏览。
 
 ## 构建
 
@@ -94,3 +116,13 @@ app/build/outputs/apk/debug/app-debug.apk
 
 内置用户态来自 `termux-packages` bootstrap，并按上游各组件的许可证分发。
 当前产品方向按 GPL 兼容方式开发。
+
+### 在线扩展仓库
+
+设置 → Agent 扩展 → 技能 / MCP 服务 → 浏览在线仓库。
+
+- 技能默认使用正文为中文的 [中文技能精选](https://github.com/laolaoshiren/claude-code-skills-zh) 和 [Superpowers 中文版](https://github.com/jnMetaCode/superpowers-zh)。列表中的名称、用途和详情来自仓库原文，仓库 README 可直接在应用内阅读；优先读取 README.zh-CN.md 等中文版本。Anthropic、Vercel 英文源仍可切换，也支持添加其他公开 GitHub 仓库。
+- MCP 默认使用 [Awesome-MCP-ZH 中文资源库](https://github.com/yzfly/Awesome-MCP-ZH)，直接读取其中文介绍、分类与备注。选择项目后按 GitHub 来源匹配官方 Registry 配置；查不到兼容配置时提供项目文档，用户可在 MCP 设置中手动添加或导入 JSON。官方 Registry 原始目录仍可切换，支持名称搜索与分页。
+- 技能通过 GitHub codeload 读取仓库快照，锁定提交版本并缓存，避免 GitHub 未登录 REST API 的频率限制。安装保留完整技能目录、脚本、参考资料和许可文件；刷新后可更新，管理页可完整卸载。安装不执行附带脚本，Agent 可用 read_skill_resource 读取资料。不调用模型翻译仓库文档。
+- MCP 自动配置支持 Streamable HTTP、npm/npx、PyPI/uvx；参数和密钥在添加前填写，密钥由本机 SecretStore 加密保存。本地包需对应运行环境，兼容性和费用以服务提供方为准。暂不自动 OAuth 登录，也不转换 Docker、MCPB、旧 SSE、自定义包注册表。
+- 技能遵守各自许可条款；Anthropic 仓库中部分文档技能为 source-available，并非全部采用开源许可。大型仓库、私有仓库暂不支持。

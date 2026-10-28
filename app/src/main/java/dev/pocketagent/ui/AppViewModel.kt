@@ -1,5 +1,10 @@
 package dev.pocketagent.ui
 
+import android.net.Uri
+import dev.pocketagent.data.ChatAttachment
+import dev.pocketagent.data.ChatAttachmentStore
+import dev.pocketagent.data.AgentComposerStore
+import dev.pocketagent.data.StoredComposer
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
@@ -70,6 +75,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import dev.pocketagent.extensions.*
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -114,10 +120,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val appearanceRepository = AppearanceRepository(application)
     private val permissionSettingsRepository = PermissionSettingsRepository(application)
     private val conversationStore = ConversationStore(application)
+    private val attachmentStore = ChatAttachmentStore(application)
+    private val composerStore = AgentComposerStore(application)
+    private var composerSaveJob: Job? = null
+    private var mentionSearchJob: Job? = null
+    private var attachmentJobs = 0
     private val currentConversationRepository = CurrentConversationRepository(application)
     private val onboardingRepository = OnboardingRepository(application)
     private val goalRepository = GoalRepository(application)
     private val aiClient = AiClient()
+    private val extensionRepository = ExtensionRepository(application)
+    private val skillRepository = SkillRepository(application) { workspace.root }
+    private val onlineCatalog = OnlineCatalog(File(application.cacheDir, "extension-catalog"))
+    private val catalogPrefs = application.getSharedPreferences("codemate_catalog", android.content.Context.MODE_PRIVATE)
+    private var catalogJob: kotlinx.coroutines.Job? = null
+    private var catalogInstallJob: kotlinx.coroutines.Job? = null
+    private val skillCatalogCache = java.util.concurrent.ConcurrentHashMap<String, List<CatalogSkill>>()
+    private var catalogRevision = 0L
+    private var catalogServerJob: kotlinx.coroutines.Job? = null
+    private var catalogDocumentJob: kotlinx.coroutines.Job? = null
+
+    private val subagentManager = SubagentManager(viewModelScope, extensionRepository::settings) { client, prompt, settings, onEvent ->
+        // Each child owns its command runner and model client; cancelling it cannot cancel the parent.
+        AgentEngine(workspace, CommandRunner(), systemAccess, permissions = { permissionSettingsRepository.load() },
+            aiClient = client, auditLog = auditLog, readOnlySubagent = true).run(
+                userText = prompt, settings = settings,
+                authorize = { PermissionDecision(false, "子代理仅进行只读检查") }, onEvent = onEvent)
+    }
+    private val agentExtensions = AgentExtensions(extensionRepository, skillRepository, subagentManager,
+        internalRuntime, { workspace.root }, auditLog)
     private val agentEngine = AgentEngine(
         workspace = workspace,
         commandRunner = commandRunner,
@@ -125,6 +156,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         rootAvailable = { autoUseRoot },
         aiClient = aiClient,
         auditLog = auditLog,
+        extensions = agentExtensions,
     )
     private var pendingApprovalDeferred: CompletableDeferred<Boolean>? = null
     private var pendingChoiceDeferred: CompletableDeferred<AgentChoice?>? = null
@@ -157,6 +189,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             activeGitAccountId = gitRepository.activeGithubAccount()?.id,
             githubOAuthClientConfigured = githubOAuthClientId().isNotBlank(),
             managedRepositories = managedRepositoryStore.load(),
+            extensionSettings = extensionRepository.settings(),
+            mcpServers = extensionRepository.servers(),
             agentGoal = goalRepository.load(),
             chat = emptyList(),
         ),
@@ -164,7 +198,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
     init {
-        auditLog.append("app", "应用启动", "Pocket Agent 启动")
+        auditLog.append("app", "应用启动", "CodeMate 启动")
+        viewModelScope.launch { agentExtensions.servers.collect { servers -> _state.update { it.copy(mcpStates = servers) } } }
+        viewModelScope.launch { subagentManager.tasks.collect { tasks -> _state.update { it.copy(subagentTasks = tasks) } } }
+        refreshExtensions()
         viewModelScope.launch {
             auditLog.entries.collect { entries ->
                 _state.update { it.copy(auditEntries = entries) }
@@ -179,6 +216,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     permissions = permissionSettingsRepository.load(),
                     conversations = conversationStore.load(),
                 )
+            }
+            viewModelScope.launch(Dispatchers.IO) {
+                val referenced = loaded.conversations.flatMap { conversation ->
+                    conversation.messages.flatMap { it.attachments.map { attachment -> attachment.path } } +
+                        conversation.agentMessages.flatMap { it.imagePaths }
+                }.toSet() + composerStore.referencedPaths()
+                attachmentStore.pruneUnused(referenced)
             }
             val settings = loaded.settings
             conversationCache.clear()
@@ -226,8 +270,344 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun refreshExtensions() {
+        viewModelScope.launch {
+            _state.update { it.copy(extensionsLoading = true) }
+            try {
+                val (skills, versions) = withContext(Dispatchers.IO) { skillRepository.list() to skillRepository.onlineVersions() }
+                _state.update { it.copy(skills = skills, mcpServers = extensionRepository.servers(),
+                    extensionSettings = extensionRepository.settings(), onlineCatalog = it.onlineCatalog.copy(installed = versions)) }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _state.update { it.copy(notice = error.message ?: "扩展加载失败") } }
+            finally { _state.update { it.copy(extensionsLoading = false) } }
+        }
+    }
+
+    fun saveExtensionSettings(settings: ExtensionSettings) {
+        extensionRepository.saveSettings(settings)
+        if (!settings.subagentsEnabled) subagentManager.stopAll()
+        _state.update { it.copy(extensionSettings = settings) }
+    }
+
+    fun setSkillEnabled(id: String, enabled: Boolean) {
+        skillRepository.setEnabled(id, enabled)
+        refreshExtensions()
+    }
+
+    fun saveSkill(id: String?, name: String, description: String, content: String) {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { skillRepository.save(name, description, content, id) }
+                refreshExtensions()
+                _state.update { it.copy(notice = "技能已保存") }
+            } catch (error: Exception) { _state.update { it.copy(notice = error.message ?: "保存失败") } }
+        }
+    }
+
+    fun removeSkill(id: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { skillRepository.remove(id) } }
+                .onFailure { error -> _state.update { it.copy(notice = error.message ?: "删除失败") } }
+            refreshExtensions()
+        }
+    }
+
+    fun importMcpConfig(json: String) {
+        if (_state.value.agentRunning) { _state.update { it.copy(notice = "请在当前任务结束后修改 MCP 配置") }; return }
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { extensionRepository.importServers(json) }
+                agentExtensions.close()
+                refreshExtensions()
+                _state.update { it.copy(notice = "MCP 配置已导入") }
+            } catch (error: Exception) { _state.update { it.copy(notice = error.message ?: "配置无效") } }
+        }
+    }
+
+    fun saveMcpServer(config: McpServerConfig) {
+        if (_state.value.agentRunning) { _state.update { it.copy(notice = "请在当前任务结束后修改 MCP 配置") }; return }
+        runCatching { extensionRepository.saveServer(config); agentExtensions.disconnect(config.id); refreshExtensions() }
+            .onFailure { error -> _state.update { it.copy(notice = error.message ?: "配置无效") } }
+    }
+
+    fun removeMcpServer(id: String) {
+        if (_state.value.agentRunning) { _state.update { it.copy(notice = "请在当前任务结束后修改 MCP 配置") }; return }
+        agentExtensions.disconnect(id)
+        extensionRepository.removeServer(id)
+        refreshExtensions()
+    }
+
+    fun testMcpServer(id: String) {
+        if (_state.value.agentRunning) { _state.update { it.copy(notice = "任务正在使用扩展，请稍后测试连接") }; return }
+        val config = extensionRepository.servers().firstOrNull { it.id == id } ?: return
+        viewModelScope.launch {
+            try { agentExtensions.connect(config) }
+            catch (error: CancellationException) { throw error }
+            catch (_: Exception) { /* Error is shown on the server row without revealing secrets. */ }
+        }
+    }
+
+    fun browseCatalog(kind: String, source: String, query: String, more: Boolean = false, refresh: Boolean = false) {
+        val requestRevision = ++catalogRevision
+        catalogJob?.cancel()
+        catalogJob = viewModelScope.launch {
+            val previous = _state.value.onlineCatalog
+            val selected = if (kind == "skills") runCatching { normalizeSkillRepository(source.ifBlank { CatalogSources.skills.first() }) }.getOrElse {
+                _state.update { state -> state.copy(onlineCatalog = previous.copy(error = it.message)) }; return@launch
+            } else source.ifBlank { CatalogSources.chineseMcp }
+            val sources = (CatalogSources.skills + catalogPrefs.getStringSet("sources", emptySet()).orEmpty() + listOfNotNull(selected.takeIf { kind == "skills" && it.isNotEmpty() })).distinct()
+            _state.update { it.copy(onlineCatalog = previous.copy(kind = kind, source = selected, query = query, loading = true, error = null,
+                skills = if (previous.source == selected && kind == "skills") previous.skills else emptyList(),
+                servers = if (more) previous.servers else emptyList(), cursor = if (more) previous.cursor else "", sources = sources)) }
+            try {
+                if (kind == "skills") {
+                    val items = withContext(Dispatchers.IO) { skillCatalogCache[selected] ?: onlineCatalog.skills(selected, refresh).also { skillCatalogCache[selected] = it } }
+                    catalogPrefs.edit().putStringSet("sources", sources.toSet()).apply()
+                    val versions = withContext(Dispatchers.IO) { skillRepository.onlineVersions() }
+                    _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(skills = items, installed = versions)) }
+                } else {
+                    val page = withContext(Dispatchers.IO) {
+                        if (selected == CatalogSources.chineseMcp) {
+                            val all = onlineCatalog.chineseServers(refresh)
+                            all.copy(items = all.items.filter { server -> listOf(server.title, server.description, server.category, server.notes).any { it.contains(query.trim(), true) } })
+                        } else onlineCatalog.servers(query, if (more) previous.cursor else "")
+                    }
+                    _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(servers = (if (more) previous.servers + page.items else page.items).distinctBy { server -> server.name },
+                        cursor = page.cursor.takeUnless { cursor -> more && cursor == previous.cursor }.orEmpty())) }
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(error = error.message ?: "在线仓库加载失败")) } }
+            finally { if (catalogRevision == requestRevision) _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(loading = false)) } }
+        }
+    }
+
+    fun refreshCatalog() {
+        val catalog = _state.value.onlineCatalog
+        skillCatalogCache.remove(catalog.source)
+        browseCatalog(catalog.kind, catalog.source, catalog.query, refresh = true)
+    }
+
+    fun inspectCatalogSkill(item: CatalogSkill?) {
+        val requestRevision = ++catalogRevision
+        catalogJob?.cancel()
+        _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(selectedSkill = item, detail = null, error = null, loading = item != null)) }
+        if (item == null) return
+        catalogJob = viewModelScope.launch {
+            try {
+                val detail = withContext(Dispatchers.IO) { onlineCatalog.detail(item) }
+                _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(detail = detail)) }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(error = error.message ?: "技能详情加载失败")) } }
+            finally { if (catalogRevision == requestRevision) _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(loading = false)) } }
+        }
+    }
+
+    fun installCatalogSkill(item: CatalogSkill) {
+        if (catalogInstallJob?.isActive == true || _state.value.agentRunning) return
+        catalogInstallJob = viewModelScope.launch {
+            _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(busy = item.key, error = null)) }
+            try {
+                val versions = withContext(Dispatchers.IO) { skillRepository.installOnline(item, onlineCatalog); skillRepository.onlineVersions() }
+                refreshExtensions()
+                _state.update { it.copy(notice = "技能已安装", onlineCatalog = it.onlineCatalog.copy(installed = versions)) }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(error = error.message ?: "安装失败")) } }
+            finally { _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(busy = null)) } }
+        }
+    }
+
+    fun inspectCatalogServer(item: CatalogMcp?) {
+        catalogServerJob?.cancel()
+        _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(selectedServer = item, serverError = null, serverLoading = item?.name?.startsWith("zh:") == true)) }
+        if (item == null || !item.name.startsWith("zh:")) return
+        catalogServerJob = viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) { onlineCatalog.resolveServer(item) }
+                _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(selectedServer = result)) }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(serverError = error.message ?: "配置查询失败")) } }
+            finally { _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(serverLoading = false)) } }
+        }
+    }
+
+    fun readCatalogDocument(repo: String?) {
+        catalogDocumentJob?.cancel()
+        _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(document = null, documentRepo = repo, documentLoading = repo != null, documentError = null)) }
+        if (repo == null) return
+        catalogDocumentJob = viewModelScope.launch {
+            try {
+                val document = withContext(Dispatchers.IO) { onlineCatalog.document(repo) }
+                _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(document = document)) }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(documentError = error.message ?: "文档读取失败")) } }
+            finally { _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(documentLoading = false)) } }
+        }
+    }
+
+    fun stopSubagent(id: String) { subagentManager.stop(id) }
+
+    private fun saveComposer() {
+        val current = _state.value
+        val id = current.currentConversationId ?: return
+        val revision = composerStore.reserveRevision(id)
+        // Capture the snapshot; a superseded IO write must never overwrite a later draft.
+        composerSaveJob?.cancel()
+        composerSaveJob = viewModelScope.launch {
+            delay(150)
+            withContext(Dispatchers.IO) {
+                composerStore.save(id, StoredComposer(current.agentInputDraft,
+                    current.agentAttachments, current.queuedPrompts), revision)
+            }
+        }
+    }
+
+    private fun flushComposer() {
+        composerSaveJob?.cancel()
+        val current = _state.value
+        current.currentConversationId?.let { id ->
+            composerStore.save(id, StoredComposer(current.agentInputDraft,
+                current.agentAttachments, current.queuedPrompts), composerStore.reserveRevision(id))
+        }
+    }
+
     fun updateAgentInputDraft(text: String) {
         _state.update { it.copy(agentInputDraft = text) }
+        saveComposer()
+    }
+
+    fun searchMentionFiles(query: String?) {
+        mentionSearchJob?.cancel()
+        if (query == null) {
+            _state.update { it.copy(mentionFiles = emptyList(), mentionFilesLoading = false) }
+            return
+        }
+        val root = workspace.root.path
+        _state.update { it.copy(mentionFilesLoading = true) }
+        mentionSearchJob = viewModelScope.launch {
+            delay(180)
+            try {
+                val results = workspace.searchMentionFiles(query)
+                if (workspace.root.path == root) _state.update {
+                    it.copy(mentionFiles = results, mentionFilesLoading = false)
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                _state.update { it.copy(mentionFiles = emptyList(), mentionFilesLoading = false,
+                    notice = error.message ?: "搜索文件失败") }
+            }
+        }
+    }
+
+    fun addAgentImages(uris: List<Uri>) {
+        if (uris.isEmpty() || _state.value.agentAttachmentsLoading) return
+        val conversationId = _state.value.currentConversationId
+        val available = (4 - _state.value.agentAttachments.count { it.isImage }).coerceAtLeast(0)
+        if (available == 0) {
+            _state.update { it.copy(notice = "每条消息最多添加 4 张图片") }; return
+        }
+        attachmentJobs++
+        _state.update { it.copy(agentAttachmentsLoading = true) }
+        viewModelScope.launch {
+            try {
+                for (uri in uris.take(available)) {
+                    val attachment = withContext(Dispatchers.IO) { attachmentStore.importImage(uri) }
+                    if (_state.value.currentConversationId == conversationId) {
+                        _state.update { it.copy(agentAttachments = it.agentAttachments + attachment) }
+                        saveComposer()
+                    }
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                _state.update { it.copy(notice = error.message ?: "图片添加失败") }
+            } finally {
+                attachmentJobs--
+                _state.update { it.copy(agentAttachmentsLoading = attachmentJobs > 0) }
+            }
+        }
+    }
+
+    fun addAgentFile(path: String) {
+        val current = _state.value
+        if (current.agentAttachmentsLoading) return
+        if (current.agentAttachments.any { it.sourcePath == path }) return
+        if (current.agentAttachments.count { !it.isImage } >= 8) {
+            _state.update { it.copy(notice = "每条消息最多引用 8 个文件") }; return
+        }
+        val root = workspace.root.path
+        attachmentJobs++
+        _state.update { it.copy(agentAttachmentsLoading = true) }
+        viewModelScope.launch {
+            try {
+                val content = workspace.readText(path, maxChars = 48_001)
+                val snapshot = withContext(Dispatchers.IO) {
+                    attachmentStore.snapshotFile(path.substringAfterLast('/'), path, content.take(48_000) +
+                        if (content.length > 48_000) "\n[内容过长，仅附前 48000 个字符；需要后续内容请读取原文件]" else "")
+                }
+                if (_state.value.currentConversationId == current.currentConversationId && workspace.root.path == root) {
+                    _state.update { it.copy(agentAttachments = it.agentAttachments + snapshot) }
+                    saveComposer()
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _state.update { it.copy(notice = error.message ?: "文件添加失败") } }
+            finally {
+                attachmentJobs--
+                _state.update { it.copy(agentAttachmentsLoading = attachmentJobs > 0) }
+            }
+        }
+    }
+
+    fun removeAgentAttachment(id: String) {
+        _state.update { it.copy(agentAttachments = it.agentAttachments.filterNot { item -> item.id == id }) }
+        saveComposer()
+    }
+
+    fun removeQueuedPrompt(id: Long) {
+        _state.update { it.copy(queuedPrompts = it.queuedPrompts.filterNot { item -> item.id == id }) }
+        saveComposer()
+    }
+
+    fun editQueuedPrompt(id: Long, text: String) {
+        _state.update { state ->
+            state.copy(queuedPrompts = state.queuedPrompts.map { item ->
+                if (item.id == id && !item.steering && (text.isNotBlank() || item.attachments.isNotEmpty())) {
+                    item.copy(text = text)
+                } else item
+            })
+        }
+        saveComposer()
+    }
+
+    fun steerQueuedPrompt(id: Long) {
+        if (!_state.value.agentRunning) return
+        _state.update { state -> state.copy(queuedPrompts = state.queuedPrompts.map {
+            if (it.id == id) it.copy(steering = true) else it
+        }) }
+        saveComposer()
+    }
+
+    fun pausePromptQueue() {
+        _state.update { it.copy(queuePaused = true) }
+        saveComposer()
+    }
+
+    fun resumePromptQueue() {
+        if (_state.value.settings.apiKey.isBlank()) {
+            _state.update { it.copy(notice = "请先在设置里填写 API Key") }; return
+        }
+        _state.update { it.copy(queuePaused = false) }
+        if (!_state.value.agentRunning) dispatchQueuedPrompt()
+        saveComposer()
+    }
+
+    private fun dispatchQueuedPrompt() {
+        val current = _state.value
+        if (current.agentRunning || current.queuePaused) return
+        val next = current.queuedPrompts.firstOrNull() ?: return
+        if (current.settings.apiKey.isBlank()) {
+            _state.update { it.copy(queuePaused = true, notice = "请先在设置里填写 API Key") }; return
+        }
+        _state.update { it.copy(queuedPrompts = it.queuedPrompts.drop(1)) }
+        startChat(next.text, next.attachments, fromQueue = true)
     }
 
     fun newConversation() {
@@ -235,6 +615,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(notice = "请等待当前任务结束") }
             return
         }
+        flushComposer()
         persistCurrentConversation()
         val now = System.currentTimeMillis()
         val id = nextConversationId.getAndIncrement()
@@ -255,10 +636,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         currentConversation = conversation
         currentConversationRepository.save(id)
         agentEngine.reset()
+        subagentManager.reset()
         _state.update {
             it.copy(
                 chat = listOf(welcome),
                 agentInputDraft = "",
+                agentAttachments = emptyList(), queuedPrompts = emptyList(), queuePaused = false,
                 currentConversationId = id,
                 agentContextTokens = 0,
                 conversations = conversationSummaries(),
@@ -275,6 +658,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         val conversation = conversationCache[id] ?: return
         if (currentConversation?.id == id) return
+        flushComposer()
         persistCurrentConversation()
         loadConversation(conversation)
     }
@@ -284,6 +668,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(notice = "不能删除正在执行的对话") }
             return
         }
+        if (_state.value.currentConversationId == id) {
+            composerSaveJob?.cancel()
+            _state.update { it.copy(currentConversationId = null) }
+        }
+        composerStore.delete(id)
         conversationCache.remove(id)
         if (currentConversation?.id == id) {
             currentConversation = null
@@ -297,6 +686,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun loadConversation(conversation: StoredConversation) {
+        subagentManager.reset()
         currentConversation = conversation
         currentConversationRepository.save(conversation.id)
         val chat = conversation.messages.mapNotNull { message ->
@@ -328,11 +718,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     },
                 reasoning = message.reasoning,
+                attachments = message.attachments,
             )
         }
         val history = chat.mapNotNull { message ->
             when (message.role) {
-                ChatRole.USER -> AgentMessage("user", message.content)
+                ChatRole.USER -> AgentMessage("user", runCatching {
+                    attachmentStore.modelText(message.content, message.attachments)
+                }.getOrDefault(message.content), imagePaths = message.attachments.filter { it.isImage }.map { it.path })
                 ChatRole.ASSISTANT -> AgentMessage("assistant", message.content)
                 else -> null
             }
@@ -342,10 +735,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             agentEngine.loadHistory(history)
         }
+        val composer = composerStore.load(conversation.id)
+        nextId.updateAndGet { maxOf(it, (composer.queue.maxOfOrNull { item -> item.id } ?: 0L) + 1) }
         _state.update {
             it.copy(
                 chat = chat,
-                agentInputDraft = "",
+                agentInputDraft = composer.text,
+                agentAttachments = composer.attachments,
+                queuedPrompts = composer.queue,
+                queuePaused = composer.queue.isNotEmpty(),
                 currentConversationId = conversation.id,
                 agentContextTokens = 0,
                 conversations = conversationSummaries(),
@@ -368,11 +766,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .replace(Regex("""\n{3,}"""), "\n\n")
             .trim()
 
-    private fun persistCurrentConversation() {
+    private fun persistCurrentConversation(history: List<AgentMessage> = agentEngine.snapshotHistory()) {
         val conversation = currentConversation ?: return
         val chat = _state.value.chat
             .filter { it.role != ChatRole.SYSTEM }
-            .filter { it.content.isNotBlank() || it.error != null }
+            .filter { it.content.isNotBlank() || it.error != null || it.attachments.isNotEmpty() }
         if (chat.isEmpty()) return
         val firstUser = chat.firstOrNull { it.role == ChatRole.USER }?.content
         val title = if (conversation.title == "新对话" && firstUser != null) {
@@ -385,7 +783,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             title = title,
             updatedAt = System.currentTimeMillis(),
             messages = chat.map { it.toStoredMessage() },
-            agentMessages = agentEngine.snapshotHistory(),
+            agentMessages = history,
         )
         conversationCache[updated.id] = updated
         currentConversation = updated
@@ -434,6 +832,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         goal = goal,
         phase = phase.name,
         reasoning = reasoning,
+        attachments = attachments,
     )
 
     private data class LoadedState(
@@ -2333,8 +2732,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendChat(text: String) {
+        if (_state.value.agentAttachmentsLoading) {
+            _state.update { it.copy(notice = "附件正在准备，请稍候") }; return
+        }
+        startChat(text, _state.value.agentAttachments)
+    }
+
+    private fun startChat(text: String, attachments: List<ChatAttachment>, fromQueue: Boolean = false) {
         val prompt = text.trim()
-        when (prompt.lowercase()) {
+        if (attachments.isEmpty() && !fromQueue && !_state.value.agentRunning) when (prompt.lowercase()) {
             "/new" -> {
                 _state.update { it.copy(agentInputDraft = "") }
                 newConversation()
@@ -2346,11 +2752,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return
             }
         }
-        if (handleGoalCommand(prompt)) {
+        if (attachments.isEmpty() && !fromQueue && !_state.value.agentRunning && handleGoalCommand(prompt)) {
             _state.update { it.copy(agentInputDraft = "") }
             return
         }
-        if (prompt.isBlank()) return
+        if (prompt.isBlank() && attachments.isEmpty()) return
         if (_state.value.settings.apiKey.isBlank()) {
             _state.update { it.copy(notice = "请先在设置里填写 API Key") }
             return
@@ -2359,15 +2765,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _state.update {
                 it.copy(
                     agentInputDraft = "",
-                    queuedPrompts = it.queuedPrompts + prompt,
+                    agentAttachments = emptyList(),
+                    queuedPrompts = it.queuedPrompts + QueuedPrompt(nextId.getAndIncrement(), prompt, attachments),
                     notice = "已加入下一轮队列",
                 )
             }
+            saveComposer()
             return
         }
 
-        val user = ChatEntry(nextId.getAndIncrement(), ChatRole.USER, prompt)
-        val assistantId = nextId.getAndIncrement()
+        subagentManager.reset()
+        val user = ChatEntry(nextId.getAndIncrement(), ChatRole.USER, prompt, attachments = attachments)
+        var assistantId = nextId.getAndIncrement()
         val assistant = ChatEntry(
             id = assistantId,
             role = ChatRole.ASSISTANT,
@@ -2379,7 +2788,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         activeAssistantId = assistantId
         _state.update {
             it.copy(
-                agentInputDraft = "",
+                agentInputDraft = if (fromQueue) it.agentInputDraft else "",
+                agentAttachments = if (fromQueue) it.agentAttachments else emptyList(),
                 chat = it.chat + user + assistant,
                 agentRunning = true,
                 agentStatus = "正在分析项目",
@@ -2396,16 +2806,61 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         persistCurrentConversation()
 
+        saveComposer()
         var streamChars = 0
         var streamStartedAt = System.currentTimeMillis()
         var speedUpdatedAt = 0L
         agentJob = viewModelScope.launch {
             try {
+                val modelText = withContext(Dispatchers.IO) { attachmentStore.modelText(prompt, attachments) }
+                val images = withContext(Dispatchers.IO) { attachmentStore.imagePaths(attachments) }
                 agentEngine.run(
-                    userText = prompt,
+                    userText = modelText,
+                    imagePaths = images,
                     settings = _state.value.settings,
                     authorize = ::authorizeAgentAction,
                     choose = ::requestUserChoice,
+                    takeSteering = {
+                        val queued = _state.value.queuedPrompts.filter { it.steering }
+                        if (queued.isEmpty()) emptyList() else {
+                            val admitted = mutableListOf<Pair<QueuedPrompt, AgentMessage>>()
+                            for (item in queued) {
+                                try {
+                                    val message = withContext(Dispatchers.IO) {
+                                        AgentMessage("user", attachmentStore.modelText(item.text, item.attachments),
+                                            imagePaths = attachmentStore.imagePaths(item.attachments))
+                                    }
+                                    admitted += item to message
+                                } catch (error: CancellationException) { throw error }
+                                catch (error: Exception) {
+                                    _state.update { current -> current.copy(
+                                        queuedPrompts = current.queuedPrompts.map {
+                                            if (it.id == item.id) it.copy(steering = false) else it
+                                        }, queuePaused = true, notice = error.message ?: "插话附件不可用") }
+                                }
+                            }
+                            if (admitted.isNotEmpty()) {
+                                val previousId = assistantId
+                                assistantId = nextId.getAndIncrement()
+                                activeAssistantId = assistantId
+                                _state.update { current -> current.copy(
+                                    queuedPrompts = current.queuedPrompts.filterNot { pending -> admitted.any { it.first.id == pending.id } },
+                                    chat = current.chat.map { entry ->
+                                        if (entry.id == previousId) entry.copy(pending = false, phase = AgentTurnPhase.COMPLETED) else entry
+                                    } + admitted.map { (item, _) ->
+                                        ChatEntry(item.id, ChatRole.USER, item.text, attachments = item.attachments)
+                                    } + ChatEntry(assistantId, ChatRole.ASSISTANT, "", pending = true,
+                                        phase = AgentTurnPhase.THINKING),
+                                ) }
+                                streamChars = 0
+                                streamStartedAt = System.currentTimeMillis()
+                                speedUpdatedAt = 0L
+                                persistCurrentConversation(agentEngine.snapshotHistory() + admitted.map { it.second })
+                                saveComposer()
+                            }
+                            admitted.map { it.second }
+                        }
+                    },
                 ) { event ->
                     when (event) {
                         is AgentEvent.AssistantText -> {
@@ -2623,7 +3078,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             appendChat(assistantId, "\n\n■ ${event.message}\n")
                             _state.update {
                                 it.copy(
-                                    notice = event.message,
                                     agentRequestStartedAt = null,
                                     agentRetry = null,
                                 )
@@ -2671,6 +3125,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
+            } catch (error: CancellationException) {
+                setTurnPhase(assistantId, AgentTurnPhase.STOPPED)
+                throw error
+            } catch (error: Exception) {
+                _state.update { state -> state.copy(chat = state.chat.map { entry ->
+                    if (entry.id == assistantId) entry.copy(error = error.message ?: "附件准备失败",
+                        phase = AgentTurnPhase.FAILED) else entry
+                }) }
             } finally {
                 agentJob = null
                 if (activeAssistantId == assistantId) activeAssistantId = null
@@ -2707,15 +3169,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 persistCurrentConversation()
                 refreshGit()
+                subagentManager.stopAll()
+                agentExtensions.close()
+                val failed = _state.value.chat.firstOrNull { it.id == assistantId }?.let {
+                    it.error != null || it.phase == AgentTurnPhase.STOPPED
+                } == true
+                if (failed) _state.update { state -> state.copy(queuePaused = true,
+                    queuedPrompts = state.queuedPrompts.map { it.copy(steering = false) }) }
                 val nextPrompt = _state.value.queuedPrompts.firstOrNull()
-                if (nextPrompt == null) {
+                if (nextPrompt == null || _state.value.queuePaused) {
                     AgentForegroundService.stop(appContext)
                 } else {
-                    _state.update {
-                        it.copy(queuedPrompts = it.queuedPrompts.drop(1))
-                    }
-                    sendChat(nextPrompt)
+                    // Dispatch synchronously on Main so a manual send cannot overtake this queue item.
+                    dispatchQueuedPrompt()
                 }
+                saveComposer()
             }
         }
     }
@@ -2723,12 +3191,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun stopAgent() {
         if (!_state.value.agentRunning) return
         auditLog.append("agent", "请求停止任务", "用户点击停止")
+        subagentManager.stopAll()
+        agentExtensions.close()
         _state.update {
             it.copy(
                 agentStatus = "正在停止任务…",
-                queuedPrompts = emptyList(),
+                queuePaused = true,
             )
         }
+        saveComposer()
         pendingApprovalDeferred?.complete(false)
         pendingApprovalDeferred = null
         pendingChoiceDeferred?.complete(null)
@@ -2752,11 +3223,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         agentEngine.reset()
-        viewModelScope.launch(Dispatchers.IO) {
-            settingsRepository.save(settings)
-            refreshModels()
-            sendChat("请运行 hello.py 并确认输出。")
-        }
+        refreshModels()
+        sendChat("请运行 hello.py 并确认输出。")
     }
 
     fun clearChat() {
@@ -3007,6 +3475,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     override fun onCleared() {
+        flushComposer()
+        subagentManager.stopAll()
+        agentExtensions.close()
         aiClient.cancel()
         commandRunner.cancel()
         agentJob?.cancel()

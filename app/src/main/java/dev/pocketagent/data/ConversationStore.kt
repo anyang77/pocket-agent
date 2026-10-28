@@ -27,6 +27,7 @@ data class StoredMessage(
     val goal: String? = null,
     val phase: String = "",
     val reasoning: String = "",
+    val attachments: List<ChatAttachment> = emptyList(),
 )
 
 data class StoredConversation(
@@ -97,6 +98,9 @@ class ConversationStore(context: Context) {
                                     toolCallId = message.optString("tool_call_id")
                                         .takeIf { message.has("tool_call_id") },
                                     toolCalls = toolCalls,
+                                    imagePaths = message.optJSONArray("image_paths")?.let { paths ->
+                                        List(paths.length()) { paths.optString(it) }
+                                    }.orEmpty(),
                                 ),
                             )
                         }
@@ -174,6 +178,7 @@ class ConversationStore(context: Context) {
                                         .takeIf { it.isNotBlank() },
                                     phase = message.optString("phase"),
                                     reasoning = message.optString("reasoning"),
+                                    attachments = message.optJSONArray("attachments").toChatAttachments(),
                                 ),
                             )
                         }
@@ -207,6 +212,11 @@ class ConversationStore(context: Context) {
                         put("role", message.role)
                         put("content", message.content)
                         put("timestamp", message.timestamp)
+                        if (message.attachments.isNotEmpty()) {
+                            put("attachments", JSONArray().apply {
+                                message.attachments.forEach { put(it.toJson()) }
+                            })
+                        }
                         message.error?.let { put("error", it) }
                         message.goal?.let { put("goal", it) }
                         if (message.phase.isNotBlank()) {
@@ -286,6 +296,9 @@ class ConversationStore(context: Context) {
                                     JSONObject().apply {
                                         put("role", message.role)
                                         message.content?.let { put("content", it) }
+                                        if (message.imagePaths.isNotEmpty()) {
+                                            put("image_paths", JSONArray(message.imagePaths))
+                                        }
                                         message.reasoningContent?.let {
                                             put("reasoning_content", it)
                                         }

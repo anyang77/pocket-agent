@@ -495,7 +495,7 @@ class TermuxRuntime(context: Context) {
             sources.readText().contains("packages-cf.termux.dev")
         ) {
             sources.writeText(
-                "# Pocket Agent: domestic Termux mirror with automatic fallback\n" +
+                "# CodeMate: domestic Termux mirror with automatic fallback\n" +
                     "deb ${APT_MIRRORS.first().url} stable main\n",
             )
         }

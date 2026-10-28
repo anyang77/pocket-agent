@@ -533,7 +533,11 @@ class AiClient(
             put(
                 JSONObject().apply {
                     put("role", message.role)
-                    message.content?.let { put("content", it) }
+                    if (message.imagePaths.isEmpty()) {
+                        message.content?.let { put("content", it) }
+                    } else {
+                        put("content", multimodalContent(message))
+                    }
                     when {
                         message.reasoningContent != null ->
                             put("reasoning_content", message.reasoningContent)
@@ -682,3 +686,18 @@ private val RETRYABLE_SERVICE_ERROR_MARKERS = listOf(
     "stream closed",
     "模型流式响应意外中断",
 )
+
+/** Image bytes are encoded only for the wire request; history stores private file paths. */
+internal fun multimodalContent(message: AgentMessage): org.json.JSONArray = org.json.JSONArray().apply {
+    message.content?.takeIf { it.isNotBlank() }?.let {
+        put(org.json.JSONObject().put("type", "text").put("text", it))
+    }
+    message.imagePaths.forEach { path ->
+        val file = java.io.File(path)
+        require(file.isFile && file.length() <= 12 * 1024 * 1024) { "图片附件不可用，请重新添加" }
+        val encoded = java.util.Base64.getEncoder().encodeToString(file.readBytes())
+        put(org.json.JSONObject().put("type", "image_url").put(
+            "image_url", org.json.JSONObject().put("url", "data:image/jpeg;base64,$encoded").put("detail", "auto"),
+        ))
+    }
+}

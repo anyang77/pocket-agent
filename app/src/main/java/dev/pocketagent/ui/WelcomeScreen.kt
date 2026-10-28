@@ -102,7 +102,7 @@ fun WelcomeScreen(onContinue: () -> Unit) {
                         icon = Icons.Outlined.Code,
                         title = "应用用途",
                         lines = listOf(
-                            "Pocket Agent 用于浏览和编辑 Android 项目文件、运行终端命令、构建测试及管理 Git。",
+                            "CodeMate 用于浏览和编辑 Android 项目文件、运行终端命令、构建测试及管理 Git。",
                             "你也可以连接兼容 OpenAI 接口的模型服务，进行代码分析、问题排查和任务执行。",
                         ),
                     )
@@ -164,7 +164,7 @@ private fun WelcomeTitle() {
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                 Text(
-                    "Pocket Agent",
+                    "CodeMate",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -176,16 +176,16 @@ private fun WelcomeTitle() {
             }
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.26f))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                "开始使用 Pocket Agent",
+                "欢迎使用 CodeMate",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                "首次启动需要确认应用用途、相关权限以及数据处理方式，然后完成环境和模型设置。",
+                "使用前，请阅读以下说明。随后将进行权限、环境和模型设置。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 lineHeight = 23.sp,
@@ -238,11 +238,11 @@ private fun WelcomeSection(
 private fun WelcomeAgreementNotice() {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
+        color = MaterialTheme.colorScheme.surfaceContainer,
         shape = RoundedCornerShape(10.dp),
     ) {
         Text(
-            "勾选并点击“继续”，即表示你已阅读并同意以上应用用途、使用须知和数据与隐私说明。",
+            "继续下一步将视为你已阅读并同意以上应用用途、使用须知和数据与隐私说明。",
             modifier = Modifier.padding(14.dp),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -266,7 +266,7 @@ private fun WelcomeActionBar(
 
     Surface(color = MaterialTheme.colorScheme.background) {
         Column {
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

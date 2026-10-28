@@ -16,7 +16,7 @@ class AgentEngineEfficiencyPolicyTest {
         assertTrue(prompt.contains("Termux, Android system shell, and Root are independent"))
         assertTrue(prompt.contains("pkg in Termux does not require disabling Root"))
         assertTrue(prompt.contains("call ask_user with 2–3 concrete"))
-        assertTrue(prompt.contains("app returns to Pocket Agent automatically"))
+        assertTrue(prompt.contains("app returns to CodeMate automatically"))
     }
 
     @Test

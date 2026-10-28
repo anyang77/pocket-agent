@@ -2,21 +2,17 @@ package dev.pocketagent.ui
 
 import android.view.KeyEvent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -78,10 +74,10 @@ fun TerminalScreen(
     Column(modifier.imePadding()) {
         Surface(
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 2.dp,
+            tonalElevation = 0.dp,
         ) {
             Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Row(
@@ -259,14 +255,8 @@ private fun RuntimeChoice(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    val borderColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-    }
     Surface(
-        modifier = modifier
-            .border(1.dp, borderColor, RoundedCornerShape(12.dp)),
+        modifier = modifier,
         onClick = onClick,
         enabled = enabled,
         color = if (selected) {
@@ -274,10 +264,10 @@ private fun RuntimeChoice(
         } else {
             ComposeColor.Transparent
         },
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(8.dp),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 9.dp),
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {

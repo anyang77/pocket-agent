@@ -1,5 +1,6 @@
 package dev.pocketagent.agent
 
+import dev.pocketagent.extensions.AgentExtensions
 import dev.pocketagent.data.AiSettings
 import dev.pocketagent.data.AuditLog
 import dev.pocketagent.data.WorkspaceRepository
@@ -103,6 +104,8 @@ class AgentEngine(
     private val permissions: () -> AgentPermissions = { workspace.agentPermissions() },
     private val aiClient: AiClient = AiClient(),
     private val auditLog: AuditLog,
+    private val extensions: AgentExtensions? = null,
+    private val readOnlySubagent: Boolean = false,
 ) {
     private val conversation = mutableListOf<AgentMessage>()
 
@@ -115,7 +118,7 @@ class AgentEngine(
         conversation += AgentMessage(role = "system", content = buildSystemPrompt())
         conversation += history
             .filter { it.role == "user" || it.role == "assistant" }
-            .filter { !it.content.isNullOrBlank() }
+            .filter { !it.content.isNullOrBlank() || it.imagePaths.isNotEmpty() }
             .takeLast(MAX_HISTORY_MESSAGES)
     }
 
@@ -154,10 +157,15 @@ class AgentEngine(
         settings: AiSettings,
         authorize: suspend (PermissionRequest) -> PermissionDecision,
         choose: suspend (UserQuestion) -> AgentChoice? = { null },
+        imagePaths: List<String> = emptyList(),
+        takeSteering: suspend () -> List<AgentMessage> = { emptyList() },
         onEvent: (AgentEvent) -> Unit,
     ) {
+        extensions?.prepare(authorize)
+        val tools = if (readOnlySubagent) TOOLS.filter { it.name in setOf("list_files", "read_file", "search_files") }
+            else TOOLS + extensions?.tools().orEmpty()
         ensureSystemMessage()
-        conversation += AgentMessage(role = "user", content = userText)
+        conversation += AgentMessage(role = "user", content = userText, imagePaths = imagePaths)
         auditLog.append("chat", "用户消息", userText, "received")
 
         var step = 0
@@ -167,6 +175,12 @@ class AgentEngine(
             var lastPromptTokens = 0
             while (true) {
                 currentCoroutineContext().ensureActive()
+                val steering = takeSteering()
+                if (steering.isNotEmpty()) {
+                    conversation += steering
+                    lastPromptTokens = 0
+                    completedToolCalls.clear()
+                }
                 ensureSystemMessage()
                 compactStaleToolResults()
                 val contextLimit = ModelContextBudget.limitFor(
@@ -255,7 +269,7 @@ class AgentEngine(
                     aiClient.complete(
                         settings,
                         conversation,
-                        TOOLS,
+                        tools,
                         onRetry = { notice ->
                             lastRetryCount = notice.attempt
                             onEvent(AgentEvent.RetryScheduled(notice))
@@ -280,7 +294,7 @@ class AgentEngine(
                     aiClient.complete(
                         settings,
                         conversation,
-                        TOOLS,
+                        tools,
                         onRetry = { notice ->
                             lastRetryCount = notice.attempt
                             onEvent(AgentEvent.RetryScheduled(notice))
@@ -331,6 +345,22 @@ class AgentEngine(
                             onEvent(AgentEvent.AssistantText(it))
                         }
                     }
+                    val steering = takeSteering()
+                    if (steering.isNotEmpty()) {
+                        conversation += steering
+                        lastPromptTokens = 0
+                        completedToolCalls.clear()
+                        continue
+                    }
+                    if (extensions?.subagents?.tasks?.value?.any { it.running } == true) {
+                        onEvent(AgentEvent.State("正在等待子代理检查结果"))
+                    }
+                    val childResults = extensions?.subagents?.remainingResults()
+                    if (childResults != null) {
+                        conversation += AgentMessage("user", childResults)
+                        lastPromptTokens = 0
+                        continue
+                    }
                     auditLog.append("agent", "任务完成", "模型未再请求工具", "success")
                     onEvent(AgentEvent.Completed)
                     return
@@ -357,7 +387,8 @@ class AgentEngine(
                         if (cachedResult == null) "调用 ${call.name}" else "跳过重复 ${call.name}",
                         summary,
                     )
-                    onEvent(AgentEvent.ToolStarted(call.name, summary))
+                    val visibleToolName = extensions?.displayName(call.name, call.arguments) ?: call.name
+                    onEvent(AgentEvent.ToolStarted(visibleToolName, summary))
                     val result = cachedResult?.let {
                         ToolResult(
                             content = "DUPLICATE_TOOL_CALL_SUPPRESSED: This exact " +
@@ -370,7 +401,14 @@ class AgentEngine(
                             deletions = 0,
                         )
                     } ?: try {
-                        executeTool(call, authorize, choose)
+                        if (readOnlySubagent && call.name !in setOf("list_files", "read_file", "search_files")) {
+                            ToolResult("Subagents are read-only. Ask the coordinating agent to perform this action.", false, "子代理无此能力")
+                        } else {
+                            val extra = extensions?.execute(call, settings,
+                                conversation.takeLast(8).joinToString("\n") { "${it.role}: ${it.content.orEmpty().take(4000)}" }, authorize)
+                            if (extra != null) ToolResult(extra.content, extra.success, extra.preview)
+                            else executeTool(call, authorize, choose)
+                        }
                     } catch (error: CancellationException) {
                         throw error
                     } catch (error: Exception) {
@@ -397,7 +435,7 @@ class AgentEngine(
                     )
                     onEvent(
                         AgentEvent.ToolFinished(
-                            name = call.name,
+                            name = visibleToolName,
                             summary = result.preview,
                             success = result.success,
                             output = result.content,
@@ -460,7 +498,7 @@ class AgentEngine(
         val compactionRequest = AgentMessage(
             role = "user",
             content = """
-                [Pocket Agent runtime notice]
+                [CodeMate runtime notice]
                 You are compacting the active coding task so it can continue without losing state.
                 Produce a dense checkpoint, not a user-facing answer. Preserve:
                 - the user's original goal and constraints,
@@ -555,7 +593,7 @@ class AgentEngine(
         conversation += AgentMessage(
             role = "user",
             content = """
-                [Pocket Agent compacted checkpoint]
+                [CodeMate compacted checkpoint]
                 Continue the active task from the summary below. Use tools when needed. Do not ask the
                 user to repeat information that is already present here.
 
@@ -565,6 +603,8 @@ class AgentEngine(
                 Checkpoint:
                 $checkpoint
             """.trimIndent(),
+            imagePaths = contextSnapshot.lastOrNull { it.role == "user" && it.imagePaths.isNotEmpty() }
+                ?.imagePaths.orEmpty(),
         )
         val afterTokens = estimateConversationTokens()
         val elapsedMs = System.currentTimeMillis() - startedAt
@@ -642,7 +682,7 @@ class AgentEngine(
     private fun estimateConversationTokens(): Int = conversation.sumOf { message ->
         val contentChars = message.content?.length ?: 0
         val toolChars = message.toolCalls.sumOf { it.arguments.length + it.name.length }
-        (contentChars + toolChars) / 3 + 8
+        (contentChars + toolChars) / 3 + 8 + message.imagePaths.size * 1500
     }
 
     private fun contextPercent(tokens: Int, contextLimit: Int): Int =
@@ -1148,7 +1188,7 @@ class AgentEngine(
                 if (returnedToAgent) {
                     auditLog.append(
                         "command",
-                        "测试后返回 Pocket Agent",
+                        "测试后返回 CodeMate",
                         "external app test command finished",
                         "success",
                     )
@@ -1196,7 +1236,9 @@ class AgentEngine(
         }
     }
 
-    private fun buildSystemPrompt(): String = agentSystemPrompt(permissions())
+    private fun buildSystemPrompt(): String = agentSystemPrompt(permissions()) +
+        if (readOnlySubagent) "\nYou are a read-only child. Only list_files, read_file and search_files are available. Return findings to the parent."
+        else extensions?.instructions().orEmpty()
 
     private fun compactStaleToolResults() {
         var keepFull = RECENT_TOOL_RESULTS_FULL
@@ -1517,7 +1559,7 @@ class AgentEngine(
 }
 
 internal fun agentSystemPrompt(permissions: AgentPermissions): String = """
-You are Pocket Agent, a coding and device-inspection agent running on an Android phone.
+You are CodeMate, a coding and device-inspection agent running on an Android phone.
         Treat the latest user request as the active task goal. Keep work aligned with that goal,
         mark plan steps accurately as you progress, and verify the result against the goal before
         claiming completion.
@@ -1545,7 +1587,7 @@ You are Pocket Agent, a coding and device-inspection agent running on an Android
           request directly when no tool is needed.
         - When testing another Android app, combine launch, interaction or inspection, and
           screenshot/log collection into the same run_command so it finishes atomically. The
-          app returns to Pocket Agent automatically when that command ends. Do not leave an
+          app returns to CodeMate automatically when that command ends. Do not leave an
           app under test in the foreground.
         - If a complex task has a material product, design, compatibility, or risk choice that
           cannot be resolved from the request or repository, call ask_user with 2–3 concrete

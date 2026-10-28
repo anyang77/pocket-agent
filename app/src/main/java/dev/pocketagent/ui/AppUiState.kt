@@ -1,5 +1,6 @@
 package dev.pocketagent.ui
 
+import dev.pocketagent.data.ChatAttachment
 import dev.pocketagent.data.AiSettings
 import dev.pocketagent.data.AgentGoal
 import dev.pocketagent.agent.AgentChoice
@@ -64,6 +65,7 @@ data class ChatEntry(
     val goal: String? = null,
     val phase: AgentTurnPhase = AgentTurnPhase.IDLE,
     val reasoning: String = "",
+    val attachments: List<ChatAttachment> = emptyList(),
 )
 
 data class AgentRetryState(
@@ -90,6 +92,13 @@ data class GitHubLoginState(
     val verificationUri: String = "https://github.com/login/device",
     val status: String = "正在连接 GitHub",
     val expiresAt: Long? = null,
+)
+
+data class QueuedPrompt(
+    val id: Long,
+    val text: String,
+    val attachments: List<ChatAttachment> = emptyList(),
+    val steering: Boolean = false,
 )
 
 data class AppUiState(
@@ -133,6 +142,18 @@ data class AppUiState(
     val managedRepositories: List<ManagedRepository> = emptyList(),
     val chat: List<ChatEntry> = emptyList(),
     val agentInputDraft: String = "",
+    val agentAttachments: List<ChatAttachment> = emptyList(),
+    val agentAttachmentsLoading: Boolean = false,
+    val mentionFiles: List<FileEntry> = emptyList(),
+    val mentionFilesLoading: Boolean = false,
+    val queuePaused: Boolean = false,
+    val extensionSettings: dev.pocketagent.extensions.ExtensionSettings = dev.pocketagent.extensions.ExtensionSettings(),
+    val skills: List<dev.pocketagent.extensions.SkillInfo> = emptyList(),
+    val mcpServers: List<dev.pocketagent.extensions.McpServerConfig> = emptyList(),
+    val mcpStates: Map<String, dev.pocketagent.extensions.McpServerState> = emptyMap(),
+    val subagentTasks: List<dev.pocketagent.extensions.SubagentTask> = emptyList(),
+    val extensionsLoading: Boolean = false,
+    val onlineCatalog: dev.pocketagent.extensions.OnlineCatalogState = dev.pocketagent.extensions.OnlineCatalogState(),
     val agentRunning: Boolean = false,
     val agentStatus: String? = null,
     /** Non-null while context compaction is running; rendered inline instead of as a card. */
@@ -144,7 +165,7 @@ data class AppUiState(
     val agentRequestStartedAt: Long? = null,
     val agentRetry: AgentRetryState? = null,
     val agentGoal: AgentGoal? = null,
-    val queuedPrompts: List<String> = emptyList(),
+    val queuedPrompts: List<QueuedPrompt> = emptyList(),
     val files: List<FileEntry> = emptyList(),
     val currentDirectory: String = ".",
     val workspacePath: String = "",

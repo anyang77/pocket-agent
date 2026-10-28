@@ -1,6 +1,5 @@
 package dev.pocketagent.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,7 +36,7 @@ import java.util.Locale
 
 object AgentHeader {
     val PillHeight = 28.dp
-    val PillRadius = 14.dp
+    val PillRadius = 8.dp
 }
 
 /**
@@ -55,11 +54,7 @@ fun AgentPill(
     enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
-    val container = if (active) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-    } else {
-        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-    }
+    val container = MaterialTheme.colorScheme.surfaceContainerLow
     val content = when {
         !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
         active -> MaterialTheme.colorScheme.primary
@@ -72,11 +67,6 @@ fun AgentPill(
         shape = RoundedCornerShape(AgentHeader.PillRadius),
         color = container,
         contentColor = content,
-        border = if (active) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f))
-        } else {
-            null
-        },
     ) {
         Row(
             modifier = Modifier.padding(start = 9.dp, end = 7.dp),
@@ -130,7 +120,7 @@ fun AgentIconAction(
         enabled = enabled,
         modifier = Modifier.size(AgentHeader.PillHeight),
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        color = Color.Transparent,
         contentColor = if (enabled) {
             MaterialTheme.colorScheme.onSurfaceVariant
         } else {

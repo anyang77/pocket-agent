@@ -2,13 +2,7 @@ package dev.pocketagent.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -34,8 +28,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -54,21 +46,18 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -86,10 +75,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -98,7 +85,6 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -125,6 +111,16 @@ fun AgentScreen(
     onSend: (String) -> Unit,
     onInputDraftChange: (String) -> Unit,
     onStopAgent: () -> Unit,
+    onStopSubagent: (String) -> Unit,
+    onImages: (List<android.net.Uri>) -> Unit,
+    onMentionQuery: (String?) -> Unit,
+    onFileAttachment: (String) -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+    onRemoveQueued: (Long) -> Unit,
+    onEditQueued: (Long, String) -> Unit,
+    onSteerQueued: (Long) -> Unit,
+    onResumeQueue: () -> Unit,
+    onPauseQueue: () -> Unit,
     onNewConversation: () -> Unit,
     onModelSelected: (String) -> Unit,
     onProfileSelected: (String) -> Unit,
@@ -393,35 +389,6 @@ fun AgentScreen(
             }
         }
 
-        if (state.queuedPrompts.isNotEmpty()) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    "等待当前任务结束 · ${state.queuedPrompts.size}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                state.queuedPrompts.take(3).forEachIndexed { index, prompt ->
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(9.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
-                    ) {
-                        Text(
-                            "${index + 1}. $prompt",
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
-        }
-
         state.agentGoal?.let { goal ->
             GoalDockBar(
                 goal = goal,
@@ -431,122 +398,12 @@ fun AgentScreen(
             )
         }
 
-        val flowTransition = rememberInfiniteTransition(label = "agent-input-flow")
-        val flowProgress by flowTransition.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1_800, easing = LinearEasing),
-            ),
-            label = "agent-input-flow-progress",
+        SubagentDock(state.subagentTasks, onStopSubagent)
+        AgentComposer(
+            state, onInputDraftChange, onSend, onStopAgent, onImages, onMentionQuery,
+            onFileAttachment, onRemoveAttachment, onRemoveQueued, onEditQueued,
+            onSteerQueued, onResumeQueue, onPauseQueue,
         )
-        val flowPrimary = MaterialTheme.colorScheme.primary
-        val flowSecondary = MaterialTheme.colorScheme.tertiary
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 6.dp, bottom = 10.dp),
-        ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = onInputDraftChange,
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = {
-                    Text(
-                        if (state.agentRunning) {
-                            "Agent 正在持续执行，点击右侧停止"
-                        } else {
-                            "问点什么，或者让 Agent 直接改代码…"
-                        },
-                    )
-                },
-                minLines = 1,
-                maxLines = 5,
-                shape = RoundedCornerShape(24.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = if (state.agentRunning) {
-                        Color.Transparent
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    },
-                    unfocusedBorderColor = if (state.agentRunning) {
-                        Color.Transparent
-                    } else {
-                        MaterialTheme.colorScheme.outline
-                    },
-                ),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(
-                    onSend = {
-                        if (input.isNotBlank()) {
-                            onSend(input)
-                        }
-                    },
-                ),
-                trailingIcon = {
-                    FilledIconButton(
-                        onClick = {
-                            if (state.agentRunning) {
-                                onStopAgent()
-                            } else {
-                                onSend(input)
-                            }
-                        },
-                        enabled = state.agentRunning || input.isNotBlank(),
-                        modifier = Modifier.size(38.dp),
-                        shape = CircleShape,
-                    ) {
-                        Icon(
-                            if (state.agentRunning) Icons.Filled.Stop else Icons.Filled.Send,
-                            contentDescription = if (state.agentRunning) "停止任务" else "发送",
-                        )
-                    }
-                },
-            )
-            if (state.agentRunning) {
-                Canvas(Modifier.matchParentSize()) {
-                    val strokeWidth = 1.5.dp.toPx()
-                    val inset = strokeWidth / 2f
-                    val ring = Path().apply {
-                        addRoundRect(
-                            RoundRect(
-                                rect = Rect(
-                                    inset,
-                                    inset,
-                                    size.width - inset,
-                                    size.height - inset,
-                                ),
-                                radiusX = 24.dp.toPx(),
-                                radiusY = 24.dp.toPx(),
-                            ),
-                        )
-                    }
-                    drawPath(
-                        path = ring,
-                        color = flowPrimary.copy(alpha = 0.10f),
-                        style = Stroke(width = strokeWidth),
-                    )
-                    val measure = PathMeasure().apply { setPath(ring, false) }
-                    val totalLength = measure.length
-                    if (totalLength <= 0f) return@Canvas
-                    val dashLength = totalLength * 0.075f
-                    val segment = Path()
-                    var start = flowProgress * totalLength
-                    var remaining = dashLength
-                    while (remaining > 0f) {
-                        val end = (start + remaining).coerceAtMost(totalLength)
-                        measure.getSegment(start, end, segment, true)
-                        remaining -= end - start
-                        start = 0f
-                    }
-                    drawPath(
-                        path = segment,
-                        color = flowSecondary.copy(alpha = 0.9f),
-                        style = Stroke(width = strokeWidth),
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -669,13 +526,12 @@ private fun ChatBubble(
                     ),
                     color = MaterialTheme.colorScheme.primaryContainer,
                 ) {
-                    SelectionContainer {
-                        Text(
-                            text = entry.content,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                            style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
+                    Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (entry.attachments.isNotEmpty()) AttachmentRow(entry.attachments)
+                        if (entry.content.isNotBlank()) SelectionContainer {
+                            Text(entry.content, style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        }
                     }
                 }
                 MessageActions(
@@ -700,7 +556,7 @@ private fun ChatBubble(
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Text(
-                    "P",
+                    "C",
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontWeight = FontWeight.Bold,
                     ),
@@ -718,7 +574,7 @@ private fun ChatBubble(
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
                 Text(
-                    "Pocket Agent",
+                    "CodeMate",
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.SemiBold,
                     ),
@@ -1449,6 +1305,11 @@ private fun formatActivityDuration(durationMs: Long): String =
     }
 
 private fun activityDisplayName(name: String): String = when (name) {
+    "load_skill" -> "加载技能"
+    "spawn_subagent" -> "启动子代理"
+    "wait_subagents" -> "等待子代理"
+    "subagent_result" -> "读取子代理结果"
+    "stop_subagent" -> "停止子代理"
     "list_files" -> "浏览目录"
     "read_file" -> "读取文件"
     "search_files" -> "搜索代码"
@@ -1476,7 +1337,7 @@ private fun activityVisual(name: String): ActivityVisual = when (name) {
 }
 
 @Composable
-private fun MarkdownContent(content: String) {
+internal fun MarkdownContent(content: String) {
     val blocks = remember(content) { parseMarkdown(content) }
     val inlineCodeBackground = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1541,29 +1402,7 @@ private fun MarkdownContent(content: String) {
                     )
                 }
 
-                is MarkdownBlock.Code -> Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                ) {
-                    Column(Modifier.padding(11.dp)) {
-                        Text(
-                            block.language.ifBlank { "code" },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            block.code,
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                lineHeight = 18.sp,
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            softWrap = false,
-                        )
-                    }
-                }
+                is MarkdownBlock.Code -> CopyableCodeBlock(block.language, block.code)
 
                 is MarkdownBlock.Table -> Surface(
                     shape = RoundedCornerShape(10.dp),

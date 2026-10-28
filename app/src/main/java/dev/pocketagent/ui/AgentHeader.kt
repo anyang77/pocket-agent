@@ -1,7 +1,6 @@
 package dev.pocketagent.ui
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -9,7 +8,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -22,7 +20,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.outlined.AddComment
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -135,8 +132,8 @@ fun AgentHeaderBar(
             Box {
                 AgentPill(
                     label = overallRateLabel(overallCacheRate),
-                    dotColor = cacheDotColor(overallCacheRate),
-                    active = overallCacheRate != null,
+                    dotColor = null,
+                    active = false,
                     onClick = { usageMenuExpanded = true },
                 )
                 AgentDropdown(
@@ -176,8 +173,6 @@ fun AgentHeaderBar(
                 modifier = Modifier
                     .weight(1f)
                     .height(AgentHeader.PillHeight)
-                    .clip(RoundedCornerShape(AgentHeader.PillRadius))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f))
                     .clickable { usageMenuExpanded = true }
                     .padding(horizontal = 9.dp),
                 contentAlignment = Alignment.CenterStart,
@@ -255,11 +250,7 @@ private fun ModelControl(
             .fillMaxWidth()
             .height(40.dp),
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f),
-        border = BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.22f),
-        ),
+        color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -308,14 +299,6 @@ private fun speedLabel(tokensPerSecond: Float?): String =
 
 private fun overallRateLabel(rate: Float?): String =
     if (rate == null) "缓存 --" else "缓存 ${(rate * 100).roundToInt()}%"
-
-@Composable
-private fun cacheDotColor(rate: Float?): Color = when {
-    rate == null -> MaterialTheme.colorScheme.outline
-    rate >= 0.5f -> Color(0xFF15803D)
-    rate >= 0.2f -> Color(0xFFA16207)
-    else -> Color(0xFFB42318)
-}
 
 @Composable
 private fun cacheRateColor(rate: Float): Color = when {

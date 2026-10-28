@@ -10,6 +10,8 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.Spacer
@@ -46,7 +48,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
@@ -114,7 +115,7 @@ fun PocketAgentApp(viewModel: AppViewModel) {
         if (!opened) {
             Toast.makeText(
                 context,
-                "无法打开系统权限页，请在“设置 > 应用 > Pocket Agent”中授权",
+                "无法打开系统权限页，请在“设置 > 应用 > CodeMate”中授权",
                 Toast.LENGTH_LONG,
             ).show()
         }
@@ -229,26 +230,34 @@ fun PocketAgentApp(viewModel: AppViewModel) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
-                title = {
-                    Column {
-                        Text("Pocket Agent", style = MaterialTheme.typography.titleMedium)
+            // Files and terminal own their toolbars; the editor uses the whole workspace.
+            if (state.tab != AppTab.FILES && state.tab != AppTab.TERMINAL) {
+                TopAppBar(
+                    expandedHeight = 52.dp,
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                    ),
+                    title = {
                         Text(
-                            text = state.capabilities.runtimeLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            when (state.tab) {
+                                AppTab.AGENT -> "Agent"
+                                AppTab.GIT -> "Git"
+                                AppTab.SETTINGS -> "设置"
+                                else -> "CodeMate"
+                            },
+                            style = MaterialTheme.typography.titleLarge,
                         )
-                    }
-                },
-            )
+                    },
+                )
+            }
         },
         bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+            NavigationBar(
+                modifier = Modifier.navigationBarsPadding().height(64.dp),
+                windowInsets = WindowInsets(0, 0, 0, 0),
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+            ) {
                 NavigationBarItem(
                     selected = state.tab == AppTab.FILES,
                     onClick = { viewModel.selectTab(AppTab.FILES) },
@@ -289,6 +298,16 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onSend = viewModel::sendChat,
                 onInputDraftChange = viewModel::updateAgentInputDraft,
                 onStopAgent = viewModel::stopAgent,
+                onStopSubagent = viewModel::stopSubagent,
+                onImages = viewModel::addAgentImages,
+                onMentionQuery = viewModel::searchMentionFiles,
+                onFileAttachment = viewModel::addAgentFile,
+                onRemoveAttachment = viewModel::removeAgentAttachment,
+                onRemoveQueued = viewModel::removeQueuedPrompt,
+                onEditQueued = viewModel::editQueuedPrompt,
+                onSteerQueued = viewModel::steerQueuedPrompt,
+                onResumeQueue = viewModel::resumePromptQueue,
+                onPauseQueue = viewModel::pausePromptQueue,
                 onNewConversation = viewModel::newConversation,
                 onModelSelected = viewModel::selectModel,
                 onProfileSelected = viewModel::selectModelProfile,
@@ -306,7 +325,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onPermissionsChanged = viewModel::savePermissions,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding),
+                    .padding(innerPadding)
+                    .consumeWindowInsets(innerPadding),
             )
             AppTab.FILES -> FilesScreen(
                 state = state,
@@ -376,6 +396,12 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onCreateProfile = viewModel::createModelProfile,
                 onDeleteProfile = viewModel::deleteModelProfile,
                 onThemePreferenceChanged = viewModel::setThemePreference,
+                extensionActions = ExtensionActions(
+                    viewModel::refreshExtensions, viewModel::saveExtensionSettings, viewModel::setSkillEnabled,
+                    viewModel::saveSkill, viewModel::removeSkill, viewModel::saveMcpServer,
+                    viewModel::removeMcpServer, viewModel::importMcpConfig, viewModel::testMcpServer,
+                    { kind, source, query, more -> viewModel.browseCatalog(kind, source, query, more) }, viewModel::refreshCatalog, viewModel::inspectCatalogSkill, viewModel::installCatalogSkill, viewModel::inspectCatalogServer, viewModel::readCatalogDocument,
+                ),
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),
@@ -418,7 +444,7 @@ private fun FileAccessPermissionGate(
             )
             Text(
                 "文件读写需要“所有文件访问”，也可前往 " +
-                    "设置 > 应用 > Pocket Agent > 权限",
+                    "设置 > 应用 > CodeMate > 权限",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
             )

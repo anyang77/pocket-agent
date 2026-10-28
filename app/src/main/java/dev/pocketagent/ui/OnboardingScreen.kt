@@ -202,7 +202,7 @@ private fun SetupHeader(currentStep: Int) {
             )
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-            Text("Pocket Agent", style = MaterialTheme.typography.titleMedium)
+            Text("CodeMate", style = MaterialTheme.typography.titleMedium)
             Text(
                 "应用初始化",
                 style = MaterialTheme.typography.labelSmall,

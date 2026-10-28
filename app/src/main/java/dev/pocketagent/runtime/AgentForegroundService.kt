@@ -22,7 +22,7 @@ class AgentForegroundService : Service() {
         acquireWakeLock()
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("Pocket Agent 正在执行")
+            .setContentTitle("CodeMate 正在执行")
             .setContentText("保持 Agent、构建和测试任务在后台运行")
             .setOngoing(true)
             .build()

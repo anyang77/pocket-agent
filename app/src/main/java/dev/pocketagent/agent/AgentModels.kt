@@ -10,6 +10,7 @@ data class AgentMessage(
     val name: String? = null,
     val toolCallId: String? = null,
     val toolCalls: List<AgentToolCall> = emptyList(),
+    val imagePaths: List<String> = emptyList(),
 )
 
 data class AgentToolCall(
