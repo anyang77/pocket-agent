@@ -6,6 +6,12 @@ import org.junit.Test
 
 class EditorLintLanguageResolverTest {
     @Test
+    fun detectsRustSource() {
+        assertEquals(EditorLintLanguage.RUST,
+            EditorLintLanguageResolver.resolve("src/lib.rs", "pub fn run() {}"))
+    }
+
+    @Test
     fun detectsShellByExtension() {
         assertEquals(
             EditorLintLanguage.SHELL,

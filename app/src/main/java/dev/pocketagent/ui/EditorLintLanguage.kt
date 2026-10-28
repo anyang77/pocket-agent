@@ -12,6 +12,7 @@ enum class EditorLintLanguage(
     JSON("json"),
     C("c"),
     CPP("cpp"),
+    RUST("rs"),
 }
 
 object EditorLintLanguageResolver {
@@ -20,6 +21,7 @@ object EditorLintLanguageResolver {
             """(?:class|interface|enum|record)\s+([A-Za-z_$][A-Za-z0-9_$]*)""",
     )
     private val extensionMap = mapOf(
+        "rs" to EditorLintLanguage.RUST,
         "py" to EditorLintLanguage.PYTHON,
         "python" to EditorLintLanguage.PYTHON,
         "js" to EditorLintLanguage.JAVASCRIPT,

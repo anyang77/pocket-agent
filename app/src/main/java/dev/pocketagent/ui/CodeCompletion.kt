@@ -159,6 +159,13 @@ object CodeCompletionEngine {
             snippet("cout", "std::cout << \"%CURSOR%\" << std::endl;", "输出"),
             snippet("vector", "std::vector<%CURSOR%>", "容器"),
         ),
+        SyntaxLanguage.RUST to listOf(
+            snippet("fn", "fn %CURSOR%() {\n    \n}", "函数"),
+            snippet("main", "fn main() {\n    %CURSOR%\n}", "入口函数"),
+            snippet("match", "match %CURSOR% {\n    _ => {}\n}", "模式匹配"),
+            snippet("impl", "impl %CURSOR% {\n    \n}", "实现"),
+            snippet("println!", "println!(\"%CURSOR%\");", "输出"),
+        ),
         SyntaxLanguage.PYTHON to listOf(
             snippet("def", "def %CURSOR%():\n    ", "函数"),
             snippet("class", "class %CURSOR%:\n    def __init__(self):\n        ", "类"),
@@ -229,6 +236,14 @@ object CodeCompletionEngine {
             "switch", "case", "break", "continue", "template", "typename", "public",
             "private", "protected", "constexpr", "nullptr",
         ),
+        SyntaxLanguage.RUST to listOf(
+            "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
+            "enum", "extern", "fn", "for", "if", "impl", "in", "let", "loop", "match",
+            "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static",
+            "struct", "super", "trait", "type", "unsafe", "use", "where", "while",
+            "true", "false", "Some", "None", "Ok", "Err",
+        ),
+        SyntaxLanguage.TOML to listOf("true", "false"),
         SyntaxLanguage.PYTHON to listOf(
             "def", "class", "import", "from", "as", "if", "elif", "else", "for",
             "while", "return", "try", "except", "finally", "with", "lambda", "yield",
@@ -264,6 +279,11 @@ object CodeCompletionEngine {
         SyntaxLanguage.CPP to listOf(
             "string", "vector", "map", "set", "size_t", "uint8_t", "int32_t",
             "unique_ptr", "shared_ptr", "optional",
+        ),
+        SyntaxLanguage.RUST to listOf(
+            "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
+            "i128", "isize", "f32", "f64", "bool", "char", "str", "String", "Vec",
+            "Option", "Result", "Box", "Self",
         ),
         SyntaxLanguage.PYTHON to listOf("str", "int", "float", "bool", "list", "dict", "set"),
         SyntaxLanguage.JAVASCRIPT to listOf(

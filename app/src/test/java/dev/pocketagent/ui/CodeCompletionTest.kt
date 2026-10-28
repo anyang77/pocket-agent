@@ -36,6 +36,17 @@ class CodeCompletionTest {
     }
 
     @Test
+    fun completesRustFunctionWithCursorAtItsName() {
+        val item = CodeCompletionEngine.suggestions(SyntaxLanguage.RUST, "fn", 2)
+            .first { it.detail == "函数" }
+        val edit = CodeCompletionEngine.apply("fn", 2, item)
+        assertEquals("fn () {\n    \n}", edit.text)
+        assertEquals(3, edit.cursor)
+        assertTrue(CodeCompletionEngine.suggestions(SyntaxLanguage.RUST, "Res", 3)
+            .any { it.label == "Result" })
+    }
+
+    @Test
     fun reportsOneBasedLineAndColumn() {
         assertEquals(
             EditorCursorPosition(line = 2, column = 4),

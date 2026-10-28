@@ -2351,7 +2351,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return characterDiagnostics
         }
         if (
-            language !in setOf(EditorLintLanguage.SHELL, EditorLintLanguage.BASH) &&
+            language !in setOf(EditorLintLanguage.SHELL, EditorLintLanguage.BASH, EditorLintLanguage.RUST) &&
             !internalRuntime.isToolchainsReady()
         ) {
             return emptyList()
@@ -2397,6 +2397,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             EditorLintLanguage.JSON -> { file ->
                 "python3 -m json.tool ${shellQuote(file)} >/dev/null"
             }
+            EditorLintLanguage.RUST -> { file ->
+                val edition = RustEditorSupport.edition(workspace.resolve(path), workspace.root)
+                // Parse the unsaved buffer without resolving Cargo dependencies or child modules.
+                // rustfmt is optional; its absence must not appear as an error in the source.
+                "if command -v rustfmt >/dev/null 2>&1; then " +
+                    "rustfmt --edition $edition --emit stdout --config skip_children=true " +
+                    "< ${shellQuote(file)} >/dev/null; fi"
+            }
             EditorLintLanguage.C -> { file ->
                 "clang -fsyntax-only -x c ${shellQuote(file)}"
             }
@@ -2434,7 +2442,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 (
                     characterDiagnostics +
-                        EditorDiagnosticParser.parse(result.output, lintFile.absolutePath)
+                        EditorDiagnosticParser.parse(
+                            if (language == EditorLintLanguage.RUST) {
+                                result.output.replace("<stdin>", lintFile.absolutePath).replace("stdin:", "${lintFile.absolutePath}:")
+                            } else result.output,
+                            lintFile.absolutePath,
+                        )
                     ).distinctBy { it.line to it.column to it.message }
             }
         } catch (error: Exception) {

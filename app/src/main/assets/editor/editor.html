@@ -258,6 +258,8 @@
   <script src="addon/mode/simple.min.js"></script>
   <script src="mode/clike.min.js"></script>
   <script src="mode/javascript.min.js"></script>
+  <script src="mode/rust.js"></script>
+  <script src="mode/toml.js"></script>
   <script src="mode/python.min.js"></script>
   <script src="mode/shell.min.js"></script>
   <script src="mode/markdown.min.js"></script>
@@ -288,6 +290,8 @@
       kotlin: "pocket-kotlin",
       java: "text/x-java",
       cpp: "text/x-c++src",
+      rust: "text/x-rustsrc",
+      toml: "toml",
       python: "python",
       javascript: "javascript",
       typescript: "text/typescript",
@@ -298,6 +302,8 @@
     };
 
     const completions = {
+      rust: ["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "type", "unsafe", "use", "where", "while", "true", "false", "Some", "None", "Ok", "Err", "String", "Vec", "Option", "Result", "Box", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64", "bool", "char", "str"],
+      toml: ["true", "false"],
       kotlin: ["package", "import", "class", "object", "interface", "fun", "val", "var", "if", "else", "when", "for", "while", "return", "try", "catch", "private", "public", "suspend", "data", "override", "String", "Int", "Long", "Boolean", "List", "Map", "Result"],
       java: ["package", "import", "class", "interface", "enum", "public", "private", "protected", "static", "final", "void", "new", "return", "if", "else", "for", "while", "try", "catch", "String", "Object", "Integer", "List", "Map", "Set", "System", "Math", "ArrayList", "HashMap"],
       cpp: ["include", "int", "char", "void", "auto", "const", "static", "struct", "class", "namespace", "using", "return", "if", "else", "for", "while", "switch", "break", "vector", "string", "size_t"],
@@ -311,6 +317,18 @@
     };
 
     const completionMetadata = {
+      rust: {
+        fn: ["snippet", "函数定义", "fn name(args) -> Type {}"],
+        let: ["keyword", "变量绑定", "let mut value = expression;"],
+        impl: ["snippet", "类型或 trait 实现", "impl Type {}"],
+        match: ["snippet", "模式匹配", "match value { pattern => expression }"],
+        Some: ["function", "存在的可选值", "Some(value)"],
+        None: ["variable", "空的可选值", "Option::None"],
+        Ok: ["function", "成功结果", "Ok(value)"],
+        Err: ["function", "错误结果", "Err(error)"],
+        Vec: ["type", "动态数组", "Vec<T>"],
+        Result: ["type", "成功或错误", "Result<T, E>"]
+      },
       shell: {
         echo: ["function", "输出文本", "printf '%s\\n' ..."],
         printf: ["function", "格式化输出", "printf 'format' args..."],
@@ -428,6 +446,13 @@
     };
 
     const snippets = {
+      rust: [
+        {label: "fn", insertText: "fn name() {\n    \n}", cursorOffset: 3, detail: "函数"},
+        {label: "main", insertText: "fn main() {\n    \n}", cursorOffset: 16, detail: "入口函数"},
+        {label: "match", insertText: "match value {\n    _ => {}\n}", cursorOffset: 6, detail: "模式匹配"},
+        {label: "impl", insertText: "impl Type {\n    \n}", cursorOffset: 5, detail: "实现"},
+        {label: "println!", insertText: "println!(\"\");", cursorOffset: 10, detail: "输出"}
+      ],
       shell: [
         {"label": "if", "insertText": "if [ condition ]; then\n  \nfi", "cursorOffset": 4, "detail": "条件判断"},
         {"label": "for", "insertText": "for item in values; do\n  \ndone", "cursorOffset": 13, "detail": "循环"},
@@ -474,6 +499,7 @@
     };
 
     const typeCompletions = {
+      rust: ["u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64", "bool", "char", "str", "String", "Vec", "Option", "Result", "Box", "Self"],
       kotlin: ["String", "Int", "Long", "Boolean", "Float", "Double", "List", "Map", "Set", "Any", "Unit", "Flow", "Result"],
       java: ["String", "Object", "Integer", "Long", "Boolean", "List", "Map", "Set", "ArrayList", "HashMap", "void", "int", "long", "float", "double", "char", "byte"],
       cpp: ["string", "vector", "map", "set", "size_t", "uint8_t", "int32_t", "unique_ptr", "shared_ptr", "optional"],
@@ -1031,7 +1057,7 @@
         ? [new RegExp(`^\\s*(?:function\\s+)?${escaped}\\s*\\(\\)`)]
         : currentMode === "python"
           ? [new RegExp(`^\\s*(?:def|class)\\s+${escaped}\\b`)]
-          : [new RegExp(`\\b(?:function|class|const|let|var|fun)\\s+${escaped}\\b`)];
+          : [new RegExp(`\\b(?:function|class|const|let(?:\\s+mut)?|var|fun|fn|struct|enum|trait|type|mod)\\s+${escaped}\\b`)];
       const lines = cm.getValue().split("\n");
       for (let line = 0; line < lines.length; line++) {
         if (line === cursor.line) continue;

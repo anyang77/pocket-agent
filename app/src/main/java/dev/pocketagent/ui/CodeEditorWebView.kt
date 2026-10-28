@@ -68,6 +68,20 @@ object EditorDiagnosticParser {
             )
         }
 
+        // rustfmt reports the message before its arrow location, unlike gcc/javac.
+        val rustLocation = Regex("""^\s*(?:-->|:::)\s*当前文件:(\d+):(\d+)\s*$""")
+        lines.forEachIndexed { index, raw ->
+            val match = rustLocation.find(raw) ?: return@forEachIndexed
+            val message = lines.take(index).lastOrNull {
+                it.startsWith("error:") || it.startsWith("error[")
+            } ?: return@forEachIndexed
+            diagnostics += EditorDiagnostic(
+                line = match.groupValues[1].toIntOrNull() ?: 1,
+                column = match.groupValues[2].toIntOrNull() ?: 1,
+                message = message.substringAfter(":").trim().take(500),
+            )
+        }
+
         val pythonStart = Regex(
             """^File ["']当前文件["'], line (\d+)(?:, column (\d+))?""",
             RegexOption.IGNORE_CASE,

@@ -25,6 +25,8 @@ enum class SyntaxLanguage(val label: String) {
     KOTLIN("Kotlin"),
     JAVA("Java"),
     CPP("C/C++"),
+    RUST("Rust"),
+    TOML("TOML"),
     PYTHON("Python"),
     JAVASCRIPT("JavaScript"),
     TYPESCRIPT("TypeScript"),
@@ -40,6 +42,8 @@ fun syntaxLanguageFor(path: String): SyntaxLanguage = when (
     "kt", "kts" -> SyntaxLanguage.KOTLIN
     "java" -> SyntaxLanguage.JAVA
     "c", "h", "cc", "cpp", "cxx", "hpp" -> SyntaxLanguage.CPP
+    "rs" -> SyntaxLanguage.RUST
+    "toml" -> SyntaxLanguage.TOML
     "py" -> SyntaxLanguage.PYTHON
     "js", "mjs", "cjs", "jsx" -> SyntaxLanguage.JAVASCRIPT
     "ts", "tsx" -> SyntaxLanguage.TYPESCRIPT
@@ -106,7 +110,7 @@ class SyntaxHighlightTransformation(
                     }
                     index = end
                 }
-                ch == '#' && language in setOf(SyntaxLanguage.PYTHON, SyntaxLanguage.SHELL) -> {
+                ch == '#' && language in setOf(SyntaxLanguage.PYTHON, SyntaxLanguage.SHELL, SyntaxLanguage.TOML) -> {
                     val end = source.indexOf('\n', index).let {
                         if (it < 0) source.length else it
                     }
@@ -243,6 +247,14 @@ class SyntaxHighlightTransformation(
             "class", "namespace", "using", "return", "if", "else", "for", "while",
             "switch", "case", "break", "continue", "template", "typename",
         )
+        SyntaxLanguage.RUST -> setOf(
+            "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
+            "enum", "extern", "fn", "for", "if", "impl", "in", "let", "loop", "match",
+            "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static",
+            "struct", "super", "trait", "type", "unsafe", "use", "where", "while",
+            "true", "false",
+        )
+        SyntaxLanguage.TOML -> setOf("true", "false")
         SyntaxLanguage.PYTHON -> setOf(
             "def", "class", "import", "from", "as", "if", "elif", "else", "for",
             "while", "return", "try", "except", "finally", "with", "lambda", "yield",
@@ -269,6 +281,11 @@ class SyntaxHighlightTransformation(
         SyntaxLanguage.JAVA, SyntaxLanguage.CPP -> setOf(
             "String", "Object", "Integer", "Long", "Boolean", "List", "Map", "Set",
             "void", "int", "long", "float", "double", "char", "bool", "size_t",
+        )
+        SyntaxLanguage.RUST -> setOf(
+            "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
+            "i128", "isize", "f32", "f64", "bool", "char", "str", "String", "Vec",
+            "Option", "Result", "Box", "Self",
         )
         SyntaxLanguage.PYTHON ->
             setOf("str", "int", "float", "bool", "list", "dict", "set")

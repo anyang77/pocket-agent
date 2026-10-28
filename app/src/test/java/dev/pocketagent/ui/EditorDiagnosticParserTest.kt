@@ -5,6 +5,23 @@ import org.junit.Test
 
 class EditorDiagnosticParserTest {
     @Test
+    fun parsesRustMessageBeforeArrowLocation() {
+        val diagnostic = EditorDiagnosticParser.parse(
+            """
+            error: expected expression, found `;`
+             --> /tmp/source.rs:4:17
+              |
+            4 |     let value = ;
+              |                 ^ expected expression
+            """.trimIndent(),
+            "/tmp/source.rs",
+        ).single()
+        assertEquals(4, diagnostic.line)
+        assertEquals(17, diagnostic.column)
+        assertEquals("expected expression, found `;`", diagnostic.message)
+    }
+
+    @Test
     fun parsesShellSyntaxErrorLine() {
         val diagnostic = EditorDiagnosticParser.parse(
             "/tmp/source.sh: 2: Syntax error: \"then\" unexpected",

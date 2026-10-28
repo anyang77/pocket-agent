@@ -333,6 +333,7 @@ private fun FileBrowserRow(entry: FileEntry, onOpen: () -> Unit, onRename: () ->
         name.startsWith('.') && extension == name.removePrefix(".") -> "配置文件"
         extension in setOf("kt", "kts") -> "Kotlin"
         extension == "java" -> "Java"
+        extension == "rs" -> "Rust"
         extension == "py" -> "Python"
         extension in setOf("js", "jsx", "mjs", "cjs") -> "JavaScript"
         extension in setOf("ts", "tsx") -> "TypeScript"
@@ -351,7 +352,7 @@ private fun FileBrowserRow(entry: FileEntry, onOpen: () -> Unit, onRename: () ->
         type == "归档文件" -> Icons.Outlined.Inventory2
         type == "配置文件" -> Icons.Outlined.Tune
         type == "Shell 脚本" -> Icons.Outlined.Terminal
-        type in setOf("Kotlin", "Java", "Python", "JavaScript", "TypeScript", "C / C++") -> Icons.Outlined.Code
+        type in setOf("Kotlin", "Java", "Python", "JavaScript", "TypeScript", "C / C++", "Rust") -> Icons.Outlined.Code
         else -> Icons.Outlined.Description
     }
     val tint = when {
