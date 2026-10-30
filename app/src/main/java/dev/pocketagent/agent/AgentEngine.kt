@@ -163,8 +163,9 @@ class AgentEngine(
                     lastPromptTokens = 0
                     completedToolCalls.clear()
                 }
-                ensureSystemMessage()
-                compactStaleToolResults()
+                // Keep previously sent messages immutable for provider prefix caching.
+                // New tool results are bounded when appended; history is rewritten only
+                // during the explicit context-compaction pass below.
                 val contextLimit = ModelContextBudget.limitFor(
                     settings.model,
                     settings.contextWindow,
@@ -1207,23 +1208,6 @@ class AgentEngine(
         if (readOnlySubagent) "\nYou are a read-only child. Only list_files, read_file and search_files are available. Return findings to the parent."
         else "\n" + commandAuth().description + extensions?.instructions().orEmpty()
 
-    private fun compactStaleToolResults() {
-        var keepFull = RECENT_TOOL_RESULTS_FULL
-        for (index in conversation.indices.reversed()) {
-            val message = conversation[index]
-            if (message.role != "tool") continue
-            if (keepFull > 0) {
-                keepFull--
-                continue
-            }
-            val content = message.content.orEmpty()
-            if (content.length <= STALE_TOOL_RESULT_CHARS) continue
-            conversation[index] = message.copy(
-                content = compactToolResultForModel(content, STALE_TOOL_RESULT_CHARS),
-            )
-        }
-    }
-
     private fun invalidateFileToolResults(results: MutableMap<String, ToolResult>) {
         results.keys
             .filter { signature ->
@@ -1300,8 +1284,6 @@ class AgentEngine(
         private const val LOCAL_CHECKPOINT_MESSAGE_CHARS = 3_000
         private const val LOCAL_CHECKPOINT_MAX_CHARS = 36_000
         private const val MAX_TOOL_RESULT_CHARS = 16_000
-        private const val STALE_TOOL_RESULT_CHARS = 3_000
-        private const val RECENT_TOOL_RESULTS_FULL = 10
         private const val MAX_HISTORY_MESSAGES = 80
         private val REUSABLE_TOOL_NAMES = setOf(
             "read_file",

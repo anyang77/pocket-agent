@@ -116,7 +116,6 @@ class AiClient(
             .url(chatCompletionsUrl(settings.baseUrl))
             .header("Authorization", "Bearer ${settings.apiKey.trim()}")
             .header("Accept", "text/event-stream, application/json")
-            .header("Cache-Control", "no-cache")
             .post(
                 requestJson.toString()
                     .toRequestBody("application/json; charset=utf-8".toMediaType()),
