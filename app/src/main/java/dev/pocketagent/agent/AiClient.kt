@@ -30,6 +30,7 @@ class AiClient(
 ) {
     @Volatile
     private var activeAgentCall: Call? = null
+    private val prefixTracker = PromptPrefixTracker()
 
     suspend fun listModels(settings: AiSettings): List<ModelInfo> = withContext(Dispatchers.IO) {
         if (settings.apiKey.isBlank()) {
@@ -84,6 +85,7 @@ class AiClient(
         onDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {},
         onStreamReset: (Int) -> Unit = {},
+        onDiagnostic: (String, String) -> Unit = { _, _ -> },
     ): AssistantTurn = withContext(Dispatchers.IO) {
         if (settings.apiKey.isBlank()) {
             throw AgentException("请先在设置里填写 API Key")
@@ -95,8 +97,8 @@ class AiClient(
             throw AgentException("模型名不能为空")
         }
 
-        val includeReasoningContent = settings.reasoningEffort != "auto" ||
-            messages.any { it.reasoningContent != null }
+        // A new reasoning response must not change the serialization of older messages.
+        val includeReasoningContent = settings.reasoningEffort != "auto"
         val requestJson = JSONObject().apply {
             put("model", settings.model.trim())
             put("messages", messages.toMessagesJson(includeReasoningContent))
@@ -112,6 +114,8 @@ class AiClient(
             }
         }
 
+        val diagnostic = prefixTracker.record(settings.baseUrl, requestJson)
+        onDiagnostic("缓存请求", diagnostic.description)
         val request = Request.Builder()
             .url(chatCompletionsUrl(settings.baseUrl))
             .header("Authorization", "Bearer ${settings.apiKey.trim()}")
@@ -132,6 +136,9 @@ class AiClient(
             try {
                 return@withContext executeCompletion(
                     request = request,
+                    onUsageDiagnostic = { raw ->
+                        onDiagnostic("缓存用量", "request=${diagnostic.id} attempt=$attempt $raw")
+                    },
                     onDelta = { delta ->
                         receivedStreamOutput = true
                         streamedContentChars += delta.length
@@ -229,6 +236,7 @@ class AiClient(
 
     private fun executeCompletion(
         request: Request,
+        onUsageDiagnostic: (String) -> Unit,
         onDelta: (String) -> Unit,
         onReasoningDelta: (String) -> Unit,
     ): AssistantTurn {
@@ -252,6 +260,7 @@ class AiClient(
                 if (contentType.contains("text/event-stream", ignoreCase = true)) {
                     return parseStreamingResponse(
                         source = responseBody.source(),
+                        onUsageDiagnostic = onUsageDiagnostic,
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
                     )
@@ -290,7 +299,10 @@ class AiClient(
                     ?.takeUnless { it == JSONObject.NULL }
                     ?.toString()
                     ?.takeIf { it.isNotBlank() }
-                val usage = json.optJSONObject("usage")?.toTokenUsage()
+                val usage = json.optJSONObject("usage")?.let {
+                    onUsageDiagnostic(it.cacheUsageDiagnostic())
+                    it.toTokenUsage()
+                }
 
                 return AssistantTurn(
                     content = content,
@@ -307,6 +319,7 @@ class AiClient(
 
     private fun parseStreamingResponse(
         source: BufferedSource,
+        onUsageDiagnostic: (String) -> Unit,
         onDelta: (String) -> Unit,
         onReasoningDelta: (String) -> Unit,
     ): AssistantTurn {
@@ -314,7 +327,10 @@ class AiClient(
         val reasoning = StringBuilder()
         val toolCalls = linkedMapOf<Int, StreamingToolCall>()
         var finishReason: String? = null
-        var usage: TokenUsage? = null
+        val usage = StreamingTokenUsage()
+        var usageFrames = 0
+        var firstUsageFields = ""
+        var lastUsageFields = ""
         var sawDone = false
 
         while (true) {
@@ -337,7 +353,11 @@ class AiClient(
                     retryAfterSeconds = streamRetryAfterSeconds(error),
                 )
             }
-            json.optJSONObject("usage")?.let { usage = it.toTokenUsage() }
+            json.optJSONObject("usage")?.let {
+                lastUsageFields = it.cacheUsageDiagnostic()
+                if (usageFrames++ == 0) firstUsageFields = lastUsageFields
+                usage.update(it)
+            }
             val choice = json.optJSONArray("choices")?.optJSONObject(0) ?: continue
             choice.optString("finish_reason")
                 .takeIf { it.isNotBlank() }
@@ -391,6 +411,9 @@ class AiClient(
         if (!sawDone && finishReason == null) {
             throw IOException("模型流式响应意外中断")
         }
+        if (usageFrames > 0) {
+            onUsageDiagnostic("frames=$usageFrames first=[$firstUsageFields] last=[$lastUsageFields] merged=[${usage.diagnostic()}]")
+        }
 
         val parsedToolCalls = toolCalls.entries.map { (index, call) ->
             AgentToolCall(
@@ -409,7 +432,7 @@ class AiClient(
             reasoningContent = reasoningText,
             toolCalls = parsedToolCalls,
             finishReason = finishReason,
-            usage = usage,
+            usage = usage.value(),
             contentWasStreamed = text != null,
         )
     }
@@ -467,37 +490,6 @@ class AiClient(
             .takeIf { it.isNotBlank() }
             ?.let(values::add)
         return ReasoningEffortSupport.normalize(values)
-    }
-
-    private fun JSONObject.toTokenUsage(): TokenUsage {
-        val promptTokens = optInt("prompt_tokens")
-        val completionTokens = optInt("completion_tokens")
-        val promptDetails = optJSONObject("prompt_tokens_details")
-        val completionDetails = optJSONObject("completion_tokens_details")
-        val cacheMetricsAvailable = has("prompt_cache_hit_tokens") ||
-            has("prompt_cache_miss_tokens") ||
-            promptDetails?.has("cached_tokens") == true
-        val cacheHit = when {
-            has("prompt_cache_hit_tokens") -> optInt("prompt_cache_hit_tokens")
-            promptDetails?.has("cached_tokens") == true ->
-                promptDetails.optInt("cached_tokens")
-            else -> 0
-        }.coerceIn(0, promptTokens)
-        val cacheMiss = when {
-            has("prompt_cache_miss_tokens") -> optInt("prompt_cache_miss_tokens")
-            cacheHit > 0 -> (promptTokens - cacheHit).coerceAtLeast(0)
-            else -> 0
-        }
-        return TokenUsage(
-            promptTokens = promptTokens,
-            completionTokens = completionTokens,
-            totalTokens = optInt("total_tokens", promptTokens + completionTokens),
-            cacheHitTokens = cacheHit,
-            cacheMissTokens = cacheMiss,
-            reasoningTokens = completionDetails?.optInt("reasoning_tokens") ?: 0,
-            requests = 1,
-            cacheMetricsAvailable = cacheMetricsAvailable,
-        )
     }
 
     private fun chatCompletionsUrl(baseUrl: String): String {

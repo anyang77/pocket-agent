@@ -356,6 +356,7 @@ class ConversationStore(context: Context) {
             put("reasoning_tokens", reasoningTokens)
             put("requests", requests)
             put("cache_metrics_available", cacheMetricsAvailable)
+            put("cache_measured_prompt_tokens", cacheMeasuredPromptTokens)
         }
 
         private fun JSONObject.toTokenUsage(): TokenUsage = TokenUsage(
@@ -367,6 +368,8 @@ class ConversationStore(context: Context) {
             reasoningTokens = optInt("reasoning_tokens"),
             requests = optInt("requests", 1),
             cacheMetricsAvailable = optBoolean("cache_metrics_available"),
+            cacheMeasuredPromptTokens = optInt("cache_measured_prompt_tokens",
+                if (optBoolean("cache_metrics_available")) optInt("prompt_tokens") else 0),
         )
     }
 }

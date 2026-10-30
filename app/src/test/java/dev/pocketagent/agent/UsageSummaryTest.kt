@@ -31,4 +31,18 @@ class UsageSummaryTest {
     fun rateIsUnknownWithoutInputTokens() {
         assertNull(TokenUsage().cacheHitRate)
     }
+
+    @Test
+    fun missingCacheMetricsDoNotCountAsZeroHitsInAggregate() {
+        val missing = TokenUsage(promptTokens = 6038)
+        val measured = TokenUsage(promptTokens = 6038, cacheHitTokens = 5888,
+            cacheMissTokens = 150, cacheMetricsAvailable = true)
+        val merged = missing + missing + missing + measured + measured + measured
+        assertEquals(36228, merged.promptTokens)
+        assertEquals(18114, merged.cacheMeasuredPromptTokens)
+        assertEquals(5888f / 6038f, merged.cacheHitRate!!, 0.0001f)
+        assertNull(missing.cacheHitRate)
+        val actualZero = TokenUsage(promptTokens = 6038, cacheMetricsAvailable = true)
+        assertEquals(5888f / 12076f, (measured + actualZero).cacheHitRate!!, 0.0001f)
+    }
 }

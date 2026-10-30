@@ -28,6 +28,7 @@ data class TokenUsage(
     val reasoningTokens: Int = 0,
     val requests: Int = 1,
     val cacheMetricsAvailable: Boolean = false,
+    val cacheMeasuredPromptTokens: Int = if (cacheMetricsAvailable) promptTokens else 0,
 ) {
     operator fun plus(other: TokenUsage): TokenUsage = TokenUsage(
         promptTokens = promptTokens + other.promptTokens,
@@ -38,11 +39,12 @@ data class TokenUsage(
         reasoningTokens = reasoningTokens + other.reasoningTokens,
         requests = requests + other.requests,
         cacheMetricsAvailable = cacheMetricsAvailable || other.cacheMetricsAvailable,
+        cacheMeasuredPromptTokens = cacheMeasuredPromptTokens + other.cacheMeasuredPromptTokens,
     )
 
     val cacheHitRate: Float?
-        get() = if (promptTokens > 0) {
-            cacheHitTokens.toFloat() / promptTokens.toFloat()
+        get() = if (cacheMeasuredPromptTokens > 0) {
+            cacheHitTokens.toFloat() / cacheMeasuredPromptTokens.toFloat()
         } else {
             null
         }

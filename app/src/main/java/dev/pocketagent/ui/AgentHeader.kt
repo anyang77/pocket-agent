@@ -453,14 +453,18 @@ private fun UsageMenuContent(
             ?: MaterialTheme.colorScheme.onSurfaceVariant,
     )
     AgentMenuRow(
-        label = "命中 / 总输入",
+        label = "命中 / 已统计输入",
         value = if (overall != null && overallRate != null) {
             "${formatTokenCount(overall.cacheHitTokens)} / " +
-                formatTokenCount(overall.promptTokens)
+                formatTokenCount(overall.cacheMeasuredPromptTokens)
         } else {
             "--"
         },
     )
+    if (overall != null && overall.cacheMeasuredPromptTokens < overall.promptTokens) {
+        AgentMenuRow(label = "未返回缓存统计的输入",
+            value = formatTokenCount(overall.promptTokens - overall.cacheMeasuredPromptTokens))
+    }
     AgentMenuRow(label = "累计请求", value = overall?.requests?.toString() ?: "--")
     AgentMenuRow(label = "输出 Token", value = formatTokenCount(overall?.completionTokens ?: 0))
     AgentMenuRow(

@@ -260,6 +260,7 @@ class AgentEngine(
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
                         onStreamReset = onStreamReset,
+                        onDiagnostic = ::auditCacheDiagnostic,
                     )
                 } catch (error: AgentException) {
                     currentCoroutineContext().ensureActive()
@@ -285,6 +286,7 @@ class AgentEngine(
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
                         onStreamReset = onStreamReset,
+                        onDiagnostic = ::auditCacheDiagnostic,
                     )
                 }
                 flushStreamText()
@@ -452,6 +454,10 @@ class AgentEngine(
         }
     }
 
+    private fun auditCacheDiagnostic(action: String, detail: String) {
+        auditLog.append("model", action, detail)
+    }
+
     private suspend fun compactConversation(
         settings: AiSettings,
         originalUserText: String,
@@ -504,6 +510,7 @@ class AgentEngine(
                     settings,
                     conversation,
                     emptyList(),
+                    onDiagnostic = ::auditCacheDiagnostic,
                     onRetry = { notice ->
                         onEvent(
                             AgentEvent.State(
@@ -529,6 +536,7 @@ class AgentEngine(
                     settings,
                     conversation,
                     emptyList(),
+                    onDiagnostic = ::auditCacheDiagnostic,
                     onRetry = { notice ->
                         onEvent(
                             AgentEvent.State(
