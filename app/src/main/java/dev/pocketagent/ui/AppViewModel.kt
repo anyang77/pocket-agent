@@ -71,6 +71,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
@@ -157,11 +158,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         aiClient = aiClient,
         auditLog = auditLog,
         extensions = agentExtensions,
+        commandAuth = gitRepository::commandAuth,
     )
     private var pendingApprovalDeferred: CompletableDeferred<Boolean>? = null
     private var pendingChoiceDeferred: CompletableDeferred<AgentChoice?>? = null
     private var agentJob: Job? = null
     private var editorLintJob: Job? = null
+    private var modelsJob: Job? = null
+    private val modelsRevision = AtomicLong()
+    private val modelSettingsMutex = Mutex()
+    private var gitDiffJob: Job? = null
+    private var gitDetailJob: Job? = null
+    private val gitDiffRevision = AtomicLong()
+    private val gitDetailRevision = AtomicLong()
     private var githubLoginJob: Job? = null
     private val githubAuthClient = GitHubDeviceAuthClient()
     private val nextId = AtomicLong(1)
@@ -918,54 +927,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveSettings(settings: AiSettings) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val previousWorkspace = _state.value.workspacePath
-            val workspaceResult = runCatching {
-                workspace.configure(settings.workspacePath)
-                workspace.ensureWorkspace()
-            }
-            val updatedSettings = if (workspaceResult.isSuccess) {
-                settings.copy(workspacePath = workspace.displayRoot)
-            } else {
-                settings.copy(workspacePath = previousWorkspace)
-            }
-            val workspaceChanged = workspaceResult.isSuccess &&
-                previousWorkspace != workspace.displayRoot
-            if (workspaceResult.isSuccess) workspaceNeedsConfiguration = false
-            settingsRepository.save(updatedSettings)
-            val refreshedProfiles = settingsRepository.loadProfiles()
-            val refreshedProfileId = settingsRepository.activeProfileId()
-            auditLog.append(
-                "settings",
-                "保存模型设置",
-                "baseUrl=${updatedSettings.baseUrl} model=${updatedSettings.model} " +
-                    "context=${updatedSettings.contextWindow} " +
-                    "workspace=${updatedSettings.workspacePath}",
-            )
-            if (workspaceChanged) {
-                withContext(Dispatchers.Main) {
+        viewModelScope.launch {
+            try {
+                val changed = settings.workspacePath.isNotBlank() && settings.workspacePath != _state.value.workspacePath
+                if (changed) {
+                    check(!_state.value.agentRunning) { "请在当前任务结束后切换工作区" }
+                    withContext(Dispatchers.IO) {
+                        workspace.configure(settings.workspacePath)
+                        workspace.ensureWorkspace()
+                        settingsRepository.saveWorkspacePath(workspace.displayRoot)
+                    }
+                    workspaceNeedsConfiguration = false
                     terminalManager.restart()
+                    _state.update { it.copy(workspacePath = workspace.displayRoot, activeFile = null,
+                        editorContent = "", editorDirty = false, currentDirectory = ".") }
+                    closeGitDiff()
+                    closeGitCommitDetail()
+                    refreshFiles()
                 }
-            }
-            _state.update {
-                it.copy(
-                    settings = updatedSettings,
-                    modelProfiles = refreshedProfiles,
-                    activeProfileId = refreshedProfileId,
-                    workspacePath = workspace.displayRoot,
-                    activeFile = if (workspaceChanged) null else it.activeFile,
-                    editorContent = if (workspaceChanged) "" else it.editorContent,
-                    editorDirty = if (workspaceChanged) false else it.editorDirty,
-                    currentDirectory = if (workspaceChanged) "." else it.currentDirectory,
-                    notice = if (workspaceResult.isSuccess) {
-                        "模型与工作区设置已保存"
-                    } else {
-                        workspaceResult.exceptionOrNull()?.message ?: "工作区无法切换"
-                    },
-                )
-            }
-            if (workspaceResult.isSuccess) refreshFiles()
-            refreshModels()
+                saveModelSettings(settings)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _state.update { it.copy(notice = error.message ?: "配置保存失败") } }
         }
     }
 
@@ -984,188 +966,153 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshModels() {
-        val settings = _state.value.settings
-        if (_state.value.modelsLoading) return
+        val revision = modelsRevision.incrementAndGet()
+        modelsJob?.cancel()
+        val requested = _state.value
+        val settings = requested.settings
         if (settings.apiKey.isBlank() || settings.baseUrl.isBlank()) {
-            _state.update {
-                it.copy(
-                    availableModels = emptyList(),
-                    modelsError = "填写 API Key 和 Base URL 后自动获取模型",
-                )
-            }
+            _state.update { it.copy(modelsLoading = false, availableModels = emptyList(),
+                modelReasoningEfforts = emptyMap(), modelsError = "填写 API Key 和服务地址后自动获取模型") }
             return
         }
-
         _state.update { it.copy(modelsLoading = true, modelsError = null) }
-        viewModelScope.launch {
-            runCatching { aiClient.listModels(settings) }
-                .onSuccess { modelInfos ->
-                    val models = modelInfos.map { it.id }
-                    val reasoningEfforts = modelInfos.associate {
-                        it.id to it.reasoningEfforts
-                    }
+        modelsJob = viewModelScope.launch {
+            try {
+                val infos = aiClient.listModels(settings)
+                modelSettingsMutex.withLock {
+                    if (!modelCatalogRequestMatches(revision, modelsRevision.get(), requested.activeProfileId,
+                            _state.value.activeProfileId, settings, _state.value.settings)) return@withLock
+                    val models = infos.map { it.id }.distinct()
+                    val efforts = infos.associate { it.id to it.reasoningEfforts }
                     val preferred = when {
                         settings.model in models -> settings.model
                         "deepseek-chat" in models -> "deepseek-chat"
                         else -> models.firstOrNull() ?: settings.model
                     }
-                    val availableEfforts = reasoningEfforts[preferred].orEmpty()
-                    val effort = settings.reasoningEffort.takeIf {
-                        it == "auto" || it in availableEfforts
-                    } ?: "auto"
-                    val updated = settings.copy(
-                        model = preferred,
-                        reasoningEffort = effort,
-                    )
-                    if (updated != settings) {
-                        withContext(Dispatchers.IO) { settingsRepository.save(updated) }
-                    }
-                    val refreshedProfiles = withContext(Dispatchers.IO) {
+                    val updated = settings.copy(model = preferred, reasoningEffort =
+                        settings.reasoningEffort.takeIf { it == "auto" || it in efforts[preferred].orEmpty() } ?: "auto")
+                    val profiles = withContext(Dispatchers.IO) {
+                        if (updated != settings) settingsRepository.save(updated, requested.activeProfileId)
                         settingsRepository.loadProfiles()
                     }
-                    val refreshedProfileId = withContext(Dispatchers.IO) {
-                        settingsRepository.activeProfileId()
-                    }
-                    _state.update {
-                        it.copy(
-                            settings = updated,
-                            modelProfiles = refreshedProfiles,
-                            activeProfileId = refreshedProfileId,
-                            availableModels = models,
-                            modelReasoningEfforts = reasoningEfforts,
-                            modelsLoading = false,
-                            modelsError = if (models.isEmpty()) "服务商没有返回可用模型" else null,
-                        )
-                    }
-                    auditLog.append(
-                        "model",
-                        "获取模型列表",
-                        "count=${models.size} selected=$preferred effort=$effort",
-                    )
-                }
-                .onFailure { error ->
-                    auditLog.append("model", "获取模型列表失败", error.message.orEmpty())
-                    _state.update {
-                        it.copy(
-                            modelsLoading = false,
-                            modelsError = error.message ?: "获取模型列表失败",
-                        )
+                    _state.update { current ->
+                        if (!modelCatalogRequestMatches(revision, modelsRevision.get(), requested.activeProfileId,
+                                current.activeProfileId, settings, current.settings)) current
+                        else current.copy(settings = updated, modelProfiles = profiles, availableModels = models,
+                            modelReasoningEfforts = efforts, modelsError = if (models.isEmpty()) "服务商没有返回可用模型" else null)
                     }
                 }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                if (modelsRevision.get() == revision) _state.update { it.copy(modelsError = error.message ?: "获取模型列表失败") }
+            } finally {
+                if (modelsRevision.get() == revision) _state.update { it.copy(modelsLoading = false) }
+            }
         }
     }
 
-    fun selectModel(model: String) {
+    suspend fun saveModelSettings(settings: AiSettings): Boolean {
+        if (_state.value.modelSettingsSaving) return false
+        val profileId = _state.value.activeProfileId
+        // Persist in the ViewModel scope so navigating away cannot cancel an accepted save.
+        return viewModelScope.async { persistModelSettings(settings, profileId) }.await()
+    }
+
+    private suspend fun persistModelSettings(settings: AiSettings, profileId: String): Boolean {
+        _state.update { it.copy(modelSettingsSaving = true, modelSettingsError = null) }
+        return try {
+            require(settings.baseUrl.isNotBlank()) { "服务地址不能为空" }
+            require(settings.baseUrl.trim().let { it.startsWith("https://") || it.startsWith("http://") }) {
+                "服务地址需要以 https:// 或 http:// 开头"
+            }
+            require(settings.apiKey.isNotBlank()) { "API 密钥不能为空" }
+            modelSettingsMutex.withLock {
+                val updated = settings.copy(baseUrl = settings.baseUrl.trim(), apiKey = settings.apiKey.trim(),
+                    workspacePath = _state.value.workspacePath)
+                val profiles = withContext(Dispatchers.IO) {
+                    settingsRepository.save(updated, profileId)
+                    settingsRepository.loadProfiles()
+                }
+                _state.update { current ->
+                    if (current.activeProfileId != profileId) current.copy(modelProfiles = profiles)
+                    else current.copy(settings = updated, modelProfiles = profiles, availableModels = emptyList(),
+                        modelReasoningEfforts = emptyMap(), modelsError = null,
+                        notice = if (current.agentRunning) "配置已保存，下次任务生效" else "模型配置已保存")
+                }
+            }
+            refreshModels()
+            true
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) {
+            _state.update { it.copy(modelSettingsError = error.message ?: "配置保存失败，请重试") }
+            false
+        } finally { _state.update { it.copy(modelSettingsSaving = false) } }
+    }
+
+    private fun updateSelectedModel(transform: (AiSettings) -> AiSettings) {
+        val profileId = _state.value.activeProfileId
+        viewModelScope.launch {
+            try {
+                modelSettingsMutex.withLock {
+                    if (_state.value.activeProfileId != profileId) return@withLock
+                    val updated = transform(_state.value.settings)
+                    val profiles = withContext(Dispatchers.IO) {
+                        settingsRepository.save(updated, profileId)
+                        settingsRepository.loadProfiles()
+                    }
+                    _state.update { if (it.activeProfileId != profileId) it else it.copy(settings = updated, modelProfiles = profiles) }
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _state.update { it.copy(notice = error.message ?: "模型配置保存失败") } }
+        }
+    }
+
+    fun selectModel(model: String) = updateSelectedModel { settings ->
         val supported = _state.value.modelReasoningEfforts[model].orEmpty()
-        val currentEffort = _state.value.settings.reasoningEffort
-        val effort = currentEffort.takeIf { it == "auto" || it in supported } ?: "auto"
-        val updated = _state.value.settings.copy(
-            model = model,
-            reasoningEffort = effort,
-        )
-        _state.update { it.copy(settings = updated) }
-        viewModelScope.launch(Dispatchers.IO) {
-            settingsRepository.save(updated)
-            val profiles = settingsRepository.loadProfiles()
-            _state.update { it.copy(modelProfiles = profiles) }
-            auditLog.append("model", "切换模型", model)
-        }
+        settings.copy(model = model, reasoningEffort = settings.reasoningEffort.takeIf {
+            it == "auto" || it in supported
+        } ?: "auto")
     }
 
-    fun selectReasoningEffort(effort: String) {
-        val settings = _state.value.settings
+    fun selectReasoningEffort(effort: String) = updateSelectedModel { settings ->
         val supported = _state.value.modelReasoningEfforts[settings.model].orEmpty()
-        if (effort != "auto" && effort !in supported) return
-        val updated = settings.copy(reasoningEffort = effort)
-        _state.update { it.copy(settings = updated) }
-        viewModelScope.launch(Dispatchers.IO) {
-            settingsRepository.save(updated)
-            val profiles = settingsRepository.loadProfiles()
-            _state.update { it.copy(modelProfiles = profiles) }
-            auditLog.append(
-                "model",
-                "切换思考等级",
-                "model=${settings.model} effort=$effort",
-            )
-        }
+        if (effort != "auto" && effort !in supported) settings else settings.copy(reasoningEffort = effort)
     }
 
-    fun selectModelProfile(profileId: String) {
-        val profile = _state.value.modelProfiles.firstOrNull { it.id == profileId } ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            settingsRepository.setActiveProfile(profile.id)
-            val settings = profile.toSettings(_state.value.workspacePath)
-            _state.update {
-                it.copy(
-                    settings = settings,
-                    activeProfileId = profile.id,
-                    availableModels = emptyList(),
-                    modelReasoningEfforts = emptyMap(),
-                    modelsError = null,
-                )
-            }
-            auditLog.append("model", "切换模型配置", "profile=${profile.name} id=${profile.id}")
-            refreshModels()
-        }
-    }
-
-    fun createModelProfile(
-        name: String,
-        baseUrl: String,
-        apiKey: String,
-        contextWindow: Int,
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val profile = settingsRepository.createProfile(name, baseUrl, apiKey, contextWindow)
-            val profiles = settingsRepository.loadProfiles()
-            val settings = profile.toSettings(_state.value.workspacePath)
-            _state.update {
-                it.copy(
-                    settings = settings,
-                    modelProfiles = profiles,
-                    activeProfileId = profile.id,
-                    availableModels = emptyList(),
-                    modelReasoningEfforts = emptyMap(),
-                    modelsError = null,
-                    notice = "已创建模型配置 ${profile.name}",
-                )
-            }
-            auditLog.append("model", "新建模型配置", "name=${profile.name}")
-            refreshModels()
-        }
-    }
-
-    fun deleteModelProfile(profileId: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching { settingsRepository.deleteProfile(profileId) }
-                .onSuccess {
-                    val profiles = settingsRepository.loadProfiles()
-                    val activeId = settingsRepository.activeProfileId()
-                    val profile = profiles.first { it.id == activeId }
-                    _state.update {
-                        it.copy(
-                            settings = profile.toSettings(_state.value.workspacePath),
-                            modelProfiles = profiles,
-                            activeProfileId = activeId,
-                            availableModels = emptyList(),
-                            modelReasoningEfforts = emptyMap(),
-                            notice = "模型配置已删除",
-                        )
+    private fun mutateModelProfiles(notice: String? = null, action: () -> Unit) {
+        viewModelScope.launch {
+            try {
+                modelSettingsMutex.withLock {
+                    val (profiles, activeId) = withContext(Dispatchers.IO) {
+                        action()
+                        settingsRepository.loadProfiles() to settingsRepository.activeProfileId()
                     }
-                    auditLog.append("model", "删除模型配置", "id=$profileId")
-                    refreshModels()
+                    val profile = profiles.first { it.id == activeId }
+                    _state.update { it.copy(settings = profile.toSettings(it.workspacePath), modelProfiles = profiles,
+                        activeProfileId = activeId, availableModels = emptyList(), modelReasoningEfforts = emptyMap(),
+                        modelsError = null, modelSettingsError = null, notice = notice) }
                 }
-                .onFailure { error ->
-                    _state.update { it.copy(notice = error.message ?: "无法删除模型配置") }
-                }
+                refreshModels()
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _state.update { it.copy(notice = error.message ?: "无法修改模型配置") } }
         }
     }
 
-    fun renameModelProfile(profileId: String, name: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            settingsRepository.renameProfile(profileId, name)
-            _state.update { it.copy(modelProfiles = settingsRepository.loadProfiles()) }
+    fun selectModelProfile(profileId: String) = mutateModelProfiles {
+        settingsRepository.setActiveProfile(profileId)
+    }
+
+    fun createModelProfile(name: String, baseUrl: String, apiKey: String, contextWindow: Int) =
+        mutateModelProfiles("已创建模型配置 ${name.trim()}") {
+            settingsRepository.createProfile(name, baseUrl, apiKey, contextWindow)
         }
+
+    fun deleteModelProfile(profileId: String) = mutateModelProfiles("模型配置已删除") {
+        settingsRepository.deleteProfile(profileId)
+    }
+
+    fun renameModelProfile(profileId: String, name: String) = mutateModelProfiles {
+        settingsRepository.renameProfile(profileId, name)
     }
 
     fun approvePending() {
@@ -1524,7 +1471,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun ensureGitToolchain(): Boolean {
+    private suspend fun ensureGitToolchain(): Boolean = try {
+        prepareGitToolchain()
+    } catch (error: CancellationException) { throw error }
+    catch (error: Exception) {
+        _state.update { it.copy(gitError = error.message ?: "Git 环境不可用，请重试初始化",
+            internalRuntimeInstallMessage = error.message ?: "Git 工具链安装失败") }
+        false
+    } finally {
+        _state.update { it.copy(internalRuntimeInstalling = false) }
+    }
+
+    private suspend fun prepareGitToolchain(): Boolean {
         if (internalRuntime.isGitReady()) return true
         _state.update {
             it.copy(
@@ -1685,10 +1643,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 workspace.ensureWorkspace()
             }.onSuccess {
                 workspaceNeedsConfiguration = false
-                val updated = _state.value.settings.copy(
-                    workspacePath = workspace.displayRoot,
-                )
-                settingsRepository.save(updated)
+                settingsRepository.saveWorkspacePath(workspace.displayRoot)
                 auditLog.append(
                     "workspace",
                     "切换工作区",
@@ -1700,7 +1655,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 _state.update {
                     it.copy(
-                        settings = updated,
+                        settings = it.settings.copy(workspacePath = workspace.displayRoot),
                         workspacePath = workspace.displayRoot,
                         workspacePickerVisible = false,
                         currentDirectory = ".",
@@ -1710,6 +1665,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         notice = "工作区已切换到 ${workspace.displayRoot}",
                     )
                 }
+                closeGitDiff()
+                closeGitCommitDetail()
                 refreshFiles()
                 refreshGit()
             }.onFailure { error ->
@@ -1729,110 +1686,75 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshGit() {
         if (_state.value.gitLoading) return
-        _state.update {
-            it.copy(
-                gitLoading = true,
-                gitError = if (internalRuntime.isGitReady()) null
-                else "正在安装 Git 与 SSH 工具链",
-            )
-        }
+        val workspacePath = _state.value.workspacePath
+        _state.update { it.copy(gitLoading = true, gitError = null) }
         viewModelScope.launch(Dispatchers.IO) {
-            if (!ensureGitToolchain()) {
+            try {
+                check(ensureGitToolchain()) { _state.value.gitError ?: "Git 工具链安装失败，请重试环境初始化" }
+                val git = gitRepository.state()
+                val repositories = if (git.isRepository) managedRepositoryStore.touch(workspace.displayRoot)
+                    else managedRepositoryStore.load()
                 _state.update {
-                    it.copy(
-                        gitLoading = false,
-                        gitError = "Git 工具链安装失败，请在设置中重试环境初始化",
-                    )
+                    if (it.workspacePath != workspacePath) it
+                    else it.copy(gitState = git, gitError = git.error, managedRepositories = repositories)
                 }
-                return@launch
-            }
-            runCatching { gitRepository.state() }
-                .onSuccess { git ->
-                    val repositories = if (git.isRepository) {
-                        managedRepositoryStore.touch(workspace.displayRoot)
-                    } else {
-                        managedRepositoryStore.load()
-                    }
-                    _state.update {
-                        it.copy(
-                            gitState = git,
-                            gitLoading = false,
-                            gitError = git.error,
-                            managedRepositories = repositories,
-                        )
-                    }
-                }
-                .onFailure { error ->
-                    _state.update {
-                        it.copy(
-                            gitLoading = false,
-                            gitError = error.message ?: "无法读取 Git 状态",
-                        )
-                    }
-                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                _state.update { if (it.workspacePath != workspacePath) it else it.copy(gitError = error.message ?: "无法读取 Git 状态") }
+            } finally { _state.update { it.copy(gitLoading = false) } }
         }
     }
 
     fun openGitDiff(change: GitChange) {
-        _state.update {
-            it.copy(
-                gitLoading = true,
-                gitDiffTitle = "${change.status}  ${change.path}",
-                gitDiff = "",
-                gitError = null,
-            )
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching { gitRepository.diff(change) }
-                .onSuccess { diff ->
-                    _state.update {
-                        it.copy(gitDiff = diff, gitLoading = false)
-                    }
+        if (_state.value.gitLoading) return
+        val revision = gitDiffRevision.incrementAndGet()
+        gitDiffJob?.cancel()
+        val workspacePath = _state.value.workspacePath
+        _state.update { it.copy(gitDiffLoading = true, gitDiffTitle = "${change.status}  ${change.path}", gitDiff = "", gitError = null) }
+        gitDiffJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val diff = gitRepository.diff(change)
+                if (gitDiffRevision.get() == revision) _state.update {
+                    if (it.workspacePath == workspacePath) it.copy(gitDiff = diff) else it
                 }
-                .onFailure { error ->
-                    _state.update {
-                        it.copy(
-                            gitLoading = false,
-                            gitDiff = error.message ?: "无法读取 diff",
-                            gitError = error.message ?: "无法读取 diff",
-                        )
-                    }
-                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                if (gitDiffRevision.get() == revision) _state.update { it.copy(gitDiff = error.message ?: "无法读取差异") }
+            } finally {
+                if (gitDiffRevision.get() == revision) _state.update { it.copy(gitDiffLoading = false) }
+            }
         }
     }
 
     fun closeGitDiff() {
-        _state.update { it.copy(gitDiff = "", gitDiffTitle = null) }
+        gitDiffRevision.incrementAndGet()
+        gitDiffJob?.cancel()
+        _state.update { it.copy(gitDiff = "", gitDiffTitle = null, gitDiffLoading = false) }
     }
 
     fun openGitCommitDetail(hash: String) {
-        if (_state.value.gitCommitDetailLoading) return
-        _state.update {
-            it.copy(
-                gitCommitDetail = null,
-                gitCommitDetailLoading = true,
-                gitError = null,
-            )
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching { gitRepository.commitDetail(hash) }
-                .onSuccess { detail ->
-                    _state.update {
-                        it.copy(gitCommitDetail = detail, gitCommitDetailLoading = false)
-                    }
+        val revision = gitDetailRevision.incrementAndGet()
+        gitDetailJob?.cancel()
+        val workspacePath = _state.value.workspacePath
+        _state.update { it.copy(gitCommitDetail = null, gitCommitDetailLoading = true, gitError = null) }
+        gitDetailJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val detail = gitRepository.commitDetail(hash)
+                if (gitDetailRevision.get() == revision) _state.update {
+                    if (it.workspacePath == workspacePath) it.copy(gitCommitDetail = detail) else it
                 }
-                .onFailure { error ->
-                    _state.update {
-                        it.copy(
-                            gitCommitDetailLoading = false,
-                            gitError = error.message ?: "无法读取提交详情",
-                        )
-                    }
-                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                if (gitDetailRevision.get() == revision) _state.update { it.copy(gitError = error.message ?: "无法读取提交详情") }
+            } finally {
+                if (gitDetailRevision.get() == revision) _state.update { it.copy(gitCommitDetailLoading = false) }
+            }
         }
     }
 
     fun closeGitCommitDetail() {
+        gitDetailRevision.incrementAndGet()
+        gitDetailJob?.cancel()
         _state.update { it.copy(gitCommitDetail = null, gitCommitDetailLoading = false) }
     }
 
@@ -2051,42 +1973,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshGitHubRepositories() {
         if (_state.value.githubRepositoriesLoading) return
-        val token = gitRepository.githubAccessToken()
-        if (token.isNullOrBlank()) {
-            _state.update {
-                it.copy(
-                    githubRepositories = emptyList(),
-                    githubRepositoriesLoading = false,
-                    githubRepositoriesError = "登录 GitHub 后可查看仓库",
-                )
-            }
-            return
-        }
-        _state.update {
-            it.copy(
-                githubRepositoriesLoading = true,
-                githubRepositoriesError = null,
-            )
-        }
+        val accountId = _state.value.activeGitAccountId
+        _state.update { it.copy(githubRepositoriesLoading = true, githubRepositoriesError = null) }
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { githubAuthClient.repositories(token) }
-                .onSuccess { repositories ->
-                    _state.update {
-                        it.copy(
-                            githubRepositories = repositories,
-                            githubRepositoriesLoading = false,
-                            githubRepositoriesError = null,
-                        )
-                    }
-                }
-                .onFailure { error ->
-                    _state.update {
-                        it.copy(
-                            githubRepositoriesLoading = false,
-                            githubRepositoriesError = error.message ?: "无法读取 GitHub 仓库",
-                        )
-                    }
-                }
+            try {
+                val token = gitRepository.githubAccessToken()
+                check(!token.isNullOrBlank()) { "登录 GitHub 后可查看仓库" }
+                val repositories = githubAuthClient.repositories(token)
+                _state.update { if (it.activeGitAccountId != accountId) it else
+                    it.copy(githubRepositories = repositories, githubRepositoriesError = null) }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                _state.update { if (it.activeGitAccountId != accountId) it else
+                    it.copy(githubRepositoriesError = error.message ?: "无法读取 GitHub 仓库") }
+            } finally { _state.update { it.copy(githubRepositoriesLoading = false) } }
         }
     }
 
@@ -2790,6 +2690,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val taskSettings = _state.value.settings
         subagentManager.reset()
         val user = ChatEntry(nextId.getAndIncrement(), ChatRole.USER, prompt, attachments = attachments)
         var assistantId = nextId.getAndIncrement()
@@ -2833,7 +2734,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 agentEngine.run(
                     userText = modelText,
                     imagePaths = images,
-                    settings = _state.value.settings,
+                    settings = taskSettings,
                     authorize = ::authorizeAgentAction,
                     choose = ::requestUserChoice,
                     takeSteering = {

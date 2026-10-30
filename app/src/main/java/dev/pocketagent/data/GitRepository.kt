@@ -172,8 +172,8 @@ object GitStatusParser {
             upstream = upstream,
             ahead = ahead,
             behind = behind,
-            staged = staged.distinctBy { it.path to it.status },
-            changes = changes.distinctBy { it.path to it.status },
+            staged = staged.distinctBy { it.path },
+            changes = changes.distinctBy { it.path },
         )
     }
 
@@ -336,6 +336,15 @@ class GitRepository(
 
     fun githubAccessToken(): String? = credentials.accessToken("github.com")
 
+    fun commandAuth(): GitCommandAuth = credentials.commandAuth(
+        mapOf(
+            "GIT_SSH" to sshWrapper.absolutePath,
+            "POCKET_SSH_PATH" to sshBinary.absolutePath,
+            "POCKET_SSH_CONFIG" to sshConfig.absolutePath,
+            "POCKET_SSH_KNOWN_HOSTS" to sshKnownHosts.absolutePath,
+        ),
+    )
+
     fun sshAccounts(): List<SshAccount> = sshAccounts.accounts()
 
     suspend fun generateSshAccount(
@@ -377,9 +386,9 @@ class GitRepository(
             emptyList()
         }
         val stagedChanges = (parsed.staged + fallbackStaged)
-            .distinctBy { it.path to it.status }
+            .distinctBy { it.path }
         val workingChanges = (parsed.changes + fallbackUnstaged + untracked)
-            .distinctBy { it.path to it.status }
+            .distinctBy { it.path }
         val remoteNames = run("git remote", 20_000)
             .takeIf { it.exitCode == 0 }
             ?.output
@@ -460,7 +469,7 @@ class GitRepository(
         if (result.exitCode !in 0..1 && result.output.isBlank()) {
             throw IllegalStateException(result.error ?: "无法读取 Git diff")
         }
-        val body = result.output.ifBlank { "(没有可显示的差异)" }
+        val body = result.output.take(500_000).ifBlank { "(没有可显示的差异)" }
         return if (change.untracked) {
             "未跟踪文件：${change.path}\n\n$body"
         } else {

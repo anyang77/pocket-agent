@@ -46,15 +46,14 @@ class TermuxRuntime(context: Context) {
     private val installMutex = Mutex()
 
     fun isBaseReady(): Boolean =
-        marker.isFile &&
-            marker.readText().trim().let {
+        readRuntimeMarker(marker)?.let {
                 it == RUNTIME_VERSION || it.startsWith(LEGACY_RUNTIME_PREFIX)
-            } &&
+            } == true &&
             isUsableProgram(bash)
 
     fun isToolchainsReady(): Boolean =
         isBaseReady() &&
-            toolchainsMarker.isFile && toolchainsMarker.readText().trim() == TOOLCHAIN_VERSION &&
+            readRuntimeMarker(toolchainsMarker) == TOOLCHAIN_VERSION &&
             requiredToolchains().all(::isUsableProgram)
 
     fun isGitReady(): Boolean =

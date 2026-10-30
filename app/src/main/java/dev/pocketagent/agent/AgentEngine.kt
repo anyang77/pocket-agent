@@ -3,6 +3,7 @@ package dev.pocketagent.agent
 import dev.pocketagent.extensions.AgentExtensions
 import dev.pocketagent.data.AiSettings
 import dev.pocketagent.data.AuditLog
+import dev.pocketagent.data.GitCommandAuth
 import dev.pocketagent.data.WorkspaceRepository
 import dev.pocketagent.runtime.CommandRunner
 import dev.pocketagent.runtime.SystemAccessRepository
@@ -86,6 +87,7 @@ class AgentEngine(
     private val auditLog: AuditLog,
     private val extensions: AgentExtensions? = null,
     private val readOnlySubagent: Boolean = false,
+    private val commandAuth: () -> GitCommandAuth = { GitCommandAuth() },
 ) {
     private val conversation = mutableListOf<AgentMessage>()
 
@@ -1132,12 +1134,18 @@ class AgentEngine(
                     "开始执行",
                     "cwd=$cwdText risk=${assessment.risk} command=$command",
                 )
-                val result = commandRunner.run(
+                val auth = commandAuth()
+                val rawResult = commandRunner.run(
                     command = command,
                     workingDir = cwd,
                     asRoot = wantsRoot,
                     useInternalRuntime = requestedEnvironment != "system",
                     timeoutMs = 120_000,
+                    extraEnv = auth.environment,
+                )
+                val result = rawResult.copy(
+                    output = auth.redact(rawResult.output),
+                    error = rawResult.error?.let(auth::redact),
                 )
                 auditLog.append(
                     "command",
@@ -1197,7 +1205,7 @@ class AgentEngine(
 
     private fun buildSystemPrompt(): String = agentSystemPrompt(permissions()) +
         if (readOnlySubagent) "\nYou are a read-only child. Only list_files, read_file and search_files are available. Return findings to the parent."
-        else extensions?.instructions().orEmpty()
+        else "\n" + commandAuth().description + extensions?.instructions().orEmpty()
 
     private fun compactStaleToolResults() {
         var keepFull = RECENT_TOOL_RESULTS_FULL

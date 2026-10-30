@@ -20,16 +20,7 @@ class GitCredentialStore(context: Context) {
         .getSharedPreferences("pocket_agent_git_credentials", Context.MODE_PRIVATE)
     private val secrets = SecretStore(appContext)
     private val askpass = File(appContext.filesDir, "git-askpass.sh").apply {
-        writeText(
-            """
-            #!/system/bin/sh
-            case "${'$'}1" in
-              *sername*) printf '%s\n' "${'$'}POCKET_GIT_USERNAME" ;;
-              *assword*) printf '%s\n' "${'$'}POCKET_GIT_PASSWORD" ;;
-              *) printf '\n' ;;
-            esac
-            """.trimIndent() + "\n",
-        )
+        writeText(gitAskpassScript())
         runCatching { Os.chmod(absolutePath, 0x1ED) }
     }
 
@@ -126,6 +117,17 @@ class GitCredentialStore(context: Context) {
     fun accessToken(host: String): String? {
         val account = activeAccount(host) ?: return null
         return secrets.getApiKey(secretKey(account.id)).takeIf { it.isNotBlank() }
+    }
+
+    fun commandAuth(extraEnvironment: Map<String, String> = emptyMap()): GitCommandAuth {
+        val active = accounts().map { it.host }.distinct().mapNotNull { host ->
+            val account = activeAccount(host) ?: return@mapNotNull null
+            val token = secrets.getApiKey(secretKey(account.id))
+            token.takeIf { it.isNotBlank() }?.let {
+                GitCommandAccount(account.host, account.username, it)
+            }
+        }
+        return gitCommandAuth(active, askpass.absolutePath, extraEnvironment)
     }
 
     fun hostOf(url: String): String? = runCatching {

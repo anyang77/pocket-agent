@@ -128,7 +128,6 @@ fun GitScreen(
     var discardAllTarget by remember { mutableStateOf<List<GitChange>>(emptyList()) }
     var openedLoginCode by rememberSaveable { mutableStateOf("") }
     var githubClientId by rememberSaveable { mutableStateOf("") }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val git = state.gitState
     val activeGitAccount = state.gitAccounts.firstOrNull {
         it.id == state.activeGitAccountId
@@ -140,7 +139,7 @@ fun GitScreen(
             commit = commit,
             onCopy = { label, value ->
                 context.getSystemService(ClipboardManager::class.java)
-                    .setPrimaryClip(ClipData.newPlainText(label, value))
+                    ?.setPrimaryClip(ClipData.newPlainText(label, value))
                 Toast.makeText(context, "已复制$label", Toast.LENGTH_SHORT).show()
                 actionCommit = null
             },
@@ -174,7 +173,7 @@ fun GitScreen(
             },
             onCopyCode = {
                 context.getSystemService(ClipboardManager::class.java)
-                    .setPrimaryClip(ClipData.newPlainText("GitHub code", login.userCode))
+                    ?.setPrimaryClip(ClipData.newPlainText("GitHub code", login.userCode))
             },
             onCancel = onCancelGitHubLogin,
         )
@@ -239,9 +238,11 @@ fun GitScreen(
     }
 
     if (state.gitDiffTitle != null) {
+        val diffLines = remember(state.gitDiff) { gitDiffDisplayLines(state.gitDiff) }
+        val diffScroll = rememberScrollState()
         ModalBottomSheet(
             onDismissRequest = onCloseDiff,
-            sheetState = sheetState,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
             Column(
                 modifier = Modifier
@@ -262,7 +263,7 @@ fun GitScreen(
                     TextButton(onClick = onCloseDiff) { Text("关闭") }
                 }
                 HorizontalDivider()
-                if (state.gitLoading) {
+                if (state.gitDiffLoading) {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
                 state.gitError?.let { error ->
@@ -281,10 +282,10 @@ fun GitScreen(
                         .weight(1f),
                     contentPadding = PaddingValues(12.dp),
                 ) {
-                    items(state.gitDiff.lines()) { line ->
+                    items(diffLines) { line ->
                         Text(
                             line,
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            modifier = Modifier.horizontalScroll(diffScroll),
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = FontFamily.Monospace,
                                 lineHeight = 18.sp,
@@ -314,7 +315,7 @@ fun GitScreen(
     if (historyVisible) {
         ModalBottomSheet(
             onDismissRequest = closeHistory,
-            sheetState = sheetState,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
             Column(
                 modifier = Modifier
@@ -356,21 +357,21 @@ fun GitScreen(
                         if (commit == null) {
                             GraphOnlyRow(line.graph)
                         } else {
-                            val expanded = expandedCommit == commit.hash
+                            val expanded = expandedCommit == commit.fullHash
                             CommitRow(
                                 commit = commit,
                                 graph = line.graph,
                                 expanded = expanded,
                                 loading = expanded && state.gitCommitDetailLoading,
                                 detail = state.gitCommitDetail?.takeIf {
-                                    expanded && it.hash.startsWith(commit.hash)
+                                    expanded && it.hash == commit.fullHash
                                 },
                                 onToggle = {
                                     if (expanded) {
                                         expandedCommit = null
                                         onCloseCommitDetail()
                                     } else {
-                                        expandedCommit = commit.hash
+                                        expandedCommit = commit.fullHash
                                         onOpenCommitDetail(commit.hash)
                                     }
                                 },
@@ -405,7 +406,7 @@ fun GitScreen(
     if (repositoriesVisible) {
         ModalBottomSheet(
             onDismissRequest = { repositoriesVisible = false },
-            sheetState = sheetState,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
             GitHubRepositorySheet(
                 state = state,
@@ -435,7 +436,7 @@ fun GitScreen(
     if (localRepositoriesVisible) {
         ModalBottomSheet(
             onDismissRequest = { localRepositoriesVisible = false },
-            sheetState = sheetState,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             containerColor = MaterialTheme.colorScheme.surface,
         ) {
             Text(
@@ -759,41 +760,27 @@ fun GitScreen(
             item {
                 SectionHeader("已暂存 · ${git.staged.size}", null)
             }
-            item(key = "staged-list") {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    git.staged.forEach { change ->
-                        GitChangeRow(
-                            change = change,
-                            action = "取消暂存",
-                            onOpen = { onOpenDiff(change) },
-                            onAction = { onUnstage(change) },
-                            onDiscard = { discardTarget = change },
-                        )
-                    }
-                }
+            items(git.staged, key = { "staged:${it.path}" }, contentType = { "change" }) { change ->
+                GitChangeRow(
+                    change = change, action = "取消暂存", enabled = !state.gitLoading,
+                    onOpen = { onOpenDiff(change) }, onAction = { onUnstage(change) },
+                    onDiscard = { discardTarget = change },
+                )
             }
         }
         if (section == GitSection.LOCAL && git.isRepository && git.changes.isNotEmpty()) {
             item {
                 ChangesHeader(
-                    count = git.changes.size,
-                    enabled = !state.gitLoading,
-                    onStageAll = onStageAll,
-                    onDiscardAll = { discardAllTarget = git.changes + git.staged },
+                    count = git.changes.size, enabled = !state.gitLoading, onStageAll = onStageAll,
+                    onDiscardAll = { discardAllTarget = (git.changes + git.staged).distinctBy { it.path } },
                 )
             }
-            item(key = "working-changes-list") {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    git.changes.forEach { change ->
-                        GitChangeRow(
-                            change = change,
-                            action = "暂存",
-                            onOpen = { onOpenDiff(change) },
-                            onAction = { onStage(change) },
-                            onDiscard = { discardTarget = change },
-                        )
-                    }
-                }
+            items(git.changes, key = { "working:${it.path}" }, contentType = { "change" }) { change ->
+                GitChangeRow(
+                    change = change, action = "暂存", enabled = !state.gitLoading,
+                    onOpen = { onOpenDiff(change) }, onAction = { onStage(change) },
+                    onDiscard = { discardTarget = change },
+                )
             }
         }
         if (
@@ -916,6 +903,7 @@ private fun SectionHeader(
 private fun GitChangeRow(
     change: GitChange,
     action: String,
+    enabled: Boolean,
     onOpen: () -> Unit,
     onAction: () -> Unit,
     onDiscard: () -> Unit,
@@ -924,7 +912,7 @@ private fun GitChangeRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onOpen),
+            .clickable(enabled = enabled, onClick = onOpen),
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
         tonalElevation = 1.dp,
@@ -954,10 +942,10 @@ private fun GitChangeRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            TextButton(onClick = onOpen) { Text("查看") }
-            TextButton(onClick = onAction) { Text(action) }
+            TextButton(onClick = onOpen, enabled = enabled) { Text("查看") }
+            TextButton(onClick = onAction, enabled = enabled) { Text(action) }
             Box {
-                IconButton(onClick = { menu = true }) {
+                IconButton(onClick = { menu = true }, enabled = enabled) {
                     Icon(Icons.Filled.MoreVert, contentDescription = "更多操作", Modifier.size(18.dp))
                 }
                 DropdownMenu(menu, { menu = false }) {
@@ -1204,7 +1192,7 @@ private fun CommitRow(
                             modifier = Modifier.padding(top = 10.dp, bottom = 5.dp),
                             style = MaterialTheme.typography.titleSmall,
                         )
-                        detail.changes.forEach { change ->
+                        detail.changes.take(200).forEach { change ->
                             Text(
                                 "${change.displayStatus()}  ${change.path}",
                                 style = MaterialTheme.typography.labelSmall.copy(
@@ -1217,7 +1205,7 @@ private fun CommitRow(
                                 },
                             )
                         }
-                        val diffLines = detail.diff.lines()
+                        val diffLines = remember(detail.diff) { gitDiffDisplayLines(detail.diff) }
                         Text(
                             "差异",
                             modifier = Modifier.padding(top = 12.dp, bottom = 5.dp),

@@ -35,6 +35,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -54,7 +56,7 @@ import dev.pocketagent.ui.theme.ThemePreference
 @Composable
 fun SettingsScreen(
     state: AppUiState,
-    onSaveSettings: (AiSettings) -> Unit,
+    onSaveSettings: suspend (AiSettings) -> Boolean,
     onProfileSelected: (String) -> Unit,
     onCreateProfile: (String, String, String, Int) -> Unit,
     onDeleteProfile: (String) -> Unit,
@@ -62,13 +64,14 @@ fun SettingsScreen(
     extensionActions: ExtensionActions,
     modifier: Modifier = Modifier,
 ) {
-    var baseUrl by rememberSaveable(state.settings.baseUrl) {
+    val scope = rememberCoroutineScope()
+    var baseUrl by rememberSaveable(state.activeProfileId, state.settings.baseUrl) {
         mutableStateOf(state.settings.baseUrl)
     }
-    var apiKey by rememberSaveable(state.settings.apiKey) {
+    var apiKey by rememberSaveable(state.activeProfileId, state.settings.apiKey) {
         mutableStateOf(state.settings.apiKey)
     }
-    var contextWindow by rememberSaveable(state.settings.contextWindow) {
+    var contextWindow by rememberSaveable(state.activeProfileId, state.settings.contextWindow) {
         mutableStateOf(state.settings.contextWindow)
     }
     var showEditProfile by rememberSaveable { mutableStateOf(false) }
@@ -179,8 +182,8 @@ fun SettingsScreen(
                     )
                 }
                 Button(
-                    onClick = {
-                        onSaveSettings(
+                    onClick = { scope.launch {
+                        val saved = onSaveSettings(
                             AiSettings(
                                 baseUrl = baseUrl.trim(),
                                 model = state.settings.model,
@@ -190,12 +193,19 @@ fun SettingsScreen(
                                 reasoningEffort = state.settings.reasoningEffort,
                             ),
                         )
-                        showEditProfile = false
-                    },
+                        if (saved) showEditProfile = false
+                    } },
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium,
-                    enabled = !state.agentRunning,
-                ) { Text("保存并刷新模型") }
+                    enabled = !state.modelSettingsSaving,
+                ) { Text(if (state.modelSettingsSaving) "正在保存…" else "保存并刷新模型") }
+                state.modelSettingsError?.let { error ->
+                    Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+                if (state.agentRunning) {
+                    Text("保存后下次任务生效，当前任务继续使用原配置。",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 if (state.modelProfiles.size > 1) {
                     TextButton(
                         onClick = { deleteProfileId = state.activeProfileId },

@@ -33,6 +33,7 @@ class SettingsRepository(
     private val preferences = appContext
         .getSharedPreferences("pocket_agent_settings", Context.MODE_PRIVATE)
 
+    @Synchronized
     fun load(): AiSettings {
         val profiles = loadProfilesInternal()
         val active = profiles.firstOrNull { it.id == activeProfileId() }
@@ -40,18 +41,22 @@ class SettingsRepository(
         return active.toSettings(loadWorkspacePath())
     }
 
+    @Synchronized
     fun loadProfiles(): List<ModelProfile> = loadProfilesInternal()
 
+    @Synchronized
     fun activeProfileId(): String {
         val profiles = loadProfilesInternal()
         val stored = preferences.getString("active_profile_id", null)
         return profiles.firstOrNull { it.id == stored }?.id ?: profiles.first().id
     }
 
-    fun save(settings: AiSettings) {
+    @Synchronized
+    fun save(settings: AiSettings, profileId: String = activeProfileId()) {
         val profiles = loadProfilesInternal().toMutableList()
-        val id = activeProfileId()
-        val index = profiles.indexOfFirst { it.id == id }.coerceAtLeast(0)
+        val id = profileId
+        val index = profiles.indexOfFirst { it.id == id }
+        require(index >= 0) { "模型配置不存在，请重新打开设置" }
         val previous = profiles[index]
         val updated = previous.copy(
             baseUrl = settings.baseUrl.trim(),
@@ -61,10 +66,11 @@ class SettingsRepository(
             reasoningEffort = settings.reasoningEffort.trim().ifBlank { "auto" },
         )
         profiles[index] = updated
-        saveProfilesInternal(profiles, updated.id)
+        saveProfilesInternal(profiles, activeProfileId())
         saveWorkspacePath(settings.workspacePath)
     }
 
+    @Synchronized
     fun createProfile(
         name: String,
         baseUrl: String,
@@ -86,6 +92,7 @@ class SettingsRepository(
         return profile
     }
 
+    @Synchronized
     fun deleteProfile(id: String) {
         val profiles = loadProfilesInternal().toMutableList()
         require(profiles.size > 1) { "至少保留一个模型配置" }
@@ -95,12 +102,14 @@ class SettingsRepository(
         saveProfilesInternal(profiles, nextActive)
     }
 
+    @Synchronized
     fun setActiveProfile(id: String) {
         val profiles = loadProfilesInternal()
         require(profiles.any { it.id == id }) { "模型配置不存在" }
         preferences.edit().putString("active_profile_id", id).apply()
     }
 
+    @Synchronized
     fun renameProfile(id: String, name: String) {
         val profiles = loadProfilesInternal().toMutableList()
         val index = profiles.indexOfFirst { it.id == id }
@@ -198,7 +207,8 @@ class SettingsRepository(
         return if (stored == legacy) "" else stored
     }
 
-    private fun saveWorkspacePath(path: String) {
+    @Synchronized
+    fun saveWorkspacePath(path: String) {
         preferences.edit().putString("workspace_path", path.trim()).apply()
     }
 

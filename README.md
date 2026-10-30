@@ -89,6 +89,9 @@ export ANDROID_HOME="$HOME/android-sdk"
 
 私有 GitHub 仓库通过 App 内浏览器登录授权。登录后直接列出账号可访问的仓库，
 选择仓库即可克隆；克隆、拉取和推送自动复用当前账号。
+Agent 的命令也会复用当前 Git 账号和 SSH 配置：HTTPS 凭据按站点匹配，
+GitHub CLI 可直接使用登录态，API 脚本可使用命令环境中的 `GITHUB_TOKEN`。
+切换或退出账号后下一条命令立即生效，命令输出中的凭据会被隐藏。
 
 ### GitHub OAuth Device Flow
 
