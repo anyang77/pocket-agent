@@ -78,6 +78,7 @@ data class AgentRetryState(
 data class PendingUserChoice(
     val question: String,
     val options: List<AgentChoice>,
+    val allowCustomInput: Boolean = false,
 )
 
 data class PendingApproval(
@@ -99,6 +100,7 @@ data class QueuedPrompt(
     val text: String,
     val attachments: List<ChatAttachment> = emptyList(),
     val steering: Boolean = false,
+    val taskMode: dev.pocketagent.agent.AgentTaskMode = dev.pocketagent.agent.AgentTaskMode.EXECUTE,
 )
 
 data class AppUiState(
@@ -145,6 +147,10 @@ data class AppUiState(
     val managedRepositories: List<ManagedRepository> = emptyList(),
     val chat: List<ChatEntry> = emptyList(),
     val agentInputDraft: String = "",
+    val agentPlanMode: Boolean = false,
+    val agentActiveTaskMode: dev.pocketagent.agent.AgentTaskMode? = null,
+    val agentPlanToExecute: String? = null,
+    val agentPlanWorkspacePath: String? = null,
     val agentAttachments: List<ChatAttachment> = emptyList(),
     val agentAttachmentsLoading: Boolean = false,
     val mentionFiles: List<FileEntry> = emptyList(),

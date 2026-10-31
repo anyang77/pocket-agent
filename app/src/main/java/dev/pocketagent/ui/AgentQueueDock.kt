@@ -103,6 +103,10 @@ internal fun AgentQueueDock(
                                     overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
+                            if (prompt.taskMode == dev.pocketagent.agent.AgentTaskMode.PLAN) {
+                                Text("规划任务 · 只读", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
                             if (prompt.steering) Text("将在下一步插话", style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary)
                         }
@@ -122,7 +126,9 @@ internal fun AgentQueueDock(
                             IconButton(onClick = { onRemove(prompt.id) }, enabled = !prompt.steering, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Outlined.DeleteOutline, "删除排队消息", Modifier.size(16.dp))
                             }
-                            IconButton(onClick = { onSteer(prompt.id) }, enabled = state.agentRunning && !prompt.steering,
+                            IconButton(onClick = { onSteer(prompt.id) }, enabled = state.agentRunning && !prompt.steering &&
+                                    state.agentActiveTaskMode == dev.pocketagent.agent.AgentTaskMode.EXECUTE &&
+                                    prompt.taskMode == dev.pocketagent.agent.AgentTaskMode.EXECUTE,
                                 modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.AutoMirrored.Outlined.Send, "插话发送", Modifier.size(16.dp))
                             }

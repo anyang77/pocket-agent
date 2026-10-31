@@ -32,6 +32,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -47,8 +48,6 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -131,14 +130,16 @@ fun AgentScreen(
     onApprovePending: () -> Unit,
     onDenyPending: () -> Unit,
     onSelectChoice: (String) -> Unit,
+    onCustomChoice: (String) -> Unit,
     onDismissChoice: () -> Unit,
     onPauseGoal: () -> Unit,
     onResumeGoal: () -> Unit,
     onClearGoal: () -> Unit,
+    onCompactContext: () -> Unit,
+    onComposerCommand: (String) -> Unit,
     onPermissionsChanged: (dev.pocketagent.agent.AgentPermissions) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val input = state.agentInputDraft
     var historyVisible by rememberSaveable { mutableStateOf(false) }
     var autoFollow by rememberSaveable { mutableStateOf(true) }
     val listState = rememberLazyListState()
@@ -158,9 +159,6 @@ fun AgentScreen(
         state.settings.model,
         state.settings.contextWindow,
     )
-    val activeProfileName = state.modelProfiles
-        .firstOrNull { it.id == state.activeProfileId }
-        ?.name
 
     LaunchedEffect(listState, bottomAnchorIndex) {
         snapshotFlow {
@@ -199,6 +197,7 @@ fun AgentScreen(
         UserChoiceDialog(
             pending = pending,
             onSelect = onSelectChoice,
+            onCustom = onCustomChoice,
             onDismiss = onDismissChoice,
         )
     }
@@ -366,29 +365,6 @@ fun AgentScreen(
             }
         }
 
-        if (input.trimStart().startsWith("/") && '\n' !in input) {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                items(
-                    listOf(
-                        "/goal" to "设置目标",
-                        "/new" to "新对话",
-                        "/clear" to "清空对话",
-                    ),
-                ) { (command, label) ->
-                    AssistChip(
-                        onClick = {
-                            if (command == "/goal") {
-                                onInputDraftChange("/goal ")
-                            } else {
-                                onSend(command)
-                            }
-                        },
-                        label = { Text("$command · $label") },
-                    )
-                }
-            }
-        }
-
         state.agentGoal?.let { goal ->
             GoalDockBar(
                 goal = goal,
@@ -403,6 +379,8 @@ fun AgentScreen(
             state, onInputDraftChange, onSend, onStopAgent, onImages, onMentionQuery,
             onFileAttachment, onRemoveAttachment, onRemoveQueued, onEditQueued,
             onSteerQueued, onResumeQueue, onPauseQueue,
+            onCompactContext = onCompactContext,
+            onComposerCommand = onComposerCommand,
         )
     }
 }
@@ -923,60 +901,108 @@ private fun AgentRetryCard(retry: AgentRetryState) {
 private fun UserChoiceDialog(
     pending: PendingUserChoice,
     onSelect: (String) -> Unit,
+    onCustom: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var editingCustom by remember(pending) { mutableStateOf(false) }
+    var customText by remember(pending) { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("需要你决定")
-                Text(
-                    "选择后 Agent 会继续原任务",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        },
+        title = { Text(if (editingCustom) "说说你的想法" else "需要你决定") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 Text(
                     pending.question,
+                    modifier = Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState()),
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                pending.options.forEachIndexed { index, option ->
-                    OutlinedButton(
-                        onClick = { onSelect(option.id) },
+                if (editingCustom) {
+                    OutlinedTextField(
+                        value = customText,
+                        onValueChange = { if (it.length <= 4000) customText = it },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.onSurface,
-                        ),
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 3.dp),
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
-                            horizontalAlignment = Alignment.Start,
+                        label = { Text("你的方案") },
+                        placeholder = { Text("输入其他方向，或补充你的要求…") },
+                        minLines = 3,
+                        maxLines = 6,
+                        supportingText = { Text("${customText.length}/4000") },
+                    )
+                } else {
+                    pending.options.forEach { option ->
+                        Surface(
+                            onClick = { onSelect(option.id) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
                         ) {
-                            Text(
-                                "${index + 1}. ${option.title}",
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                            if (option.detail.isNotBlank()) {
-                                Text(
-                                    option.detail,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            Row(
+                                modifier = Modifier
+                                    .heightIn(min = 52.dp)
+                                    .padding(start = 14.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        option.title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                    )
+                                    if (option.detail.isNotBlank()) {
+                                        Text(
+                                            option.detail,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                Icon(
+                                    Icons.Filled.ChevronRight,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                            }
+                        }
+                    }
+                    if (pending.allowCustomInput) {
+                        Surface(
+                            onClick = { editingCustom = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        ) {
+                            Row(
+                                modifier = Modifier.heightIn(min = 52.dp).padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Text("其他，我来补充", style = MaterialTheme.typography.titleSmall)
                             }
                         }
                     }
                 }
             }
         },
-        confirmButton = {},
+        confirmButton = {
+            if (editingCustom) {
+                TextButton(
+                    onClick = { onCustom(customText.trim()) },
+                    enabled = customText.isNotBlank(),
+                ) { Text("提交方案") }
+            }
+        },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("暂不选择") }
+            if (editingCustom) {
+                TextButton(onClick = { editingCustom = false }) { Text("返回选项") }
+            } else {
+                TextButton(onClick = onDismiss) { Text("暂不选择") }
+            }
         },
     )
 }

@@ -122,12 +122,20 @@ data class AgentChoice(
     val id: String,
     val title: String,
     val detail: String = "",
+    val isCustom: Boolean = false,
 )
 
 data class UserQuestion(
     val question: String,
     val options: List<AgentChoice>,
+    val allowCustomInput: Boolean = false,
 )
+
+internal fun customUserChoice(text: String): AgentChoice? {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty() || trimmed.length > 4000) return null
+    return AgentChoice("__custom__", "自定义方案", trimmed, isCustom = true)
+}
 
 data class RetryNotice(
     val attempt: Int,
@@ -183,7 +191,8 @@ data class ToolDefinition(
 
 sealed interface AgentEvent {
     data class AssistantText(val text: String) : AgentEvent
-    data class Usage(val usage: TokenUsage) : AgentEvent
+    /** Compaction request usage counts toward billing, not the compacted context size. */
+    data class Usage(val usage: TokenUsage, val updatesContext: Boolean = true) : AgentEvent
     data class ContextCompactionStarted(
         val beforeTokens: Int,
         val contextLimit: Int,

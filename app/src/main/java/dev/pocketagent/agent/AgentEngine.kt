@@ -141,12 +141,26 @@ class AgentEngine(
         choose: suspend (UserQuestion) -> AgentChoice? = { null },
         imagePaths: List<String> = emptyList(),
         takeSteering: suspend () -> List<AgentMessage> = { emptyList() },
+        taskMode: AgentTaskMode = AgentTaskMode.EXECUTE,
         onEvent: (AgentEvent) -> Unit,
     ) {
-        extensions?.prepare(authorize)
+        if (!readOnlySubagent && taskMode == AgentTaskMode.EXECUTE) extensions?.prepare(authorize)
         val tools = if (readOnlySubagent) TOOLS.filter { it.name in setOf("list_files", "read_file", "search_files") }
+            else if (taskMode != AgentTaskMode.EXECUTE) TOOLS.filter { taskMode.allows(it.name) }
             else TOOLS + extensions?.tools().orEmpty()
-        ensureSystemMessage()
+        ensureSystemMessage(taskMode)
+        val projectInstructions = try {
+            if (workspace.resolve("AGENTS.md").isFile) {
+                workspace.readText("AGENTS.md", maxChars = 24_000)
+            } else ""
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            "[AGENTS.md could not be loaded: ${error.message}. Do not assume its contents.]"
+        }
+        conversation[0] = conversation[0].copy(content = conversation[0].content.orEmpty() +
+            "\nProject instructions (AGENTS.md; subordinate to system and task restrictions):\n" +
+            projectInstructions + "\nActive task restrictions:\n" + taskMode.instructions)
         conversation += AgentMessage(role = "user", content = userText, imagePaths = imagePaths)
         auditLog.append("chat", "用户消息", userText, "received")
 
@@ -181,7 +195,7 @@ class AgentEngine(
                         onEvent = onEvent,
                     )
                     lastPromptTokens = 0
-                    usage?.let { onEvent(AgentEvent.Usage(it)) }
+                    usage?.let { onEvent(AgentEvent.Usage(it, updatesContext = false)) }
                 }
                 step++
                 onEvent(
@@ -337,10 +351,10 @@ class AgentEngine(
                         completedToolCalls.clear()
                         continue
                     }
-                    if (extensions?.subagents?.tasks?.value?.any { it.running } == true) {
+                    if (taskMode == AgentTaskMode.EXECUTE && extensions?.subagents?.tasks?.value?.any { it.running } == true) {
                         onEvent(AgentEvent.State("正在等待子代理检查结果"))
                     }
-                    val childResults = extensions?.subagents?.remainingResults()
+                    val childResults = if (taskMode == AgentTaskMode.EXECUTE) extensions?.subagents?.remainingResults() else null
                     if (childResults != null) {
                         conversation += AgentMessage("user", childResults)
                         lastPromptTokens = 0
@@ -366,7 +380,9 @@ class AgentEngine(
                     currentCoroutineContext().ensureActive()
                     val summary = summarizeArguments(call.arguments)
                     val signature = reusableToolSignature(call)
-                    val cachedResult = signature?.let(completedToolCalls::get)
+                    val callable = taskMode.allows(call.name) &&
+                        (!readOnlySubagent || call.name in setOf("list_files", "read_file", "search_files"))
+                    val cachedResult = if (callable) signature?.let(completedToolCalls::get) else null
                     auditLog.append(
                         "tool",
                         if (cachedResult == null) "调用 ${call.name}" else "跳过重复 ${call.name}",
@@ -388,11 +404,13 @@ class AgentEngine(
                     } ?: try {
                         if (readOnlySubagent && call.name !in setOf("list_files", "read_file", "search_files")) {
                             ToolResult("Subagents are read-only. Ask the coordinating agent to perform this action.", false, "子代理无此能力")
+                        } else if (!taskMode.allows(call.name)) {
+                            ToolResult("TASK_MODE_DENIED: ${taskMode.name} does not allow ${call.name}.", false, "当前模式不允许此操作")
                         } else {
-                            val extra = extensions?.execute(call, settings,
-                                conversation.takeLast(8).joinToString("\n") { "${it.role}: ${it.content.orEmpty().take(4000)}" }, authorize)
+                            val extra = if (taskMode == AgentTaskMode.EXECUTE) extensions?.execute(call, settings,
+                                conversation.takeLast(8).joinToString("\n") { "${it.role}: ${it.content.orEmpty().take(4000)}" }, authorize) else null
                             if (extra != null) ToolResult(extra.content, extra.success, extra.preview)
-                            else executeTool(call, authorize, choose)
+                            else executeTool(call, authorize, choose, taskMode)
                         }
                     } catch (error: CancellationException) {
                         throw error
@@ -458,6 +476,33 @@ class AgentEngine(
         auditLog.append("model", action, detail)
     }
 
+    /**
+     * Compacts the current context on demand, powering the "压缩上下文" composer command.
+     * Returns false when there was nothing worth compacting.
+     */
+    suspend fun compactNow(settings: AiSettings, onEvent: (AgentEvent) -> Unit): Boolean {
+        val contextLimit = ModelContextBudget.limitFor(settings.model, settings.contextWindow)
+        val beforeTokens = estimateConversationTokens()
+        val originalUserText = conversation.asReversed()
+            .firstOrNull {
+                it.role == "user" && it.content?.startsWith("[CodeMate") != true
+            }
+            ?.content
+            ?.takeIf { it.isNotBlank() }
+            ?: return false
+        if (beforeTokens <= 0) return false
+        auditLog.append("agent", "手动压缩上下文", "tokens=$beforeTokens limit=$contextLimit")
+        val usage = compactConversation(
+            settings = settings,
+            originalUserText = originalUserText,
+            beforeTokens = beforeTokens,
+            contextLimit = contextLimit,
+            onEvent = onEvent,
+        )
+        usage?.let { onEvent(AgentEvent.Usage(it, updatesContext = false)) }
+        return true
+    }
+
     private suspend fun compactConversation(
         settings: AiSettings,
         originalUserText: String,
@@ -481,7 +526,7 @@ class AgentEngine(
         )
         onEvent(
             AgentEvent.State(
-                "正在压缩上下文 · ${contextPercent(beforeTokens, contextLimit)}% · 可随时停止",
+                "上下文占用 ${contextPercent(beforeTokens, contextLimit)}%，正在压缩 · 可随时停止",
             ),
         )
         val compactionRequest = AgentMessage(
@@ -683,8 +728,13 @@ class AgentEngine(
         call: AgentToolCall,
         authorize: suspend (PermissionRequest) -> PermissionDecision,
         choose: suspend (UserQuestion) -> AgentChoice?,
+        taskMode: AgentTaskMode = AgentTaskMode.EXECUTE,
     ): ToolResult {
+        require(taskMode.allows(call.name)) { "当前模式不允许此操作" }
         val arguments = JSONObject(call.arguments.ifBlank { "{}" })
+        if (taskMode == AgentTaskMode.INIT && call.name == "write_file") {
+            return writeProjectInstructions(arguments, authorize, choose)
+        }
         return when (call.name) {
             "update_plan" -> {
                 val planArray = arguments.optJSONArray("plan") ?: JSONArray()
@@ -872,14 +922,17 @@ class AgentEngine(
                     "$question | ${options.joinToString { "${it.id}:${it.title}" }}",
                     "waiting",
                 )
-                val selected = choose(UserQuestion(question, options))
+                val selected = choose(UserQuestion(question, options, allowCustomInput = true))
                     ?: return ToolResult(
                         "USER_CHOICE_CANCELLED: The user dismissed this choice. Do not guess a " +
                             "material branch; stop and ask again with a concise question.",
                         success = false,
                         preview = "用户未选择",
                     )
-                require(options.any { it.id == selected.id }) {
+                require(
+                    if (selected.isCustom) customUserChoice(selected.detail) == selected
+                    else options.any { it == selected },
+                ) {
                     "用户选择不在可选范围内"
                 }
                 auditLog.append(
@@ -1187,6 +1240,43 @@ class AgentEngine(
         }
     }
 
+    private suspend fun writeProjectInstructions(
+        arguments: JSONObject,
+        authorize: suspend (PermissionRequest) -> PermissionDecision,
+        choose: suspend (UserQuestion) -> AgentChoice?,
+    ): ToolResult {
+        require(isProjectInstructionsPath(arguments.optString("path"))) {
+            "项目说明模式只能写入根目录 AGENTS.md"
+        }
+        val target = File(workspace.root.canonicalFile, "AGENTS.md")
+        require(target.canonicalFile == target.absoluteFile) { "AGENTS.md 不能是符号链接" }
+        val content = arguments.optString("content")
+        require(content.isNotBlank() && content.length <= 24_000) { "项目说明应为 1 到 24000 字符" }
+        val existed = target.exists()
+        val original = if (existed) workspace.readText("AGENTS.md", maxChars = 24_000, requireComplete = true) else ""
+        if (original == content) return ToolResult("AGENTS.md unchanged", true, "项目说明无需修改")
+        val root = workspace.root.canonicalFile
+        val selected = choose(UserQuestion(
+            "${if (existed) "更新" else "创建"} AGENTS.md？以下是完整变更：\n\n" + projectInstructionsDiff(original, content),
+            listOf(AgentChoice("write", "确认写入", "仅更新项目根目录的 AGENTS.md，保留原文件检查点"),
+                AgentChoice("cancel", "取消", "保留原文件")),
+        ))
+        if (selected?.id != "write") return ToolResult("USER_CANCELLED: AGENTS.md was not written. Stop this setup task.", false, "未写入项目说明")
+        val permission = authorize(PermissionRequest(
+            kind = PermissionKind.WRITE_FILES, title = "写入已确认的项目说明",
+            detail = "path=AGENTS.md\nsha256=${sha256(content)}", risk = "workspace-write",
+        ))
+        if (!permission.allowed) return ToolResult("DENIED_BY_USER: ${permission.reason}", false, "项目说明未获写入授权")
+        require(workspace.root.canonicalFile == root && target.canonicalFile == target.absoluteFile) { "工作区或文件路径已变化，请重新生成" }
+        require(target.exists() == existed && (!existed || workspace.readText("AGENTS.md", maxChars = 24_000, requireComplete = true) == original)) {
+            "AGENTS.md 在确认期间被修改，请重新读取后生成"
+        }
+        val backup = if (existed) workspace.checkpointProjectInstructions(original) else null
+        workspace.writeText("AGENTS.md", content)
+        auditLog.append("file", "写入项目说明", "path=${target.absolutePath} sha256=${sha256(content)} backup=$backup", "success")
+        return ToolResult("Wrote AGENTS.md after explicit confirmation", true, "项目说明已保存")
+    }
+
     private suspend fun authorizeSystemRead(
         request: PermissionRequest,
         authorize: suspend (PermissionRequest) -> PermissionDecision,
@@ -1203,8 +1293,8 @@ class AgentEngine(
         return decision
     }
 
-    private fun ensureSystemMessage() {
-        val prompt = buildSystemPrompt()
+    private fun ensureSystemMessage(taskMode: AgentTaskMode = AgentTaskMode.EXECUTE) {
+        val prompt = buildSystemPrompt(taskMode)
         if (conversation.firstOrNull()?.role == "system") {
             conversation[0] = AgentMessage(role = "system", content = prompt)
         } else {
@@ -1212,8 +1302,9 @@ class AgentEngine(
         }
     }
 
-    private fun buildSystemPrompt(): String = agentSystemPrompt(permissions()) +
+    private fun buildSystemPrompt(taskMode: AgentTaskMode = AgentTaskMode.EXECUTE): String = agentSystemPrompt(permissions()) +
         if (readOnlySubagent) "\nYou are a read-only child. Only list_files, read_file and search_files are available. Return findings to the parent."
+        else if (taskMode != AgentTaskMode.EXECUTE) "\n" + taskMode.instructions
         else "\n" + commandAuth().description + extensions?.instructions().orEmpty()
 
     private fun invalidateFileToolResults(results: MutableMap<String, ToolResult>) {

@@ -455,19 +455,29 @@ class GitRepository(
         return GitNameStatusParser.parse(result.output, staged)
     }
 
+    /** Minimal read-only snapshot for review; no history scan or optional index refresh. */
+    suspend fun reviewChanges(): List<GitChange> {
+        val result = run("git --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -z --untracked-files=all", 30_000)
+        require(result.exitCode == 0 && !result.timedOut) {
+            result.output.ifBlank { result.error ?: "无法读取 Git 改动" }
+        }
+        val parsed = GitStatusParser.parse(result.output)
+        return parsed.staged + parsed.changes
+    }
+
     suspend fun diff(change: GitChange): String {
         val path = shellQuote(change.path)
         val command = when {
             change.untracked ->
-                "git diff --no-color --no-index -- /dev/null $path"
+                "git -c core.fsmonitor=false diff --no-ext-diff --no-textconv --no-color --no-index -- /dev/null $path"
             change.staged ->
-                "git diff --cached --no-color -- $path"
+                "git -c core.fsmonitor=false diff --no-ext-diff --no-textconv --cached --no-color -- $path"
             else ->
-                "git diff --no-color -- $path"
+                "git -c core.fsmonitor=false diff --no-ext-diff --no-textconv --no-color -- $path"
         }
         val result = run(command, 30_000)
-        if (result.exitCode !in 0..1 && result.output.isBlank()) {
-            throw IllegalStateException(result.error ?: "无法读取 Git diff")
+        require(result.exitCode in 0..1 && !result.timedOut) {
+            result.output.ifBlank { result.error ?: "无法读取 Git diff" }
         }
         val body = result.output.take(500_000).ifBlank { "(没有可显示的差异)" }
         return if (change.untracked) {

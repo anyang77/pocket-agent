@@ -318,10 +318,13 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onApprovePending = viewModel::approvePending,
                 onDenyPending = viewModel::denyPending,
                 onSelectChoice = viewModel::selectPendingChoice,
+                onCustomChoice = viewModel::submitCustomChoice,
                 onDismissChoice = viewModel::dismissPendingChoice,
                 onPauseGoal = viewModel::pauseGoal,
                 onResumeGoal = viewModel::resumeGoal,
                 onClearGoal = viewModel::clearGoal,
+                onCompactContext = viewModel::compactContext,
+                onComposerCommand = viewModel::runComposerCommand,
                 onPermissionsChanged = viewModel::savePermissions,
                 modifier = Modifier
                     .fillMaxSize()

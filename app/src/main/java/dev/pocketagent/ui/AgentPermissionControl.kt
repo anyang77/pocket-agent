@@ -23,6 +23,43 @@ import dev.pocketagent.agent.AgentAccessPolicy
 import dev.pocketagent.agent.AgentPermissions
 import dev.pocketagent.agent.PermissionMode
 
+/** Short label for the active permission mode, shared by the header pill and the composer panel. */
+fun permissionModeLabel(permissions: AgentPermissions): String = when {
+    AgentAccessPolicy.hasFullAccess(permissions) -> "完整权限"
+    permissions.mode == PermissionMode.READ_ONLY -> "只读"
+    else -> "审计"
+}
+
+/** Permission set applied when the user picks a mode from any of the selectors. */
+fun permissionsForMode(mode: PermissionMode): AgentPermissions = AgentPermissions(
+    mode = mode,
+    allowFileWrite = mode != PermissionMode.READ_ONLY,
+    allowCommands = mode != PermissionMode.READ_ONLY,
+    allowNetwork = mode != PermissionMode.READ_ONLY,
+    allowSystemRead = true,
+)
+
+/** Shared warning shown before switching to full access, wherever the switch is offered. */
+@Composable
+fun FullAccessConfirmDialog(
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("确认授予完整权限？") },
+        text = {
+            Text("模型可不再逐项询问，自动读取、修改、删除工作区以外的文件及其他应用配置，执行系统命令并联网。已授予 Root 时会自动使用 Root。\n\n错误指令或不可信内容可能导致隐私、密钥泄露，数据永久丢失，应用损坏、设备无法启动等严重后果。审计记录不是备份，也不能保证恢复。系统实际权限和只读挂载仍然有效。\n\n仅在理解风险并信任任务内容时启用；可随时切回审计模式。")
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("我了解风险，启用完整权限") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
+}
+
 /** Permission selector rendered as a compact pill so it matches the header control strip. */
 @Composable
 fun AgentPermissionControl(
@@ -32,21 +69,9 @@ fun AgentPermissionControl(
     var expanded by rememberSaveable { mutableStateOf(false) }
     var confirmingFullAccess by rememberSaveable { mutableStateOf(false) }
     val fullAccess = AgentAccessPolicy.hasFullAccess(permissions)
-    val label = when {
-        fullAccess -> "完整权限"
-        permissions.mode == PermissionMode.READ_ONLY -> "只读"
-        else -> "审计"
-    }
+    val label = permissionModeLabel(permissions)
     fun select(mode: PermissionMode) {
-        onChange(
-            AgentPermissions(
-                mode = mode,
-                allowFileWrite = mode != PermissionMode.READ_ONLY,
-                allowCommands = mode != PermissionMode.READ_ONLY,
-                allowNetwork = mode != PermissionMode.READ_ONLY,
-                allowSystemRead = true,
-            ),
-        )
+        onChange(permissionsForMode(mode))
         expanded = false
     }
 
@@ -110,22 +135,11 @@ fun AgentPermissionControl(
     }
 
     if (confirmingFullAccess) {
-        AlertDialog(
-            onDismissRequest = { confirmingFullAccess = false },
-            title = { Text("确认授予完整权限？") },
-            text = {
-                Text("模型可不再逐项询问，自动读取、修改、删除工作区以外的文件及其他应用配置，执行系统命令并联网。已授予 Root 时会自动使用 Root。\n\n错误指令或不可信内容可能导致隐私、密钥泄露，数据永久丢失，应用损坏、设备无法启动等严重后果。审计记录不是备份，也不能保证恢复。系统实际权限和只读挂载仍然有效。\n\n仅在理解风险并信任任务内容时启用；可随时切回审计模式。")
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        confirmingFullAccess = false
-                        select(PermissionMode.AUTO)
-                    },
-                ) { Text("我了解风险，启用完整权限") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmingFullAccess = false }) { Text("取消") }
+        FullAccessConfirmDialog(
+            onDismiss = { confirmingFullAccess = false },
+            onConfirm = {
+                confirmingFullAccess = false
+                select(PermissionMode.AUTO)
             },
         )
     }

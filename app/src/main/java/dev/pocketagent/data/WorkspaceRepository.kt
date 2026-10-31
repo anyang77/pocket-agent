@@ -269,6 +269,15 @@ class WorkspaceRepository(
             }
         }
 
+    /** App-private recovery copy; never creates additional files in the user's project. */
+    suspend fun checkpointProjectInstructions(content: String): String = withContext(Dispatchers.IO) {
+        val directory = File(appContext.filesDir, "backups/project-instructions")
+        check(directory.isDirectory || directory.mkdirs()) { "无法创建项目说明备份目录" }
+        val backup = File(directory, "${java.util.UUID.randomUUID()}.AGENTS.md")
+        backup.writeText(content)
+        backup.absolutePath
+    }
+
     suspend fun writeText(path: String, content: String): Unit = withContext(Dispatchers.IO) {
         val file = resolve(path)
         require(file.path != root.path) { "不能覆盖工作区目录" }

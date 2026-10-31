@@ -61,6 +61,8 @@ internal fun AgentComposer(
     onSteerQueued: (Long) -> Unit,
     onResumeQueue: () -> Unit,
     onPauseQueue: () -> Unit,
+    onCompactContext: () -> Unit,
+    onComposerCommand: (String) -> Unit,
 ) {
     var value by remember(state.currentConversationId) { mutableStateOf(TextFieldValue(state.agentInputDraft)) }
     LaunchedEffect(state.agentInputDraft) {
@@ -71,12 +73,63 @@ internal fun AgentComposer(
     val mention = activeFileMention(value.text, value.selection.start, value.selection.collapsed)
     LaunchedEffect(mention?.query, state.currentConversationId) { onMentionQuery(mention?.query) }
     DisposableEffect(Unit) { onDispose { onMentionQuery(null) } }
+    val canSend = !state.agentAttachmentsLoading &&
+        (value.text.isNotBlank() || state.agentAttachments.isNotEmpty())
+    val send = { if (canSend) onSend(value.text) }
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(4), onImages)
+    var commandsVisible by remember { mutableStateOf(false) }
+    var confirmPlanExecution by remember(state.currentConversationId) { mutableStateOf(false) }
+    val commandSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         AgentQueueDock(state, onRemoveQueued, onEditQueued, onSteerQueued, onResumeQueue, onPauseQueue)
+        if (commandsVisible) {
+            ModalBottomSheet(
+                onDismissRequest = { commandsVisible = false },
+                sheetState = commandSheetState,
+            ) {
+                ComposerCommandPanel(
+                    state = state,
+                    onCompact = {
+                        commandsVisible = false
+                        onCompactContext()
+                    },
+                    onCommand = { command ->
+                        commandsVisible = false
+                        onComposerCommand(command)
+                    },
+                )
+            }
+        }
+        if (confirmPlanExecution && state.agentPlanToExecute != null && !state.agentRunning) {
+            AlertDialog(
+                onDismissRequest = { confirmPlanExecution = false },
+                title = { Text("执行这份计划？") },
+                text = { Text("将退出只读规划模式，按当前执行权限实施上方计划。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmPlanExecution = false
+                        onComposerCommand("/execute-plan")
+                    }) { Text("确认执行") }
+                },
+                dismissButton = { TextButton(onClick = { confirmPlanExecution = false }) { Text("继续规划") } },
+            )
+        }
+        if (state.agentPlanMode) {
+            Row(Modifier.fillMaxWidth().padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("规划模式 · 只读", Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary)
+                if (state.agentPlanToExecute != null) {
+                    TextButton(onClick = { confirmPlanExecution = true }, enabled = !state.agentRunning) {
+                        Text("按计划执行")
+                    }
+                }
+                TextButton(onClick = { onComposerCommand("/plan") }, enabled = !state.agentRunning) { Text("退出") }
+            }
+        }
         if (mention != null) {
             Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 160.dp)) {
@@ -111,7 +164,7 @@ internal fun AgentComposer(
                     value = value,
                     onValueChange = { value = it; onDraft(it.text) },
                     modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
-                    placeholder = { Text(if (state.agentRunning) "补充任务，发送后加入队列…" else "描述任务，@ 引用文件…") },
+                    placeholder = { Text(if (state.agentRunning) "补充任务，发送后加入队列…" else if (state.agentPlanMode) "描述任务，先分析并制定计划…" else "描述任务，@ 引用文件…") },
                     maxLines = 5,
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = MaterialTheme.colorScheme.surface,
@@ -120,9 +173,14 @@ internal fun AgentComposer(
                         unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
                     ),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { onSend(value.text) }),
+                    keyboardActions = KeyboardActions(onSend = { send() }),
                 )
                 Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = {
+                        commandsVisible = true
+                    }) {
+                        Icon(Icons.Outlined.Add, "更多功能", Modifier.size(21.dp))
+                    }
                     IconButton(onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         enabled = !state.agentAttachmentsLoading && state.agentAttachments.count { it.isImage } < 4) {
                         Icon(Icons.Outlined.Image, "添加图片", Modifier.size(21.dp))
@@ -139,8 +197,7 @@ internal fun AgentComposer(
                     if (state.agentAttachmentsLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.weight(1f))
                     if (state.agentRunning) IconButton(onClick = onStop) { Icon(Icons.Outlined.StopCircle, "停止任务") }
-                    FilledIconButton(onClick = { onSend(value.text) }, enabled = !state.agentAttachmentsLoading &&
-                        (value.text.isNotBlank() || state.agentAttachments.isNotEmpty()), modifier = Modifier.size(36.dp)) {
+                    FilledIconButton(onClick = send, enabled = canSend, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.AutoMirrored.Filled.Send, if (state.agentRunning) "加入队列" else "发送", Modifier.size(18.dp))
                     }
                 }

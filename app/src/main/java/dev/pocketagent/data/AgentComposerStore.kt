@@ -3,6 +3,7 @@ package dev.pocketagent.data
 import android.content.Context
 import android.util.AtomicFile
 import dev.pocketagent.ui.QueuedPrompt
+import dev.pocketagent.agent.AgentTaskMode
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -26,7 +27,8 @@ class AgentComposerStore(context: Context) {
             queue = List(queue.length()) { index ->
                 val item = queue.getJSONObject(index)
                 QueuedPrompt(item.getLong("id"), item.optString("text"),
-                    item.optJSONArray("attachments").toChatAttachments())
+                    item.optJSONArray("attachments").toChatAttachments(),
+                    taskMode = AgentTaskMode.restored(item.optString("taskMode")))
             },
         )
     }.getOrDefault(StoredComposer())
@@ -37,7 +39,7 @@ class AgentComposerStore(context: Context) {
             .put("attachments", JSONArray().apply { value.attachments.forEach { put(it.toJson()) } })
             .put("queue", JSONArray().apply {
                 value.queue.forEach { prompt ->
-                    put(JSONObject().put("id", prompt.id).put("text", prompt.text)
+                    put(JSONObject().put("id", prompt.id).put("text", prompt.text).put("taskMode", prompt.taskMode.name)
                         .put("attachments", JSONArray().apply { prompt.attachments.forEach { put(it.toJson()) } }))
                 }
             })
