@@ -2105,23 +2105,48 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun openFile(path: String) {
+    fun openFile(path: String) = loadEditorFile(path, null)
+
+    fun dismissEditorEncodingError() {
+        _state.update { it.copy(editorOpenErrorPath = null) }
+    }
+
+    fun reopenEditor(encoding: dev.pocketagent.data.EditorEncoding) {
+        val current = _state.value
+        val path = current.editorOpenErrorPath ?: current.activeFile ?: return
+        loadEditorFile(path, encoding)
+    }
+
+    private fun loadEditorFile(path: String, encoding: dev.pocketagent.data.EditorEncoding?) {
+        val initial = _state.value
+        if (initial.editorBusy) return
+        val root = workspace.root
+        _state.update { it.copy(editorBusy = true) }
         viewModelScope.launch {
-            runCatching { workspace.readText(path) }
-                .onSuccess { content ->
-                    _state.update {
-                        it.copy(
-                            activeFile = path,
-                            editorContent = content,
-                            editorDirty = false,
-                            editorDiagnostics = emptyList(),
-                        )
-                    }
-                    scheduleEditorLint(path, content)
+            try {
+                val document = workspace.readEditorDocument(path, encoding)
+                val current = _state.value
+                if (workspace.root != root || current.activeFile != initial.activeFile) return@launch
+                if (current.editorContent != initial.editorContent) {
+                    _state.update { it.copy(notice = "读取期间有新的编辑，已取消重新打开；请保存后重试") }
+                    return@launch
                 }
-                .onFailure { error ->
-                    _state.update { it.copy(notice = error.message ?: "无法读取文件") }
+                _state.update {
+                    it.copy(activeFile = path, editorContent = document.content,
+                        editorEncoding = document.encoding, editorEncodingInferred = document.inferred,
+                        editorOpenErrorPath = null, editorDirty = false,
+                        editorRevision = it.editorRevision + 1, editorDiagnostics = emptyList())
                 }
+                scheduleEditorLint(path, document.content)
+            } catch (error: CancellationException) { throw error
+            } catch (error: Exception) {
+                _state.update { it.copy(
+                    editorOpenErrorPath = if (error.cause is java.nio.charset.CharacterCodingException ||
+                        error.message?.contains("这是二进制文件") == true) path else null,
+                    notice = error.message ?: "无法读取文件") }
+            } finally {
+                _state.update { it.copy(editorBusy = false) }
+            }
         }
     }
 
@@ -2218,20 +2243,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (path != null) scheduleEditorLint(path, content)
     }
 
-    fun saveEditor(editorContent: String) {
-        val path = _state.value.activeFile ?: return
-        _state.update { it.copy(editorContent = editorContent, editorDirty = true) }
+    fun saveEditor(editorContent: String) = saveEditorAs(editorContent, _state.value.editorEncoding)
+
+    fun saveEditorAs(editorContent: String, encoding: dev.pocketagent.data.EditorEncoding) {
+        val current = _state.value
+        val path = current.activeFile ?: return
+        if (current.editorBusy) return
+        val root = workspace.root
+        _state.update { it.copy(editorContent = editorContent, editorDirty = true, editorBusy = true) }
         viewModelScope.launch {
-            runCatching { workspace.writeText(path, editorContent) }
-                .onSuccess {
-                    _state.update { it.copy(editorDirty = false, notice = "已保存 $path") }
-                    scheduleEditorLint(path, editorContent, delayMs = 0)
-                    refreshFiles()
-                    refreshGit()
+            try {
+                workspace.writeEditorDocument(path, editorContent, encoding)
+                _state.update {
+                    if (it.activeFile == path && workspace.root == root) it.copy(
+                        editorDirty = it.editorContent != editorContent, editorEncoding = encoding,
+                        editorEncodingInferred = false, notice = "已按 ${encoding.label} 保存 $path") else it
                 }
-                .onFailure { error ->
-                    _state.update { it.copy(notice = error.message ?: "保存失败") }
-                }
+                scheduleEditorLint(path, editorContent, delayMs = 0)
+                refreshFiles()
+                refreshGit()
+            } catch (error: CancellationException) { throw error
+            } catch (error: Exception) {
+                _state.update { it.copy(notice = error.message ?: "保存失败") }
+            } finally {
+                _state.update { it.copy(editorBusy = false) }
+            }
         }
     }
 
@@ -2400,6 +2436,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 return
             }
         }
+        if (_state.value.editorBusy) return
+        val encoding = _state.value.editorEncoding
         val file = workspace.resolve(path)
         val command = if (extension == "java") {
             "java --source 17 ${shellQuote(file.absolutePath)}"
@@ -2411,13 +2449,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 editorContent = editorContent,
                 editorDirty = true,
                 scriptRunning = true,
+                editorBusy = true,
                 scriptTitle = path,
                 scriptOutput = "正在运行：\n$command\n\n",
             )
         }
         viewModelScope.launch(Dispatchers.IO) {
+            var editorSaved = false
             val output = runCatching {
-                workspace.writeText(path, editorContent)
+                workspace.writeEditorDocument(path, editorContent, encoding)
+                editorSaved = true
+                _state.update {
+                    if (it.activeFile == path) it.copy(editorBusy = false,
+                        editorDirty = it.editorContent != editorContent) else it.copy(editorBusy = false)
+                }
                 commandRunner.run(
                     command = command,
                     workingDir = file.parentFile ?: workspace.root,
@@ -2432,6 +2477,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }.trim()
                 },
                 onFailure = { error ->
+                    if (!editorSaved) _state.update { it.copy(editorBusy = false) }
                     "运行失败：${error.message ?: error.javaClass.simpleName}"
                 },
             )
@@ -2445,7 +2491,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     scriptRunning = false,
                     scriptOutput = output,
-                    editorDirty = false,
                 )
             }
             refreshFiles()

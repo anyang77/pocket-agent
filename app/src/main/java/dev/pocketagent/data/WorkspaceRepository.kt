@@ -278,6 +278,83 @@ class WorkspaceRepository(
         backup.absolutePath
     }
 
+    private suspend fun readEditorBytes(path: String): ByteArray = withContext(Dispatchers.IO) {
+        TextFileSupport.check(path)?.let { throw IllegalArgumentException(it) }
+        val file = resolve(path)
+        val limit = MAX_FILE_CHARS * 4
+        suspend fun rootBytes(): ByteArray {
+            // Use an app-owned staging file: command output may be truncated and binary
+            // data must never pass through the shell's UTF-8 text capture.
+            val staging = File.createTempFile("editor-read-", ".bin", appContext.cacheDir)
+            try {
+                val target = shellQuote(file.absolutePath)
+                val result = runRoot("test -f $target && test -r $target || exit 1; " +
+                    "size=\$(wc -c < $target) || exit 1; test \"\$size\" -le $limit || exit 1; " +
+                    "head -c ${limit + 1} -- $target > ${shellQuote(staging.absolutePath)} || exit 1; printf '%s' \"\$size\"")
+                require(result.exitCode == 0 && !result.timedOut) { "无法读取文件或文件过大：$path" }
+                val bytes = staging.inputStream().use { it.readBytesBounded(limit + 1) }
+                require(result.output.trim().toLongOrNull() == bytes.size.toLong()) { "文件读取不完整或读取期间已变化，请重试" }
+                return bytes
+            } finally { staging.delete() }
+        }
+        val bytes = if (usesRootWorkspace()) rootBytes() else {
+            try {
+                file.inputStream().use { it.readBytesBounded(limit + 1) }
+            } catch (error: java.io.IOException) {
+                if (!useRoot()) throw error
+                rootBytes()
+            }
+        }
+        require(bytes.size <= limit) { "文件过大，无法安全编辑" }
+        bytes
+    }
+
+    suspend fun readEditorDocument(path: String, encoding: EditorEncoding? = null): EditorDocument {
+        val document = EditorTextCodec.decode(readEditorBytes(path), encoding)
+        require(document.content.length <= MAX_FILE_CHARS) { "文件过大，无法安全编辑" }
+        return document
+    }
+
+    suspend fun writeEditorDocument(path: String, content: String, encoding: EditorEncoding): Unit = withContext(Dispatchers.IO) {
+        require(content.length <= MAX_FILE_CHARS) { "内容过大，无法安全保存" }
+        val bytes = EditorTextCodec.encode(content, encoding) // Validate before touching the original.
+        val file = resolve(path)
+        require(file.path != root.path) { "不能覆盖工作区目录" }
+        val original = readEditorBytes(path)
+        if (original.contentEquals(bytes)) return@withContext
+        val backup = File(appContext.filesDir, "backups/editor/${java.util.UUID.randomUUID()}.bak")
+        backup.parentFile?.mkdirs()
+        backup.writeBytes(original)
+        suspend fun writeRoot() {
+            val staging = File.createTempFile("editor-write-", ".bin", appContext.cacheDir)
+            try {
+                staging.writeBytes(bytes)
+                val result = runRoot("cat -- ${shellQuote(staging.absolutePath)} > ${shellQuote(file.absolutePath)}")
+                require(result.exitCode == 0 && !result.timedOut) { "无法保存文件，原始内容已备份：${backup.absolutePath}" }
+            } finally { staging.delete() }
+        }
+        if (usesRootWorkspace()) writeRoot() else {
+            try { file.writeBytes(bytes) } catch (error: java.io.IOException) {
+                if (!useRoot()) throw error
+                writeRoot()
+            }
+        }
+        require(readEditorBytes(path).contentEquals(bytes)) {
+            "保存后的字节校验失败，原始内容已备份：${backup.absolutePath}"
+        }
+    }
+
+    private fun java.io.InputStream.readBytesBounded(limit: Int): ByteArray {
+        val output = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        while (output.size() < limit) {
+            val count = read(buffer, 0, minOf(buffer.size, limit - output.size()))
+            if (count < 0) break
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
+    }
+
     suspend fun writeText(path: String, content: String): Unit = withContext(Dispatchers.IO) {
         val file = resolve(path)
         require(file.path != root.path) { "不能覆盖工作区目录" }

@@ -94,6 +94,9 @@ fun FilesScreen(
     onCloseFile: () -> Unit,
     onEditorChange: (String) -> Unit,
     onSave: (String) -> Unit,
+    onReopenEncoding: (dev.pocketagent.data.EditorEncoding) -> Unit,
+    onSaveEncoding: (String, dev.pocketagent.data.EditorEncoding) -> Unit,
+    onDismissEncodingError: () -> Unit,
     onRunScript: (String) -> Unit,
     onCloseScriptOutput: () -> Unit,
     onCreateEntry: (String, Boolean) -> Unit,
@@ -105,6 +108,16 @@ fun FilesScreen(
     onCloseWorkspacePicker: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    state.editorOpenErrorPath?.let { path ->
+        EditorEncodingPicker(
+            title = "选择编码重新打开",
+            description = "无法自动识别 $path。请选择原文件的编码；这不会修改文件。",
+            current = null,
+            onSelect = onReopenEncoding,
+            onDismiss = onDismissEncodingError,
+            busy = state.editorBusy,
+        )
+    }
     state.scriptOutput?.let { output ->
         ScriptOutputDialog(
             title = state.scriptTitle ?: "脚本运行",
@@ -140,6 +153,12 @@ fun FilesScreen(
             content = state.editorContent,
             dirty = state.editorDirty,
             diagnostics = state.editorDiagnostics,
+            encoding = state.editorEncoding,
+            encodingInferred = state.editorEncodingInferred,
+            busy = state.editorBusy,
+            revision = state.editorRevision,
+            onReopenEncoding = onReopenEncoding,
+            onSaveEncoding = onSaveEncoding,
             onClose = onCloseFile,
             onChange = onEditorChange,
             onSave = { onSave(it) },
@@ -561,6 +580,12 @@ private fun Editor(
     content: String,
     dirty: Boolean,
     diagnostics: List<EditorDiagnostic>,
+    encoding: dev.pocketagent.data.EditorEncoding,
+    encodingInferred: Boolean,
+    busy: Boolean,
+    revision: Int,
+    onReopenEncoding: (dev.pocketagent.data.EditorEncoding) -> Unit,
+    onSaveEncoding: (String, dev.pocketagent.data.EditorEncoding) -> Unit,
     onClose: () -> Unit,
     onChange: (String) -> Unit,
     onSave: (String) -> Unit,
@@ -577,11 +602,42 @@ private fun Editor(
     var cursorColumn by remember(path) { mutableStateOf(1) }
     var canUndo by remember(path) { mutableStateOf(false) }
     var canRedo by remember(path) { mutableStateOf(false) }
-    var controller by remember(path) { mutableStateOf<CodeEditorController?>(null) }
+    var controller by remember(path, revision) { mutableStateOf<CodeEditorController?>(null) }
     var showProblems by rememberSaveable(path) { mutableStateOf(false) }
     var symbolsExpanded by rememberSaveable(path) { mutableStateOf(false) }
     var editorMenuVisible by remember { mutableStateOf(false) }
-    LaunchedEffect(dirty) {
+    var encodingAction by remember(path) { mutableStateOf<String?>(null) }
+    var selectedEncoding by remember(path) { mutableStateOf<dev.pocketagent.data.EditorEncoding?>(null) }
+    if (encodingAction != null && selectedEncoding == null) {
+        EditorEncodingPicker(
+            title = if (encodingAction == "reload") "按编码重新打开" else "转换编码并保存",
+            description = if (encodingAction == "reload") "重新解读磁盘中的原始字节，不修改文件。未保存的编辑将被丢弃。"
+                else "保留当前文字，按新编码保存。原文件会先备份；无法表示的字符会阻止保存。",
+            current = encoding,
+            onSelect = { selectedEncoding = it },
+            onDismiss = { encodingAction = null },
+            busy = busy,
+        )
+    }
+    selectedEncoding?.let { target ->
+        AlertDialog(
+            onDismissRequest = { selectedEncoding = null; encodingAction = null },
+            title = { Text(if (encodingAction == "reload") "重新打开文件？" else "转换并保存？") },
+            text = { Text(if (encodingAction == "reload")
+                "将按 ${target.label} 重新读取文件。" + if (localDirty || dirty) "当前未保存的编辑会被丢弃。" else "磁盘内容不会改变。"
+                else "将当前内容以 ${target.label} 保存到原文件，写入前会备份原始字节。") },
+            confirmButton = {
+                TextButton(enabled = !busy, onClick = {
+                    if (encodingAction == "reload") onReopenEncoding(target)
+                    else controller?.getContent { latest -> onSaveEncoding(latest, target) }
+                    selectedEncoding = null
+                    encodingAction = null
+                }) { Text(if (encodingAction == "reload") "重新打开" else "转换并保存") }
+            },
+            dismissButton = { TextButton(onClick = { selectedEncoding = null; encodingAction = null }) { Text("取消") } },
+        )
+    }
+    LaunchedEffect(dirty, revision) {
         if (!dirty) localDirty = false
     }
     if (showProblems && diagnostics.isNotEmpty()) {
@@ -636,7 +692,10 @@ private fun Editor(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "${language.label} · $cursorLine:$cursorColumn",
+                    "${language.label} · $cursorLine:$cursorColumn · ${encoding.label}${if (encodingInferred) "（推测）" else ""}",
+                    modifier = Modifier.clickable(enabled = !busy) { encodingAction = "reload" },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -667,7 +726,7 @@ private fun Editor(
                     controller?.getContent { latest -> onSave(latest) }
                 },
                 modifier = Modifier.size(36.dp),
-                enabled = localDirty && controller != null,
+                enabled = localDirty && controller != null && !busy,
             ) {
                 Icon(
                     Icons.Outlined.Save,
@@ -683,6 +742,16 @@ private fun Editor(
                     expanded = editorMenuVisible,
                     onDismissRequest = { editorMenuVisible = false },
                 ) {
+                    DropdownMenuItem(
+                        text = { Text("按编码重新打开…") },
+                        enabled = !busy,
+                        onClick = { editorMenuVisible = false; encodingAction = "reload" },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("转换编码并保存…") },
+                        enabled = !busy && controller != null,
+                        onClick = { editorMenuVisible = false; encodingAction = "save" },
+                    )
                     DropdownMenuItem(
                         text = { Text("重做") },
                         enabled = canRedo && controller != null,
@@ -758,6 +827,7 @@ private fun Editor(
                 }
             }
         }
+        androidx.compose.runtime.key(path, revision) {
         CodeEditorWebView(
             path = path,
             initialContent = content,
@@ -778,12 +848,49 @@ private fun Editor(
                 .fillMaxWidth()
                 .weight(1f),
         )
+        }
         SymbolPad(
             expanded = symbolsExpanded,
             onExpandedChange = { symbolsExpanded = it },
             onInsert = { text, cursorOffset -> controller?.insertText(text, cursorOffset) },
         )
     }
+}
+
+@Composable
+private fun EditorEncodingPicker(
+    title: String,
+    description: String,
+    current: dev.pocketagent.data.EditorEncoding?,
+    onSelect: (dev.pocketagent.data.EditorEncoding) -> Unit,
+    onDismiss: () -> Unit,
+    busy: Boolean,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text(description, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                    dev.pocketagent.data.EditorEncoding.entries.forEach { option ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable(enabled = !busy) { onSelect(option) }
+                                .heightIn(min = 48.dp).padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(option.label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                            if (option == current) Text("当前", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 private data class SymbolKey(val label: String, val text: String, val cursorOffset: Int)

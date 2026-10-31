@@ -1133,7 +1133,12 @@
       setValue(text) {
         suppressEvents = true;
         const cursor = editor.getCursor();
-        editor.setValue(text || "");
+        // Keep the source's line separator when encoding conversion reads getValue().
+        const source = text || "";
+        const separator = source.includes("\r\n") ? "\r\n" :
+          source.includes("\r") && !source.includes("\n") ? "\r" : "\n";
+        editor.setOption("lineSeparator", separator);
+        editor.setValue(source);
         editor.setCursor(Math.min(cursor.line, Math.max(0, editor.lineCount() - 1)), 0);
         currentDirty = false;
         suppressEvents = false;
