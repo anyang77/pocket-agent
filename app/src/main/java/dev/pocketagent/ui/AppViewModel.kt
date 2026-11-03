@@ -2742,7 +2742,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 agentRequestStartedAt = System.currentTimeMillis(),
             )
         }
-        runCatching { AgentForegroundService.start(appContext) }
+        try {
+            AgentForegroundService.start(appContext)
+        } catch (error: Exception) {
+            auditLog.append("agent", "后台服务启动失败", error.toString())
+            _state.update { it.copy(agentRunning = false, agentStatus = null,
+                agentCompactStatus = null, agentRequestStartedAt = null,
+                notice = "无法启动后台服务，未开始压缩：${error.message}") }
+            return
+        }
         agentJob = viewModelScope.launch {
             try {
                 val compacted = agentEngine.compactNow(settings) { event ->
@@ -2773,6 +2781,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Exception) {
                 _state.update { it.copy(notice = error.message ?: "压缩上下文失败") }
             } finally {
+                AgentForegroundService.stop(appContext)
                 agentJob = null
                 _state.update {
                     it.copy(
@@ -2876,6 +2885,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        try {
+            AgentForegroundService.start(appContext)
+        } catch (error: Exception) {
+            auditLog.append("agent", "后台服务启动失败", error.toString())
+            _state.update { it.copy(notice = "无法启动后台服务，任务未开始：${error.message}") }
+            return
+        }
+
         val taskSettings = _state.value.settings
         val taskWorkspacePath = workspace.root.canonicalPath
         subagentManager.reset()
@@ -2904,13 +2921,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 agentRequestStartedAt = System.currentTimeMillis(),
                 agentRetry = null,
             )
-        }
-        runCatching {
-            AgentForegroundService.start(appContext)
-        }.onFailure { error ->
-            _state.update {
-                it.copy(notice = error.message ?: "无法启动后台任务服务")
-            }
         }
         persistCurrentConversation()
 
@@ -3319,6 +3329,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 saveComposer()
             }
         }
+    }
+
+    fun onBackgroundServiceTimeout() {
+        auditLog.append("agent", "后台服务超时", "系统前台服务运行时限已到，停止任务并保留会话")
+        stopAgent()
+        _state.update { it.copy(notice = "系统后台运行时限已到，任务已停止；会话已保留，请回到前台后继续") }
     }
 
     fun stopAgent() {

@@ -5,7 +5,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -20,7 +19,8 @@ import dev.pocketagent.ui.theme.PocketAgentTheme
 import dev.pocketagent.ui.theme.isDarkTheme
 
 class MainActivity : ComponentActivity() {
-    private val appViewModel: AppViewModel by viewModels()
+    private val appViewModel: AppViewModel
+        get() = (application as CodeMateApplication).appViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

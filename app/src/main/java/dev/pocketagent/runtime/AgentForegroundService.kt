@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import dev.pocketagent.CodeMateApplication
 import dev.pocketagent.MainActivity
 
 class AgentForegroundService : Service() {
@@ -38,7 +39,19 @@ class AgentForegroundService : Service() {
             .setOngoing(true)
             .build()
         startForeground(NOTIFICATION_ID, notification)
-        return START_STICKY
+        // A restarted notification cannot restore an in-flight model/tool call.
+        // Do not leave a sticky, empty service pretending the agent is still working.
+        return START_NOT_STICKY
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        try {
+            (application as CodeMateApplication).appViewModel.onBackgroundServiceTimeout()
+        } finally {
+            releaseWakeLock()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {
