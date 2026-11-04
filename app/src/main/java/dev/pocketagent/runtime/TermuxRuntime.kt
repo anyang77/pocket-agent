@@ -103,7 +103,7 @@ class TermuxRuntime(context: Context) {
         ensureAptConfig()
         if (!force && isToolchainsReady()) {
             toolchainsMarker.writeText(TOOLCHAIN_VERSION)
-            onProgress("Python、Node、Java、Rust、clang、ShellCheck 已就绪", 1f)
+            onProgress("Python、Node、Java、Rust、clang、ripgrep、ShellCheck 已就绪", 1f)
             return@withContext true
         }
 
@@ -113,6 +113,7 @@ class TermuxRuntime(context: Context) {
         var packageCount = 0
         val mirrorArray = APT_MIRRORS.joinToString(" ") { shellQuote(it.url) }
         val mirrorNames = APT_MIRRORS.joinToString(" ") { shellQuote(it.label) }
+        val installOutput = StringBuilder()
         val result = run(
             command = """
                 set -e
@@ -136,7 +137,7 @@ class TermuxRuntime(context: Context) {
                     echo "所有软件源均连接失败" >&2
                     exit 1
                 }
-                apt-get install --download-only -y --no-install-recommends python python-pip npm nodejs clang make git openssh shellcheck openjdk-17 rust
+                apt-get install --download-only -y --no-install-recommends python python-pip npm nodejs clang make git openssh shellcheck ripgrep openjdk-17 rust
                 total=${'$'}(ls ${prefix.absolutePath}/var/cache/apt/archives/*.deb | wc -l)
                 index=0
                 for deb in ${prefix.absolutePath}/var/cache/apt/archives/*.deb; do
@@ -149,44 +150,51 @@ class TermuxRuntime(context: Context) {
             """.trimIndent(),
             workingDir = home,
             timeoutMs = 15 * 60_000L,
-            onOutput = { line ->
-                when {
-                    line.startsWith("__APT_MIRROR__:") -> onProgress(
-                        "连接软件源 · ${line.substringAfter("__APT_MIRROR__:").trim()}",
-                        0.36f,
-                    )
-                    line.startsWith("Get:") -> {
-                        packageCount++
-                        downloadedBytes += parseAptSize(line)
-                        onProgress(
-                            "下载工具链 · ${formatBytes(downloadedBytes)} · 第 $packageCount 个包",
-                            (0.38f + packageCount * 0.016f).coerceAtMost(0.69f),
+            onOutput = { chunk ->
+                installOutput.append(chunk)
+                var newline = installOutput.indexOf("\n")
+                while (newline >= 0) {
+                    val line = installOutput.substring(0, newline).trimEnd('\r')
+                    installOutput.delete(0, newline + 1)
+                    when {
+                        line.startsWith("__APT_MIRROR__:") -> onProgress(
+                            "连接软件源 · ${line.substringAfter("__APT_MIRROR__:").trim()}",
+                            0.36f,
                         )
-                    }
-                    line.contains("Fetched ") -> onProgress(
-                        "工具链下载完成 · ${formatBytes(downloadedBytes)}",
-                        0.70f,
-                    )
-                    line.startsWith("__PKG_EXTRACTING__:") -> {
-                        val parts = line.split(':')
-                        val index = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                        val total = parts.getOrNull(2)?.toIntOrNull() ?: 1
-                        val name = parts.getOrNull(3).orEmpty()
-                        onProgress(
-                            "解压 $name · $index/$total",
-                            (0.70f + 0.22f * (index - 1).coerceAtLeast(0) / total)
-                                .coerceIn(0.70f, 0.92f),
+                        line.startsWith("Get:") -> {
+                            packageCount++
+                            downloadedBytes += parseAptSize(line)
+                            onProgress(
+                                "下载工具链 · ${formatBytes(downloadedBytes)} · 第 $packageCount 个包",
+                                (0.38f + packageCount * 0.016f).coerceAtMost(0.69f),
+                            )
+                        }
+                        line.contains("Fetched ") -> onProgress(
+                            "工具链下载完成 · ${formatBytes(downloadedBytes)}",
+                            0.70f,
                         )
+                        line.startsWith("__PKG_EXTRACTING__:") -> {
+                            val parts = line.split(':')
+                            val index = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                            val total = parts.getOrNull(2)?.toIntOrNull() ?: 1
+                            val name = parts.getOrNull(3).orEmpty()
+                            onProgress(
+                                "解压 $name · $index/$total",
+                                (0.70f + 0.22f * (index - 1).coerceAtLeast(0) / total)
+                                    .coerceIn(0.70f, 0.92f),
+                            )
+                        }
+                        line.startsWith("__PKG_EXTRACTED__:") -> {
+                            val parts = line.split(':')
+                            val index = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                            val total = parts.getOrNull(2)?.toIntOrNull() ?: 1
+                            onProgress(
+                                "工具链解压完成 · $index/$total",
+                                (0.70f + 0.22f * index / total).coerceIn(0.70f, 0.92f),
+                            )
+                        }
                     }
-                    line.startsWith("__PKG_EXTRACTED__:") -> {
-                        val parts = line.split(':')
-                        val index = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                        val total = parts.getOrNull(2)?.toIntOrNull() ?: 1
-                        onProgress(
-                            "工具链解压完成 · $index/$total",
-                            (0.70f + 0.22f * index / total).coerceIn(0.70f, 0.92f),
-                        )
-                    }
+                    newline = installOutput.indexOf("\n")
                 }
             },
         )
@@ -205,7 +213,7 @@ class TermuxRuntime(context: Context) {
             onProgress("开发工具链安装失败，可重试", 0f)
             return@withContext false
         }
-        onProgress("验证 Python、Node、Java、Rust、clang、ShellCheck", 0.98f)
+        onProgress("验证 Python、Node、Java、Rust、clang、ripgrep、ShellCheck", 0.98f)
         val rustValidation = run(
             command = "rustc --version && cargo --version && rustfmt --version",
             workingDir = home,
@@ -217,7 +225,7 @@ class TermuxRuntime(context: Context) {
             return@withContext false
         }
         toolchainsMarker.writeText(TOOLCHAIN_VERSION)
-        onProgress("Python、Node、Java、Rust、clang、ShellCheck、make 和 git 已安装", 1f)
+        onProgress("Python、Node、Java、Rust、clang、ripgrep、ShellCheck、make 和 git 已安装", 1f)
         true
         }
     }
@@ -252,7 +260,11 @@ class TermuxRuntime(context: Context) {
                         put("TERMUX__PREFIX", prefix.absolutePath)
                         put("TERMUX__ROOTFS", root.absolutePath)
                         put("TERMUX_APP__DATA_DIR", appContext.filesDir.absolutePath)
+                        put("TERMUX_APP__LEGACY_DATA_DIR", "/data/data/${appContext.packageName}/files")
                         put("HOME", home.absolutePath)
+                        put("JAVA_HOME", File(prefix, "lib/jvm/java-17-openjdk").absolutePath)
+                        put("GRADLE_USER_HOME", File(home, ".gradle").absolutePath)
+                        put("JAVA_TOOL_OPTIONS", "-Djdk.lang.Process.launchMechanism=FORK -Duser.home=${home.absolutePath} -Djava.io.tmpdir=${File(prefix, "tmp").absolutePath}")
                         put("TMPDIR", File(prefix, "tmp").apply { mkdirs() }.absolutePath)
                         put(
                             "PATH",
@@ -295,12 +307,7 @@ class TermuxRuntime(context: Context) {
         try {
             coroutineScope {
                 val reader = async {
-                    process.inputStream.bufferedReader().useLines { lines ->
-                        lines.forEach { line ->
-                            if (captured.length < MAX_CAPTURE_CHARS) captured.appendLine(line)
-                            runCatching { onOutput("$line\n") }
-                        }
-                    }
+                    captured.append(readCommandOutput(process.inputStream.reader(), MAX_CAPTURE_CHARS, onOutput))
                 }
                 val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
                 if (!finished) {
@@ -332,7 +339,11 @@ class TermuxRuntime(context: Context) {
             "TERMUX__PREFIX=${prefix.absolutePath}",
             "TERMUX__ROOTFS=${root.absolutePath}",
             "TERMUX_APP__DATA_DIR=${appContext.filesDir.absolutePath}",
+            "TERMUX_APP__LEGACY_DATA_DIR=/data/data/${appContext.packageName}/files",
             "HOME=${home.absolutePath}",
+            "JAVA_HOME=${prefix.absolutePath}/lib/jvm/java-17-openjdk",
+            "GRADLE_USER_HOME=${home.absolutePath}/.gradle",
+            "JAVA_TOOL_OPTIONS=-Djdk.lang.Process.launchMechanism=FORK -Duser.home=${home.absolutePath} -Djava.io.tmpdir=${tmp.absolutePath}",
             "TMPDIR=${tmp.absolutePath}",
             "PATH=${prefix.absolutePath}/bin:/system/bin:/system/xbin",
             "LD_LIBRARY_PATH=${prefix.absolutePath}/lib",
@@ -361,23 +372,20 @@ class TermuxRuntime(context: Context) {
             listOf(bash.absolutePath, "-c", command)
         }
 
-    fun terminalShell(): Pair<String, Array<String>> =
-        if (needsSystemLinker) {
-            systemLinker!!.absolutePath to arrayOf(
-                bash.absolutePath,
-                bash.absolutePath,
-                "--norc",
-                "--noprofile",
-                "-i",
-            )
+    fun terminalShell(): Pair<String, Array<String>> {
+        val rc = File(home, ".codemate-terminal.bashrc")
+        home.mkdirs()
+        rc.writeText(UnifiedTerminalShell.rc(
+            environmentArray(), bash.absolutePath, rc.absolutePath,
+            RootDetector().findSuBinary()?.absolutePath,
+        ))
+        val options = arrayOf("--noprofile", "--rcfile", rc.absolutePath, "-i")
+        return if (needsSystemLinker) {
+            systemLinker!!.absolutePath to arrayOf(bash.absolutePath, bash.absolutePath, *options)
         } else {
-            bash.absolutePath to arrayOf(
-                "bash",
-                "--norc",
-                "--noprofile",
-                "-i",
-            )
+            bash.absolutePath to arrayOf("bash", *options)
         }
+    }
 
     fun shellInvocation(command: String): String =
         shellCommand(command).joinToString(" ") { shellQuote(it) }
@@ -560,6 +568,7 @@ class TermuxRuntime(context: Context) {
         File(prefix, "bin/javac"),
         File(prefix, "bin/clang"),
         File(prefix, "bin/shellcheck"),
+        File(prefix, "bin/rg"),
         File(prefix, "bin/rustc"),
         File(prefix, "bin/cargo"),
         File(prefix, "bin/rustfmt"),
@@ -577,7 +586,7 @@ class TermuxRuntime(context: Context) {
         private const val MAX_CAPTURE_CHARS = 256_000
         private const val RUNTIME_VERSION = "termux-bootstrap-dynamic-v6"
         private const val LEGACY_RUNTIME_PREFIX = "termux-bootstrap-python-pip-node-clang"
-        private const val TOOLCHAIN_VERSION = "apt-python-node-java-rust-clang-shellcheck-v4"
+        private const val TOOLCHAIN_VERSION = "apt-python-node-java-rust-clang-shellcheck-ripgrep-v5"
         private data class AptMirror(val label: String, val url: String)
 
         private val APT_MIRRORS = listOf(

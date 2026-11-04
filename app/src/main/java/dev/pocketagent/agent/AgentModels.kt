@@ -228,6 +228,7 @@ sealed interface AgentEvent {
     data class ReasoningCompleted(val text: String) : AgentEvent
     data class PlanUpdated(val steps: List<AgentPlanStep>) : AgentEvent
     data class ToolStarted(val name: String, val summary: String) : AgentEvent
+    data class ToolOutput(val name: String, val output: String) : AgentEvent
     data class ToolFinished(
         val name: String,
         val summary: String,

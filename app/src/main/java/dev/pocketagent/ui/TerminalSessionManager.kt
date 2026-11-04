@@ -19,7 +19,6 @@ import com.termux.terminal.TextStyle
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import dev.pocketagent.data.AuditLog
-import dev.pocketagent.runtime.RuntimeKind
 import dev.pocketagent.runtime.TermuxRuntime
 import java.io.File
 
@@ -44,9 +43,8 @@ class TerminalSessionManager(
         }
     }
     private var view: TerminalView? = null
-    private val sessions = mutableMapOf<RuntimeKind, TerminalSession>()
+    private var session: TerminalSession? = null
     private val terminalInput = StringBuilder()
-    private var runtimeKind = RuntimeKind.TERMUX
     private var darkTheme = true
     var controlPressed by mutableStateOf(false)
         private set
@@ -115,27 +113,9 @@ class TerminalSessionManager(
 
     @Synchronized
     fun currentSession(): TerminalSession {
-        sessions[runtimeKind]?.takeIf { it.isRunning }?.let { return it }
-        val useSystemShell = runtimeKind == RuntimeKind.SYSTEM_SHELL
-        val shellPath: String
-        val arguments: Array<String>
-        val environment: Array<String>
-        if (useSystemShell) {
-            shellPath = "/system/bin/sh"
-            arguments = arrayOf("sh", "-i")
-            environment = arrayOf(
-                "HOME=/sdcard",
-                "PWD=${workspace().absolutePath}",
-                "PATH=/sbin:/system/sbin:/system/bin:/system/xbin:/vendor/bin:/vendor/xbin",
-                "TERM=xterm-256color",
-                "LANG=C.UTF-8",
-            )
-        } else {
-            val terminalShell = runtime.terminalShell()
-            shellPath = terminalShell.first
-            arguments = terminalShell.second
-            environment = runtime.environmentArray()
-        }
+        session?.takeIf { it.isRunning }?.let { return it }
+        val (shellPath, arguments) = runtime.terminalShell()
+        val environment = runtime.environmentArray()
         val created = TerminalSession(
             shellPath,
             workspace().absolutePath,
@@ -144,12 +124,12 @@ class TerminalSessionManager(
             5_000,
             this,
         )
-        sessions[runtimeKind] = created
+        session = created
         configureTerminalColors()
         auditLog.append(
             "terminal",
             "启动 Shell",
-            "cwd=${workspace().absolutePath} runtime=$runtimeKind",
+            "cwd=${workspace().absolutePath} runtime=unified",
         )
         view?.attachSession(created)
         return created
@@ -179,20 +159,10 @@ class TerminalSessionManager(
 
     fun restart() {
         flushTerminalCommand()
-        sessions.remove(runtimeKind)?.finishIfRunning()
+        session?.finishIfRunning()
+        session = null
         auditLog.append("terminal", "重启 Shell", "用户请求重启")
         view?.let { attach(it) }
-    }
-
-    @Synchronized
-    fun setRuntimeKind(kind: RuntimeKind) {
-        if (runtimeKind == kind) return
-        releaseModifiers()
-        runtimeKind = kind
-        auditLog.append("terminal", "切换执行环境", "runtime=$kind")
-        view?.attachSession(currentSession())
-        configureTerminalColors()
-        view?.invalidate()
     }
 
     fun increaseFont() {

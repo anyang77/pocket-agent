@@ -1211,7 +1211,7 @@ private fun InlineActivity(
     index: Int,
     activity: ToolActivity,
 ) {
-    var expanded by rememberSaveable(entryId, index) { mutableStateOf(false) }
+    var expanded by rememberSaveable(entryId, index) { mutableStateOf(activity.name == "run_command" && activity.success == null) }
     val running = activity.success == null
     val hasFileChanges = activity.additions > 0 || activity.deletions > 0
     val hasDetails = activity.result?.isNotBlank() == true

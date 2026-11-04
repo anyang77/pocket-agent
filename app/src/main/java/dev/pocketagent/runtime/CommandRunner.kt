@@ -4,7 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -119,14 +118,7 @@ class CommandRunner(
         try {
             coroutineScope {
                 val reader = async {
-                    BufferedReader(process.inputStream.reader()).useLines { lines ->
-                        lines.forEach { line ->
-                            if (captured.length < MAX_CAPTURE_CHARS) {
-                                captured.appendLine(line)
-                            }
-                            runCatching { onOutput("$line\n") }
-                        }
-                    }
+                    captured.append(readCommandOutput(process.inputStream.reader(), MAX_CAPTURE_CHARS, onOutput))
                 }
 
                 val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
@@ -167,14 +159,14 @@ class CommandRunner(
         extraEnv: Map<String, String>,
         useInternalRuntime: Boolean,
     ): String {
-        val runtime = internalRuntime?.takeIf { useInternalRuntime } ?: return command
-        if (!runtime.isReady()) return command
-        val environment = (runtime.environmentArray() + extraEnv.map { "${it.key}=${it.value}" })
-            .joinToString(" ") { shellQuote(it) }
-        val rootedCommand = "cd -- ${shellQuote(workingDir.absolutePath)} && " +
-            "exec ${runtime.prefix.absolutePath}/bin/env -i $environment " +
-            runtime.shellInvocation(command)
-        return "exec ${runtime.shellInvocation(rootedCommand)}"
+        val runtime = internalRuntime?.takeIf { useInternalRuntime && it.isBaseReady() }
+        if (runtime == null) {
+            return "cd -- ${shellQuote(workingDir.absolutePath)} && $command"
+        }
+        return UnifiedTerminalShell.rootCommand(
+            runtime.environmentArray() + extraEnv.map { "${it.key}=${it.value}" },
+            runtime.bash.absolutePath, workingDir.absolutePath, command,
+        )
     }
 
     private fun shellQuote(value: String): String =

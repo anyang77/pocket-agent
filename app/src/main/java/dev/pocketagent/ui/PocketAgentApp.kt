@@ -391,7 +391,6 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 state = state,
                 terminalManager = viewModel.terminalManager,
                 onInstallRuntime = viewModel::installInternalRuntime,
-                onRuntimeSelected = viewModel::setTerminalRuntime,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)

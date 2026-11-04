@@ -297,6 +297,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     modelProfiles = loaded.modelProfiles,
                     activeProfileId = loaded.activeProfileId,
                     permissions = loaded.permissions,
+                    conversations = conversationSummaries(),
                     workspacePath = workspace.displayRoot,
                     defaultWorkspacePath = "/sdcard",
                 )
@@ -828,7 +829,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         val updated = conversation.copy(
             title = title,
-            updatedAt = System.currentTimeMillis(),
+            // Background output and switching sessions must not reorder history.
+            // Recency follows the latest user submission, not persistence time.
+            updatedAt = chat.lastOrNull { it.role == ChatRole.USER }?.timestamp
+                ?: conversation.createdAt,
             messages = chat.map { it.toStoredMessage() },
             agentMessages = history ?: runtimes[id]?.engine?.snapshotHistory().orEmpty(),
         )
@@ -854,7 +858,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun conversationSummaries(): List<ConversationSummary> =
         conversationCache.values
-            .sortedByDescending { it.updatedAt }
+            .sortedWith(compareByDescending<StoredConversation> { conversation ->
+                conversation.messages.lastOrNull { it.role == ChatRole.USER.name }?.timestamp
+                    ?: conversation.createdAt
+            }.thenByDescending { it.id })
             .map { conversation ->
                 val preview = conversation.messages
                     .lastOrNull { it.content.isNotBlank() }
@@ -1385,10 +1392,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         mountAvailable = probe.mountAvailable,
                         error = probe.error,
                     ),
-                    terminalRoot = false,
-                    terminalRuntime = current.terminalRuntime.takeUnless {
-                        it == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
-                    } ?: dev.pocketagent.runtime.RuntimeKind.TERMUX,
                     notice = if (announce && probe.granted) {
                         "Root 已授权，可在终端中输入 su 提权"
                     } else if (announce) {
@@ -1433,10 +1436,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             mountAvailable = probe.mountAvailable,
                             error = probe.error,
                         ),
-                        terminalRoot = false,
-                        terminalRuntime = current.terminalRuntime.takeUnless {
-                            it == dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX
-                        } ?: dev.pocketagent.runtime.RuntimeKind.TERMUX,
                     )
                 }
                 if (probe.granted) {
@@ -2540,28 +2539,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(scriptOutput = null, scriptTitle = null) }
     }
 
-    fun setTerminalRuntime(kind: dev.pocketagent.runtime.RuntimeKind) {
-        val supportedKind = when (kind) {
-            dev.pocketagent.runtime.RuntimeKind.SYSTEM_SHELL,
-            dev.pocketagent.runtime.RuntimeKind.TERMUX,
-            -> kind
-            dev.pocketagent.runtime.RuntimeKind.ROOT_TERMUX ->
-                dev.pocketagent.runtime.RuntimeKind.TERMUX
-        }
-        _state.update { it.copy(terminalRuntime = supportedKind, terminalRoot = false) }
-        terminalManager.setRuntimeKind(supportedKind)
-    }
-
     fun runTerminal(command: String) {
         val trimmed = command.trim()
         if (trimmed.isBlank() || _state.value.terminalRunning) return
-        val runtimeKind = _state.value.terminalRuntime
         val asRoot = false
 
         _state.update {
             it.copy(
                 terminalRunning = true,
-                terminalOutput = it.terminalOutput + "\n❯ [${runtimeKind.name.lowercase()}] $trimmed\n",
+                terminalOutput = it.terminalOutput + "\n❯ [terminal] $trimmed\n",
             )
         }
         auditLog.append(
@@ -2574,7 +2560,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 command = trimmed,
                 workingDir = workspace.root,
                 asRoot = asRoot,
-                useInternalRuntime = runtimeKind != dev.pocketagent.runtime.RuntimeKind.SYSTEM_SHELL,
+                useInternalRuntime = true,
                 onOutput = ::appendTerminal,
             )
             val footer = buildString {
@@ -3226,6 +3212,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 )
                             }
                         }
+                        is AgentEvent.ToolOutput -> {
+                            appendToolOutput(assistantId, event.name, event.output)
+                        }
                         is AgentEvent.ToolFinished -> {
                             setTurnPhase(assistantId, AgentTurnPhase.THINKING)
                             finishToolActivity(
@@ -3553,6 +3542,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 },
             )
+        }
+    }
+
+    private fun appendToolOutput(id: Long, name: String, output: String) {
+        _state.update { current ->
+            current.copy(chat = current.chat.map { entry ->
+                if (entry.id != id) return@map entry
+                val index = entry.activities.indexOfLast { it.name == name && it.success == null }
+                entry.copy(activities = entry.activities.mapIndexed { i, activity ->
+                    if (i == index) activity.copy(result = (activity.result.orEmpty() + output).takeLast(24_000))
+                    else activity
+                })
+            })
         }
     }
 

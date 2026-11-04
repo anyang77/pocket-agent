@@ -414,7 +414,9 @@ class AgentEngine(
                                 val extra = if (taskMode == AgentTaskMode.EXECUTE) extensions?.execute(call, settings,
                                     conversation.takeLast(8).joinToString("\n") { "${it.role}: ${it.content.orEmpty().take(4000)}" }, authorize) else null
                                 if (extra != null) ToolResult(extra.content, extra.success, extra.preview)
-                                else executeTool(call, authorize, choose, taskMode)
+                                else executeTool(call, authorize, choose, taskMode) { output ->
+                                    onEvent(AgentEvent.ToolOutput(visibleToolName, output))
+                                }
                             }
                             toolScheduler?.execute(call.name, external = extensionTool) { execute() } ?: execute()
                         }
@@ -741,6 +743,7 @@ class AgentEngine(
         authorize: suspend (PermissionRequest) -> PermissionDecision,
         choose: suspend (UserQuestion) -> AgentChoice?,
         taskMode: AgentTaskMode = AgentTaskMode.EXECUTE,
+        onToolOutput: (String) -> Unit = {},
     ): ToolResult {
         require(taskMode.allows(call.name)) { "当前模式不允许此操作" }
         val arguments = JSONObject(call.arguments.ifBlank { "{}" })
@@ -1209,14 +1212,17 @@ class AgentEngine(
                     "cwd=$cwdText risk=${assessment.risk} command=$command",
                 )
                 val auth = commandAuth()
-                val rawResult = commandRunner.run(
+                val stream = auth.outputStream(onToolOutput)
+                val rawResult = try { commandRunner.run(
                     command = command,
                     workingDir = cwd,
                     asRoot = wantsRoot,
-                    useInternalRuntime = requestedEnvironment != "system",
+                    // Legacy "system" is an alias: all Agent commands share the toolchain.
+                    useInternalRuntime = true,
                     timeoutMs = 120_000,
                     extraEnv = auth.environment,
-                )
+                    onOutput = stream::append,
+                ) } finally { stream.finish() }
                 val result = rawResult.copy(
                     output = auth.redact(rawResult.output),
                     error = rawResult.error?.let(auth::redact),
@@ -1577,13 +1583,13 @@ class AgentEngine(
             ),
             ToolDefinition(
                 name = "run_command",
-                description = "Run a command in the selected environment. termux is the normal package/toolchain shell; system is the Android phone shell; root runs in Termux with UID 0 and requires explicit approval. Every command is audited.",
+                description = "Run a command in the shared Android/Termux toolchain. termux is normal UID; system is a compatibility alias for the same toolchain; root elevates via su with the same tools and working directory, subject to permission approval. Every command is audited.",
                 parameters = schema(
                     properties = mapOf(
                         "command" to stringProperty("Shell command or script. Full shell syntax is supported."),
                         "cwd" to stringProperty("Working directory, defaults to .; workspace-relative, or an absolute path when full access is enabled."),
                         "environment" to enumProperty(
-                            description = "Execution environment. Use termux for pkg/apt and project tools, system for Android shell utilities, root only for an operation that genuinely needs UID 0.",
+                            description = "Permission level in the shared toolchain: termux (default) for development and Android commands; root to elevate via su when an operation needs UID 0. system is a legacy alias for termux. On permission denied, assess partial effects before requesting a root retry.",
                             values = listOf("termux", "system", "root"),
                         ),
                     ),
@@ -1629,6 +1635,7 @@ You are CodeMate, a coding and device-inspection agent running on an Android pho
         explicitly asks for a plan. Do not create a plan for simple questions, one lookup,
         one edit, or one command. Reuse and update the existing plan during follow-up work
         instead of recreating it unless the goal has materially changed.
+        ripgrep (rg) is included in the shared toolchain; prefer rg for shell code searches.
         Use run_command for builds/tests. Never claim a task succeeded without running an
         available relevant build or test command.
 
@@ -1660,12 +1667,14 @@ You are CodeMate, a coding and device-inspection agent running on an Android pho
         - Use list_system_dir and read_system_file for absolute system paths. These tools are
           read-only, require the app's system-read permission, and are audited.
         ${AgentAccessPolicy.instructions(permissions)}
-        - Termux, Android system shell, and Root are independent environments. Installing tools
-          with pkg in Termux does not require disabling Root, and Root does not replace pkg.
-          Use termux for project tools, system for Android utilities, and root only for an
-          operation that genuinely needs UID 0. Do not use su manually inside termux or system.
-        - A normal command remains usable when Root is available. Switch environments based on
-          the command's needs instead of treating Root as a global mode.
+        - Agent and terminal share one Android/Termux toolchain. Development tools and Android
+          utilities are available together; root changes UID via su, not the toolchain or cwd.
+          Use environment=termux normally (system is a legacy alias). When permission is denied,
+          inspect the failure and any partial effects, then request environment=root for only
+          the operation needing UID 0. Never blindly replay a partially completed command.
+        - Request elevation through environment=root so permission checks and audit remain intact;
+          do not hide su inside an ordinary command. Root availability is not a global root mode.
+          Keep package installation and builds at normal UID to avoid root-owned project files.
 
         Safety rules:
         - The shell supports the complete Android shell syntax: pipes, redirection, chaining,

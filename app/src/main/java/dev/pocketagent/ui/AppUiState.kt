@@ -19,7 +19,6 @@ import dev.pocketagent.data.ModelProfile
 import dev.pocketagent.agent.TokenUsage
 import dev.pocketagent.agent.ToolActivity
 import dev.pocketagent.runtime.RuntimeCapabilities
-import dev.pocketagent.runtime.RuntimeKind
 import dev.pocketagent.ui.theme.ThemePreference
 
 enum class AppTab {
@@ -199,8 +198,6 @@ data class AppUiState(
     val scriptTitle: String? = null,
     val terminalOutput: String = "",
     val terminalRunning: Boolean = false,
-    val terminalRoot: Boolean = false,
-    val terminalRuntime: RuntimeKind = RuntimeKind.TERMUX,
     val rootProbing: Boolean = false,
     val internalRuntimeInstalling: Boolean = false,
     val internalRuntimeInstallMessage: String? = null,

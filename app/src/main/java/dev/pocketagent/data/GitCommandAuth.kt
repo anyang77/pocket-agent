@@ -12,6 +12,35 @@ class GitCommandAuth(
     fun redact(text: String): String = secrets.fold(text) { output, secret ->
         output.replace(secret, "[已隐藏 Git 凭据]")
     }
+
+    fun outputStream(emit: (String) -> Unit) = RedactedCommandOutput(secrets, emit)
+}
+
+/** Retain boundary characters so credentials split across reads cannot leak. */
+class RedactedCommandOutput(private val secrets: List<String>, private val emit: (String) -> Unit) {
+    private val pending = StringBuilder()
+    fun append(chunk: String) {
+        pending.append(chunk)
+        var end = (pending.length - (secrets.maxOfOrNull { it.length } ?: 1) + 1).coerceAtLeast(0)
+        for (secret in secrets.filter { it.isNotEmpty() }) {
+            var start = pending.indexOf(secret)
+            while (start >= 0) {
+                if (start < end && start + secret.length > end) end = start
+                start = pending.indexOf(secret, start + 1)
+            }
+        }
+        if (end > 0) {
+            emit(redact(pending.substring(0, end)))
+            pending.delete(0, end)
+        }
+    }
+    fun finish() {
+        if (pending.isNotEmpty()) emit(redact(pending.toString()))
+        pending.clear()
+    }
+    private fun redact(text: String): String = secrets.filter { it.isNotEmpty() }.fold(text) { result, secret ->
+        result.replace(secret, "[已隐藏 Git 凭据]")
+    }
 }
 
 internal class GitCommandAccount(val host: String, val username: String, val token: String)
