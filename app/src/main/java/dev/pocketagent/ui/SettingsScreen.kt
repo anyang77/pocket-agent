@@ -74,6 +74,12 @@ fun SettingsScreen(
     var contextWindow by rememberSaveable(state.activeProfileId, state.settings.contextWindow) {
         mutableStateOf(state.settings.contextWindow)
     }
+    var customEffortsEnabled by rememberSaveable(state.activeProfileId, state.settings.customReasoningEfforts) {
+        mutableStateOf(state.settings.customReasoningEfforts != null)
+    }
+    var selectedEfforts by rememberSaveable(state.activeProfileId, state.settings.customReasoningEfforts) {
+        mutableStateOf(ArrayList(state.settings.customReasoningEfforts ?: listOf("low", "medium", "high")))
+    }
     var showEditProfile by rememberSaveable { mutableStateOf(false) }
     var showNewProfile by rememberSaveable { mutableStateOf(false) }
     var deleteProfileId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -181,6 +187,32 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("可选思考等级", style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = !customEffortsEnabled,
+                            onClick = { customEffortsEnabled = false }, label = { Text("自动识别") })
+                        FilterChip(selected = customEffortsEnabled,
+                            onClick = { customEffortsEnabled = true }, label = { Text("自定义组合") })
+                    }
+                    if (customEffortsEnabled) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(dev.pocketagent.agent.ReasoningEffortSupport.selectable(emptyList())) { effort ->
+                                FilterChip(selected = effort in selectedEfforts,
+                                    onClick = {
+                                        selectedEfforts = ArrayList(if (effort in selectedEfforts)
+                                            selectedEfforts - effort else selectedEfforts + effort)
+                                    }, label = { Text(reasoningEffortLabel(effort)) })
+                            }
+                        }
+                    }
+                    Text(
+                        if (customEffortsEnabled) "聊天菜单只显示勾选等级；不勾选则仅保留自动。适用于此配置内所有模型，请确认供应商支持。"
+                        else "优先使用供应商声明或已知模型规则；未知模型允许手动尝试。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Button(
                     onClick = { scope.launch {
                         val saved = onSaveSettings(
@@ -190,7 +222,11 @@ fun SettingsScreen(
                                 apiKey = apiKey.trim(),
                                 contextWindow = contextWindow,
                                 workspacePath = state.workspacePath,
-                                reasoningEffort = state.settings.reasoningEffort,
+                                reasoningEffort = dev.pocketagent.agent.ReasoningEffortSupport.retainSelection(
+                                    state.settings.reasoningEffort,
+                                    state.modelReasoningEfforts[state.settings.model].orEmpty(),
+                                    if (customEffortsEnabled) selectedEfforts else null),
+                                customReasoningEfforts = if (customEffortsEnabled) selectedEfforts.toList() else null,
                             ),
                         )
                         if (saved) showEditProfile = false

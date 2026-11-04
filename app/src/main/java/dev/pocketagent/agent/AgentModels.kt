@@ -158,6 +158,7 @@ object ReasoningEffortSupport {
         "high",
         "xhigh",
         "max",
+        "ultra",
     )
 
     fun normalize(values: Iterable<String>): List<String> =
@@ -167,6 +168,13 @@ object ReasoningEffortSupport {
             .distinct()
             .sortedBy { knownOrder.indexOf(it) }
             .toList()
+
+    /** Unknown capability metadata must not prevent an explicit user override. */
+    fun selectable(declared: List<String>, custom: List<String>? = null): List<String> =
+        custom?.let(::normalize) ?: normalize(declared).ifEmpty { knownOrder }
+
+    fun retainSelection(effort: String, declared: List<String>, custom: List<String>? = null): String =
+        effort.takeIf { it == "auto" || it in selectable(declared, custom) } ?: "auto"
 
     fun infer(modelId: String): List<String> {
         val id = modelId.lowercase(Locale.ROOT)

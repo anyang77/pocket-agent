@@ -1042,7 +1042,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         else -> models.firstOrNull() ?: settings.model
                     }
                     val updated = settings.copy(model = preferred, reasoningEffort =
-                        settings.reasoningEffort.takeIf { it == "auto" || it in efforts[preferred].orEmpty() } ?: "auto")
+                        dev.pocketagent.agent.ReasoningEffortSupport.retainSelection(settings.reasoningEffort, efforts[preferred].orEmpty(), settings.customReasoningEfforts))
                     val profiles = withContext(Dispatchers.IO) {
                         if (updated != settings) settingsRepository.save(updated, requested.activeProfileId)
                         settingsRepository.loadProfiles()
@@ -1121,14 +1121,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectModel(model: String) = updateSelectedModel { settings ->
         val supported = _state.value.modelReasoningEfforts[model].orEmpty()
-        settings.copy(model = model, reasoningEffort = settings.reasoningEffort.takeIf {
-            it == "auto" || it in supported
-        } ?: "auto")
+        settings.copy(model = model, reasoningEffort =
+            dev.pocketagent.agent.ReasoningEffortSupport.retainSelection(settings.reasoningEffort, supported, settings.customReasoningEfforts))
     }
 
     fun selectReasoningEffort(effort: String) = updateSelectedModel { settings ->
         val supported = _state.value.modelReasoningEfforts[settings.model].orEmpty()
-        if (effort != "auto" && effort !in supported) settings else settings.copy(reasoningEffort = effort)
+        if (effort != "auto" && effort !in dev.pocketagent.agent.ReasoningEffortSupport.selectable(supported, settings.customReasoningEfforts)) settings
+        else settings.copy(reasoningEffort = effort)
     }
 
     private fun mutateModelProfiles(notice: String? = null, action: () -> Unit) {
@@ -3681,6 +3681,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         contextWindow = contextWindow,
         workspacePath = workspacePath,
         reasoningEffort = reasoningEffort,
+        customReasoningEfforts = customReasoningEfforts,
     )
 
     override fun onCleared() {

@@ -409,16 +409,18 @@ private fun EffortMenuContent(
         selected = current == "auto",
         onClick = { onSelected("auto") },
     )
-    efforts.forEach { effort ->
+    dev.pocketagent.agent.ReasoningEffortSupport.selectable(efforts, state.settings.customReasoningEfforts).forEach { effort ->
         AgentMenuItem(
             title = reasoningEffortLabel(effort),
+            subtitle = if (state.settings.customReasoningEfforts != null) "配置指定 · 请确认供应商支持"
+                else if (efforts.isEmpty()) "手动指定 · 供应商支持情况未验证" else null,
             selected = current == effort,
             onClick = { onSelected(effort) },
         )
     }
-    if (efforts.isEmpty()) {
+    if (efforts.isEmpty() && state.settings.customReasoningEfforts == null) {
         AgentMenuItem(
-            title = "该模型未声明可调等级",
+            title = "未声明等级；不支持时请改回自动",
             enabled = false,
             onClick = {},
         )

@@ -14,6 +14,7 @@ data class ModelProfile(
     val apiKey: String,
     val contextWindow: Int,
     val reasoningEffort: String,
+    val customReasoningEfforts: List<String>? = null,
 )
 
 data class AiSettings(
@@ -23,6 +24,7 @@ data class AiSettings(
     val contextWindow: Int = 128_000,
     val workspacePath: String = "",
     val reasoningEffort: String = "auto",
+    val customReasoningEfforts: List<String>? = null,
 )
 
 class SettingsRepository(
@@ -64,6 +66,7 @@ class SettingsRepository(
             apiKey = settings.apiKey.trim(),
             contextWindow = settings.contextWindow.coerceIn(MIN_CONTEXT_WINDOW, MAX_CONTEXT_WINDOW),
             reasoningEffort = settings.reasoningEffort.trim().ifBlank { "auto" },
+            customReasoningEfforts = settings.customReasoningEfforts?.let(dev.pocketagent.agent.ReasoningEffortSupport::normalize),
         )
         profiles[index] = updated
         saveProfilesInternal(profiles, activeProfileId())
@@ -141,6 +144,10 @@ class SettingsRepository(
                                 contextWindow = item.optInt("context_window", 128_000)
                                     .coerceIn(MIN_CONTEXT_WINDOW, MAX_CONTEXT_WINDOW),
                                 reasoningEffort = item.optString("reasoning_effort", "auto"),
+                                customReasoningEfforts = item.optJSONArray("custom_reasoning_efforts")?.let { array ->
+                                    dev.pocketagent.agent.ReasoningEffortSupport.normalize(
+                                        (0 until array.length()).map { array.optString(it) })
+                                },
                             ),
                         )
                     }
@@ -191,6 +198,7 @@ class SettingsRepository(
                     put("model", profile.model)
                     put("context_window", profile.contextWindow)
                     put("reasoning_effort", profile.reasoningEffort)
+                    profile.customReasoningEfforts?.let { put("custom_reasoning_efforts", JSONArray(it)) }
                 },
             )
             secretStore.putApiKey(profile.id, profile.apiKey)
@@ -219,6 +227,7 @@ class SettingsRepository(
         contextWindow = contextWindow,
         workspacePath = workspacePath,
         reasoningEffort = reasoningEffort,
+        customReasoningEfforts = customReasoningEfforts,
     )
 
     companion object {

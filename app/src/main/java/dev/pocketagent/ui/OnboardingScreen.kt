@@ -165,6 +165,7 @@ fun OnboardingScreen(
                                         contextWindow = contextWindow,
                                         workspacePath = state.workspacePath,
                                         reasoningEffort = state.settings.reasoningEffort,
+                                        customReasoningEfforts = state.settings.customReasoningEfforts,
                                     ),
                                 )
                             }
