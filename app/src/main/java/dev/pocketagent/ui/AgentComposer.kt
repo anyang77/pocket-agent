@@ -98,7 +98,15 @@ internal fun AgentComposer(
                     },
                     onCommand = { command ->
                         commandsVisible = false
-                        onComposerCommand(command)
+                        if (command == "/goal") {
+                            val draft = if (value.text.startsWith("/goal ")) value.text else "/goal ${value.text}"
+                            value = TextFieldValue(draft, TextRange(draft.length))
+                            onDraft(draft)
+                            focusRequester.requestFocus()
+                            keyboard?.show()
+                        } else {
+                            onComposerCommand(command)
+                        }
                     },
                 )
             }

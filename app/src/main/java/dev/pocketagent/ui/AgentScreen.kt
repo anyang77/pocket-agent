@@ -79,6 +79,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -242,6 +244,7 @@ fun AgentScreen(
             ConversationHistory(
                 conversations = state.conversations,
                 currentId = state.currentConversationId,
+                runningIds = state.runningConversationIds,
                 onSelect = {
                     onSelectConversation(it)
                     historyVisible = false
@@ -389,6 +392,7 @@ fun AgentScreen(
 private fun ConversationHistory(
     conversations: List<ConversationSummary>,
     currentId: Long?,
+    runningIds: Set<Long>,
     onSelect: (Long) -> Unit,
     onDelete: (Long) -> Unit,
     onNew: () -> Unit,
@@ -439,12 +443,27 @@ private fun ConversationHistory(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(Modifier.weight(1f)) {
-                                Text(
-                                    conversation.title,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    if (conversation.id in runningIds) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier
+                                                .size(16.dp)
+                                                .semantics { contentDescription = "运行中" },
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                    Text(
+                                        conversation.title,
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                                 Text(
                                     conversation.preview,
                                     style = MaterialTheme.typography.labelSmall,
@@ -458,7 +477,7 @@ private fun ConversationHistory(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            IconButton(onClick = { onDelete(conversation.id) }) {
+                            IconButton(onClick = { onDelete(conversation.id) }, enabled = conversation.id !in runningIds) {
                                 Icon(Icons.Outlined.Delete, contentDescription = "删除对话")
                             }
                         }

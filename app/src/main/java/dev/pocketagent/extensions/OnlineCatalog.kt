@@ -233,7 +233,7 @@ private fun metadataGroups(item: JSONObject): List<Pair<String, JSONObject>> = b
 internal fun catalogInputs(item: JSONObject): List<CatalogInput> = buildList {
     fun variables(prefix: String, template: String, obj: JSONObject) {
         val vars = obj.optJSONObject("variables") ?: JSONObject()
-        (vars.keys().asSequence().toList() + Regex("\\{([^{}]+)}").findAll(template).map { it.groupValues[1] }.toList()).distinct().forEach { name ->
+        (vars.keys().asSequence().toList() + Regex("\\{([^{}]+)\\}").findAll(template).map { it.groupValues[1] }.toList()).distinct().forEach { name ->
             val v = vars.optJSONObject(name) ?: JSONObject()
             add(CatalogInput("$prefix:$name", name, v.optString("description"), true, v.optBoolean("isSecret", true), v.optString("default"), v.optJSONArray("choices")?.stringList().orEmpty()))
         }
@@ -253,7 +253,7 @@ internal fun compileCatalogMcp(name: String, item: JSONObject, values: Map<Strin
         require(!field.required || !effective[field.key].isNullOrBlank()) { "请填写 ${field.label}" }
         require(effective[field.key].isNullOrBlank() || field.choices.isEmpty() || effective[field.key] in field.choices) { "${field.label} 的取值无效" }
     }
-    fun resolve(key: String, template: String): String = Regex("\\{([^{}]+)}").replace(template) { match -> effective["$key:${match.groupValues[1]}"] ?: error("缺少 ${match.groupValues[1]}") }
+    fun resolve(key: String, template: String): String = Regex("\\{([^{}]+)\\}").replace(template) { match -> effective["$key:${match.groupValues[1]}"] ?: error("缺少 ${match.groupValues[1]}") }
     fun value(key: String, obj: JSONObject) = if (obj.optString("value").isNotEmpty()) resolve(key, obj.getString("value")) else effective[key].orEmpty()
     val groups = metadataGroups(item)
     val id = "registry-" + MessageDigest.getInstance("SHA-256").digest(name.toByteArray()).take(10).joinToString("") { "%02x".format(it) }

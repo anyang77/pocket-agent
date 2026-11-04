@@ -119,6 +119,7 @@ data class AppUiState(
     val auditEntries: List<AuditEntry> = emptyList(),
     val conversations: List<ConversationSummary> = emptyList(),
     val currentConversationId: Long? = null,
+    val runningConversationIds: Set<Long> = emptySet(),
     val availableModels: List<String> = emptyList(),
     val modelReasoningEfforts: Map<String, List<String>> = emptyMap(),
     val modelsLoading: Boolean = false,

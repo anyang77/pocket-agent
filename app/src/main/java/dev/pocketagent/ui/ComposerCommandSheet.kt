@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AltRoute
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Compress
+import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.RateReview
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -66,6 +67,14 @@ internal fun ComposerCommandPanel(
             command = "/plan",
             enabled = !state.agentRunning,
             onClick = { onCommand("/plan") },
+        )
+        CommandRow(
+            icon = Icons.Outlined.Flag,
+            title = "目标模式",
+            detail = "填写任务目标，开始执行并跟踪进度",
+            command = "/goal",
+            enabled = !state.agentRunning,
+            onClick = { onCommand("/goal") },
         )
         CommandRow(
             icon = Icons.Outlined.Description,

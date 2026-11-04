@@ -67,9 +67,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
@@ -124,7 +122,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val conversationStore = ConversationStore(application)
     private val attachmentStore = ChatAttachmentStore(application)
     private val composerStore = AgentComposerStore(application)
-    private var composerSaveJob: Job? = null
+    private val composerSaveJobs = mutableMapOf<Long, Job>()
     private var mentionSearchJob: Job? = null
     private var attachmentJobs = 0
     private val currentConversationRepository = CurrentConversationRepository(application)
@@ -151,19 +149,66 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
     private val agentExtensions = AgentExtensions(extensionRepository, skillRepository, subagentManager,
         internalRuntime, { workspace.root }, auditLog)
-    private val agentEngine = AgentEngine(
-        workspace = workspace,
-        commandRunner = commandRunner,
-        systemAccess = systemAccess,
-        rootAvailable = { autoUseRoot },
-        aiClient = aiClient,
-        auditLog = auditLog,
-        extensions = agentExtensions,
-        commandAuth = gitRepository::commandAuth,
-    )
-    private var pendingApprovalDeferred: CompletableDeferred<Boolean>? = null
-    private var pendingChoiceDeferred: CompletableDeferred<AgentChoice?>? = null
-    private var agentJob: Job? = null
+    private inner class ConversationRuntime(val id: Long) {
+        // Share installed runtime files, not process/cancellation handles.
+        val runtime = TermuxRuntime(getApplication())
+        val runner = CommandRunner(rootDetector, runtime)
+        val system = SystemAccessRepository(appContext, runner, useRoot = { autoUseRoot })
+        val client = AiClient()
+        val children = SubagentManager(viewModelScope, extensionRepository::settings) { childClient, prompt, settings, onEvent ->
+            val childRunner = CommandRunner(rootDetector, TermuxRuntime(getApplication()))
+            AgentEngine(workspace, childRunner, system, permissions = { permissionSettingsRepository.load() },
+                aiClient = childClient, auditLog = auditLog, readOnlySubagent = true).run(
+                userText = prompt, settings = settings,
+                authorize = { PermissionDecision(false, "子代理仅进行只读检查") }, onEvent = onEvent)
+        }
+        val extensions = AgentExtensions(extensionRepository, skillRepository, children,
+            runtime, { workspace.root }, auditLog)
+        val engine = AgentEngine(workspace, runner, system, rootAvailable = { autoUseRoot },
+            aiClient = client, auditLog = auditLog, extensions = extensions,
+            commandAuth = gitRepository::commandAuth, toolScheduler = workspaceToolScheduler)
+        var job: Job? = null
+        var assistantId: Long? = null
+        var approval: CompletableDeferred<Boolean>? = null
+        var choice: CompletableDeferred<AgentChoice?>? = null
+        val observers = listOf(
+            viewModelScope.launch(_state.context(id)) {
+                extensions.servers.collect { servers -> _state.update { it.copy(mcpStates = servers) } }
+            },
+            viewModelScope.launch(_state.context(id)) {
+                children.tasks.collect { tasks -> _state.update { it.copy(subagentTasks = tasks) } }
+            },
+        )
+        fun cancel() {
+            approval?.complete(false)
+            choice?.complete(null)
+            client.cancel()
+            runner.cancel()
+            children.stopAll()
+            extensions.close()
+            job?.cancel()
+        }
+        fun close() { cancel(); observers.forEach { it.cancel() } }
+    }
+
+    private val runtimes = java.util.concurrent.ConcurrentHashMap<Long, ConversationRuntime>()
+    private val workspaceToolScheduler = dev.pocketagent.agent.WorkspaceToolScheduler()
+    private val conversationSaveMutex = Mutex()
+    private val conversationSaveRevision = AtomicLong()
+    private fun runtimeFor(id: Long): ConversationRuntime = runtimes.getOrPut(id) { ConversationRuntime(id) }
+    private val selectedRuntime: ConversationRuntime?
+        get() = _state.value.currentConversationId?.let(runtimes::get)
+    private var activeAssistantId: Long?
+        get() = selectedRuntime?.assistantId
+        set(value) { selectedRuntime?.assistantId = value }
+    private var pendingApprovalDeferred: CompletableDeferred<Boolean>?
+        get() = selectedRuntime?.approval
+        set(value) { selectedRuntime?.approval = value }
+    private var pendingChoiceDeferred: CompletableDeferred<AgentChoice?>?
+        get() = selectedRuntime?.choice
+        set(value) { selectedRuntime?.choice = value }
+    private fun anyAgentRunning(): Boolean = runtimes.values.any { it.job != null }
+
     private var editorLintJob: Job? = null
     private var modelsJob: Job? = null
     private val modelsRevision = AtomicLong()
@@ -178,13 +223,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val nextConversationId = AtomicLong(1)
     private val conversationCache = linkedMapOf<Long, StoredConversation>()
     private var currentConversation: StoredConversation? = null
-    private var activeAssistantId: Long? = null
     private var settingsLoaded = false
     @Volatile
     private var workspaceNeedsConfiguration = true
     private val workspaceConfigurationMutex = Mutex()
 
-    private val _state = MutableStateFlow(
+    private val _state = SessionStateRouter(
         AppUiState(
             welcomeAccepted = onboardingRepository.isWelcomeAccepted(),
             welcomeVisible = false,
@@ -209,8 +253,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         auditLog.append("app", "应用启动", "CodeMate 启动")
-        viewModelScope.launch { agentExtensions.servers.collect { servers -> _state.update { it.copy(mcpStates = servers) } } }
-        viewModelScope.launch { subagentManager.tasks.collect { tasks -> _state.update { it.copy(subagentTasks = tasks) } } }
+        viewModelScope.launch {
+            agentExtensions.servers.collect { servers ->
+                if (!anyAgentRunning()) _state.update { it.copy(mcpStates = servers) }
+            }
+        }
         refreshExtensions()
         viewModelScope.launch {
             auditLog.entries.collect { entries ->
@@ -294,17 +341,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveExtensionSettings(settings: ExtensionSettings) {
+        if (anyAgentRunning()) {
+            _state.update { it.copy(notice = "请在所有任务结束后修改扩展设置") }
+            return
+        }
         extensionRepository.saveSettings(settings)
-        if (!settings.subagentsEnabled) subagentManager.stopAll()
+        if (!settings.subagentsEnabled) { subagentManager.stopAll(); runtimes.values.forEach { it.children.stopAll() } }
         _state.update { it.copy(extensionSettings = settings) }
     }
 
     fun setSkillEnabled(id: String, enabled: Boolean) {
+        if (anyAgentRunning()) { _state.update { it.copy(notice = "请在所有任务结束后修改技能") }; return }
         skillRepository.setEnabled(id, enabled)
         refreshExtensions()
     }
 
     fun saveSkill(id: String?, name: String, description: String, content: String) {
+        if (anyAgentRunning()) { _state.update { it.copy(notice = "请在所有任务结束后修改技能") }; return }
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { skillRepository.save(name, description, content, id) }
@@ -315,6 +368,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun removeSkill(id: String) {
+        if (anyAgentRunning()) { _state.update { it.copy(notice = "请在所有任务结束后修改技能") }; return }
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { skillRepository.remove(id) } }
                 .onFailure { error -> _state.update { it.copy(notice = error.message ?: "删除失败") } }
@@ -323,7 +377,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun importMcpConfig(json: String) {
-        if (_state.value.agentRunning) { _state.update { it.copy(notice = "请在当前任务结束后修改 MCP 配置") }; return }
+        if (anyAgentRunning()) { _state.update { it.copy(notice = "请在当前任务结束后修改 MCP 配置") }; return }
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { extensionRepository.importServers(json) }
@@ -335,20 +389,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveMcpServer(config: McpServerConfig) {
-        if (_state.value.agentRunning) { _state.update { it.copy(notice = "请在当前任务结束后修改 MCP 配置") }; return }
+        if (anyAgentRunning()) { _state.update { it.copy(notice = "请在当前任务结束后修改 MCP 配置") }; return }
         runCatching { extensionRepository.saveServer(config); agentExtensions.disconnect(config.id); refreshExtensions() }
             .onFailure { error -> _state.update { it.copy(notice = error.message ?: "配置无效") } }
     }
 
     fun removeMcpServer(id: String) {
-        if (_state.value.agentRunning) { _state.update { it.copy(notice = "请在当前任务结束后修改 MCP 配置") }; return }
+        if (anyAgentRunning()) { _state.update { it.copy(notice = "请在当前任务结束后修改 MCP 配置") }; return }
         agentExtensions.disconnect(id)
         extensionRepository.removeServer(id)
         refreshExtensions()
     }
 
     fun testMcpServer(id: String) {
-        if (_state.value.agentRunning) { _state.update { it.copy(notice = "任务正在使用扩展，请稍后测试连接") }; return }
+        if (anyAgentRunning()) { _state.update { it.copy(notice = "任务正在使用扩展，请稍后测试连接") }; return }
         val config = extensionRepository.servers().firstOrNull { it.id == id } ?: return
         viewModelScope.launch {
             try { agentExtensions.connect(config) }
@@ -413,7 +467,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun installCatalogSkill(item: CatalogSkill) {
-        if (catalogInstallJob?.isActive == true || _state.value.agentRunning) return
+        if (catalogInstallJob?.isActive == true || anyAgentRunning()) return
         catalogInstallJob = viewModelScope.launch {
             _state.update { it.copy(onlineCatalog = it.onlineCatalog.copy(busy = item.key, error = null)) }
             try {
@@ -454,15 +508,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun stopSubagent(id: String) { subagentManager.stop(id) }
+    fun stopSubagent(id: String) { selectedRuntime?.children?.stop(id) }
 
     private fun saveComposer() {
         val current = _state.value
         val id = current.currentConversationId ?: return
         val revision = composerStore.reserveRevision(id)
-        // Capture the snapshot; a superseded IO write must never overwrite a later draft.
-        composerSaveJob?.cancel()
-        composerSaveJob = viewModelScope.launch {
+        // Each session owns its debounce; another conversation must not cancel its draft save.
+        composerSaveJobs.remove(id)?.cancel()
+        composerSaveJobs[id] = viewModelScope.launch {
             delay(150)
             withContext(Dispatchers.IO) {
                 composerStore.save(id, StoredComposer(current.agentInputDraft,
@@ -472,8 +526,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun flushComposer() {
-        composerSaveJob?.cancel()
         val current = _state.value
+        current.currentConversationId?.let { composerSaveJobs.remove(it)?.cancel() }
         current.currentConversationId?.let { id ->
             composerStore.save(id, StoredComposer(current.agentInputDraft,
                 current.agentAttachments, current.queuedPrompts), composerStore.reserveRevision(id))
@@ -510,14 +564,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun addAgentImages(uris: List<Uri>) {
         if (uris.isEmpty() || _state.value.agentAttachmentsLoading) return
-        val conversationId = _state.value.currentConversationId
+        val conversationId = _state.value.currentConversationId ?: return
         val available = (4 - _state.value.agentAttachments.count { it.isImage }).coerceAtLeast(0)
         if (available == 0) {
             _state.update { it.copy(notice = "每条消息最多添加 4 张图片") }; return
         }
         attachmentJobs++
         _state.update { it.copy(agentAttachmentsLoading = true) }
-        viewModelScope.launch {
+        viewModelScope.launch(_state.context(conversationId)) {
             try {
                 for (uri in uris.take(available)) {
                     val attachment = withContext(Dispatchers.IO) { attachmentStore.importImage(uri) }
@@ -543,10 +597,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (current.agentAttachments.count { !it.isImage } >= 8) {
             _state.update { it.copy(notice = "每条消息最多引用 8 个文件") }; return
         }
+        val conversationId = current.currentConversationId ?: return
         val root = workspace.root.path
         attachmentJobs++
         _state.update { it.copy(agentAttachmentsLoading = true) }
-        viewModelScope.launch {
+        viewModelScope.launch(_state.context(conversationId)) {
             try {
                 val content = workspace.readText(path, maxChars = 48_001)
                 val snapshot = withContext(Dispatchers.IO) {
@@ -627,10 +682,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun newConversation() {
-        if (_state.value.agentRunning) {
-            _state.update { it.copy(notice = "请等待当前任务结束") }
-            return
-        }
         flushComposer()
         persistCurrentConversation()
         val now = System.currentTimeMillis()
@@ -651,45 +702,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         conversationCache[id] = conversation
         currentConversation = conversation
         currentConversationRepository.save(id)
-        agentEngine.reset()
-        subagentManager.reset()
-        _state.update {
-            it.copy(
-                chat = listOf(welcome),
-                agentPlanMode = false,
-                agentPlanToExecute = null,
-                agentInputDraft = "",
-                agentAttachments = emptyList(), queuedPrompts = emptyList(), queuePaused = false,
-                currentConversationId = id,
-                agentContextTokens = 0,
-                conversations = conversationSummaries(),
-            )
-        }
+        _state.show(AppUiState(currentConversationId = id, chat = listOf(welcome)))
+        _state.publish { it.copy(conversations = conversationSummaries()) }
         saveConversationCache()
         auditLog.append("conversation", "新建对话", "id=$id")
     }
 
     fun selectConversation(id: Long) {
-        if (_state.value.agentRunning) {
-            _state.update { it.copy(notice = "请等待当前任务结束") }
-            return
-        }
         val conversation = conversationCache[id] ?: return
-        if (currentConversation?.id == id) return
+        if (state.value.currentConversationId == id) return
         flushComposer()
         persistCurrentConversation()
         loadConversation(conversation)
     }
 
     fun deleteConversation(id: Long) {
-        if (_state.value.agentRunning && currentConversation?.id == id) {
+        if (runtimes[id]?.job != null) {
             _state.update { it.copy(notice = "不能删除正在执行的对话") }
             return
         }
         if (_state.value.currentConversationId == id) {
-            composerSaveJob?.cancel()
+            composerSaveJobs.remove(id)?.cancel()
             _state.update { it.copy(currentConversationId = null) }
         }
+        runtimes.remove(id)?.close()
+        _state.remove(id)
         composerStore.delete(id)
         conversationCache.remove(id)
         if (currentConversation?.id == id) {
@@ -704,9 +741,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun loadConversation(conversation: StoredConversation) {
-        subagentManager.reset()
         currentConversation = conversation
         currentConversationRepository.save(conversation.id)
+        _state.snapshot(conversation.id)?.let { _state.show(it); return }
         val chat = conversation.messages.mapNotNull { message ->
             val role = runCatching { ChatRole.valueOf(message.role) }.getOrNull() ?: return@mapNotNull null
             val content = if (role == ChatRole.ASSISTANT && message.activities.isEmpty()) {
@@ -748,27 +785,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 else -> null
             }
         }
-        if (conversation.agentMessages.isNotEmpty()) {
-            agentEngine.loadConversation(conversation.agentMessages)
-        } else {
-            agentEngine.loadHistory(history)
-        }
         val composer = composerStore.load(conversation.id)
         nextId.updateAndGet { maxOf(it, (composer.queue.maxOfOrNull { item -> item.id } ?: 0L) + 1) }
-        _state.update {
-            it.copy(
-                chat = chat,
-                agentPlanMode = false,
-                agentPlanToExecute = null,
-                agentInputDraft = composer.text,
-                agentAttachments = composer.attachments,
-                queuedPrompts = composer.queue,
-                queuePaused = composer.queue.isNotEmpty(),
-                currentConversationId = conversation.id,
-                agentContextTokens = 0,
-                conversations = conversationSummaries(),
-            )
-        }
+        _state.show(AppUiState(currentConversationId = conversation.id, chat = chat,
+            agentInputDraft = composer.text, agentAttachments = composer.attachments,
+            queuedPrompts = composer.queue, queuePaused = composer.queue.isNotEmpty()))
+        val engine = runtimeFor(conversation.id).engine
+        if (conversation.agentMessages.isNotEmpty()) engine.loadConversation(conversation.agentMessages)
+        else engine.loadHistory(history)
+
         auditLog.append(
             "conversation",
             "切换对话",
@@ -786,9 +811,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .replace(Regex("""\n{3,}"""), "\n\n")
             .trim()
 
-    private fun persistCurrentConversation(history: List<AgentMessage> = agentEngine.snapshotHistory()) {
-        val conversation = currentConversation ?: return
-        val chat = _state.value.chat
+    private fun persistCurrentConversation(history: List<AgentMessage>? = null) {
+        val id = _state.value.currentConversationId ?: return
+        val conversation = conversationCache[id] ?: return
+        val session = _state.value
+        val chat = session.chat
             .filter { it.role != ChatRole.SYSTEM }
             .filter { it.content.isNotBlank() || it.error != null || it.attachments.isNotEmpty() }
         if (chat.isEmpty()) return
@@ -803,19 +830,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             title = title,
             updatedAt = System.currentTimeMillis(),
             messages = chat.map { it.toStoredMessage() },
-            agentMessages = history,
+            agentMessages = history ?: runtimes[id]?.engine?.snapshotHistory().orEmpty(),
         )
         conversationCache[updated.id] = updated
-        currentConversation = updated
-        _state.update { it.copy(conversations = conversationSummaries()) }
+        if (state.value.currentConversationId == id) currentConversation = updated
+        _state.publish { it.copy(conversations = conversationSummaries()) }
         saveConversationCache()
     }
 
     private fun saveConversationCache() {
         val snapshot = conversationCache.values.toList()
+        val revision = conversationSaveRevision.incrementAndGet()
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { conversationStore.save(snapshot) }
+            conversationSaveMutex.withLock {
+                if (revision == conversationSaveRevision.get()) runCatching { conversationStore.save(snapshot) }
+            }
         }
+    }
+
+    private fun publishRunningConversations() {
+        _state.publish { it.copy(runningConversationIds = runtimes.values.filter { runtime -> runtime.job != null }.map { runtime -> runtime.id }.toSet()) }
     }
 
     private fun conversationSummaries(): List<ConversationSummary> =
@@ -942,7 +976,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val changed = settings.workspacePath.isNotBlank() && settings.workspacePath != _state.value.workspacePath
                 if (changed) {
-                    check(!_state.value.agentRunning) { "请在当前任务结束后切换工作区" }
+                    check(!anyAgentRunning()) { "请在所有对话任务结束后切换工作区" }
                     withContext(Dispatchers.IO) {
                         workspace.configure(settings.workspacePath)
                         workspace.ensureWorkspace()
@@ -1169,9 +1203,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun requestUserChoice(question: UserQuestion): AgentChoice? {
-        if (pendingChoiceDeferred != null) {
-            return null
-        }
+        if (pendingChoiceDeferred != null) return null
         val deferred = CompletableDeferred<AgentChoice?>()
         pendingChoiceDeferred = deferred
         activeAssistantId?.let { setTurnPhase(it, AgentTurnPhase.WAITING_APPROVAL) }
@@ -1188,7 +1220,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return try {
             withTimeoutOrNull(USER_CHOICE_TIMEOUT_MS) { deferred.await() }
         } finally {
-            pendingChoiceDeferred = null
+            if (pendingChoiceDeferred === deferred) pendingChoiceDeferred = null
             _state.update { it.copy(pendingUserChoice = null) }
         }
     }
@@ -1303,9 +1335,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 ),
             )
         }
-        val allowed = withTimeoutOrNull(APPROVAL_TIMEOUT_MS) { deferred.await() } ?: false
-        pendingApprovalDeferred = null
-        _state.update { it.copy(pendingApproval = null) }
+        val allowed = try {
+            withTimeoutOrNull(APPROVAL_TIMEOUT_MS) { deferred.await() } ?: false
+        } finally {
+            // Cancellation while awaiting approval must not poison the next task.
+            if (pendingApprovalDeferred === deferred) {
+                pendingApprovalDeferred = null
+                _state.update { it.copy(pendingApproval = null) }
+            }
+        }
         auditLog.append(
             "permission",
             if (allowed) "用户允许" else "用户拒绝",
@@ -1709,21 +1747,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshGit() {
         if (_state.value.gitLoading) return
         val workspacePath = _state.value.workspacePath
-        _state.update { it.copy(gitLoading = true, gitError = null) }
+        _state.publish { it.copy(gitLoading = true, gitError = null) }
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 check(ensureGitToolchain()) { _state.value.gitError ?: "Git 工具链安装失败，请重试环境初始化" }
                 val git = gitRepository.state()
                 val repositories = if (git.isRepository) managedRepositoryStore.touch(workspace.displayRoot)
                     else managedRepositoryStore.load()
-                _state.update {
+                _state.publish {
                     if (it.workspacePath != workspacePath) it
                     else it.copy(gitState = git, gitError = git.error, managedRepositories = repositories)
                 }
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) {
-                _state.update { if (it.workspacePath != workspacePath) it else it.copy(gitError = error.message ?: "无法读取 Git 状态") }
-            } finally { _state.update { it.copy(gitLoading = false) } }
+                _state.publish { if (it.workspacePath != workspacePath) it else it.copy(gitError = error.message ?: "无法读取 Git 状态") }
+            } finally { _state.publish { it.copy(gitLoading = false) } }
         }
     }
 
@@ -2732,6 +2770,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val settings = _state.value.settings
+        val conversationId = _state.value.currentConversationId ?: return
+        val runtime = runtimeFor(conversationId)
         var fallback = false
         auditLog.append("agent", "压缩上下文", "用户从输入框更多功能手动触发")
         _state.update {
@@ -2751,9 +2791,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 notice = "无法启动后台服务，未开始压缩：${error.message}") }
             return
         }
-        agentJob = viewModelScope.launch {
+        val job = viewModelScope.launch(_state.context(conversationId), start = kotlinx.coroutines.CoroutineStart.LAZY) {
             try {
-                val compacted = agentEngine.compactNow(settings) { event ->
+                val compacted = runtime.engine.compactNow(settings) { event ->
                     _state.update { it.copy(agentContextTokens = event.contextTokensForDisplay(it.agentContextTokens)) }
                     when (event) {
                         is AgentEvent.State -> _state.update {
@@ -2781,8 +2821,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Exception) {
                 _state.update { it.copy(notice = error.message ?: "压缩上下文失败") }
             } finally {
-                AgentForegroundService.stop(appContext)
-                agentJob = null
+                runtime.job = null
+                publishRunningConversations()
+                if (!anyAgentRunning()) AgentForegroundService.stop(appContext)
                 _state.update {
                     it.copy(
                         agentRunning = false,
@@ -2793,6 +2834,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        runtime.job = job
+        publishRunningConversations()
+        job.start()
     }
 
     fun runComposerCommand(command: String) {
@@ -2872,7 +2916,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(notice = "请先在设置里填写 API Key") }
             return
         }
-        if (_state.value.agentRunning) {
+        val targetId = _state.value.currentConversationId ?: return
+        if (runtimes[targetId]?.job != null) {
             _state.update {
                 it.copy(
                     agentInputDraft = "",
@@ -2895,7 +2940,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         val taskSettings = _state.value.settings
         val taskWorkspacePath = workspace.root.canonicalPath
-        subagentManager.reset()
+        val conversationId = targetId
+        val runtime = runtimeFor(conversationId)
+        val sessionEngine = runtime.engine
+        runtime.children.reset()
         val user = ChatEntry(nextId.getAndIncrement(), ChatRole.USER, prompt, attachments = attachments)
         var assistantId = nextId.getAndIncrement()
         val assistant = ChatEntry(
@@ -2928,7 +2976,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         var streamChars = 0
         var streamStartedAt = System.currentTimeMillis()
         var speedUpdatedAt = 0L
-        agentJob = viewModelScope.launch {
+        val job = viewModelScope.launch(_state.context(conversationId), start = kotlinx.coroutines.CoroutineStart.LAZY) {
             try {
                 val modelText = withContext(Dispatchers.IO) {
                     val base = attachmentStore.modelText(prompt, attachments)
@@ -2950,7 +2998,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     } else base
                 }
                 val images = withContext(Dispatchers.IO) { attachmentStore.imagePaths(attachments) }
-                agentEngine.run(
+                sessionEngine.run(
                     userText = modelText,
                     imagePaths = images,
                     settings = taskSettings,
@@ -2993,7 +3041,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 streamChars = 0
                                 streamStartedAt = System.currentTimeMillis()
                                 speedUpdatedAt = 0L
-                                persistCurrentConversation(agentEngine.snapshotHistory() + admitted.map { it.second })
+                                persistCurrentConversation(sessionEngine.snapshotHistory() + admitted.map { it.second })
                                 saveComposer()
                             }
                             admitted.map { it.second }
@@ -3270,7 +3318,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         phase = AgentTurnPhase.FAILED) else entry
                 }) }
             } finally {
-                agentJob = null
+                runtime.job = null
+                publishRunningConversations()
                 if (activeAssistantId == assistantId) activeAssistantId = null
                 _state.update {
                     it.copy(
@@ -3306,8 +3355,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 persistCurrentConversation()
                 refreshGit()
-                subagentManager.stopAll()
-                agentExtensions.close()
+                runtime.children.stopAll()
+                runtime.extensions.close()
+                pendingApprovalDeferred?.complete(false)
+                pendingApprovalDeferred = null
+                pendingChoiceDeferred?.complete(null)
+                pendingChoiceDeferred = null
+                _state.update { it.copy(pendingApproval = null, pendingUserChoice = null) }
                 val failed = _state.value.chat.firstOrNull { it.id == assistantId }?.let {
                     it.error != null || it.phase == AgentTurnPhase.STOPPED
                 } == true
@@ -3321,7 +3375,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     queuedPrompts = state.queuedPrompts.map { it.copy(steering = false) }) }
                 val nextPrompt = _state.value.queuedPrompts.firstOrNull()
                 if (nextPrompt == null || _state.value.queuePaused) {
-                    AgentForegroundService.stop(appContext)
+                    if (!anyAgentRunning()) AgentForegroundService.stop(appContext)
                 } else {
                     // Dispatch synchronously on Main so a manual send cannot overtake this queue item.
                     dispatchQueuedPrompt()
@@ -3329,33 +3383,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 saveComposer()
             }
         }
+        runtime.job = job
+        publishRunningConversations()
+        job.start()
     }
 
     fun onBackgroundServiceTimeout() {
         auditLog.append("agent", "后台服务超时", "系统前台服务运行时限已到，停止任务并保留会话")
-        stopAgent()
-        _state.update { it.copy(notice = "系统后台运行时限已到，任务已停止；会话已保留，请回到前台后继续") }
+        for (runtime in runtimes.values) {
+            _state.forSession(runtime.id) {
+                _state.update { it.copy(queuePaused = true, pendingApproval = null, pendingUserChoice = null) }
+            }
+            runtime.cancel()
+        }
+        _state.publish { it.copy(notice = "系统后台运行时限已到，所有任务已停止；会话已保留，请回到前台后继续") }
     }
 
     fun stopAgent() {
         if (!_state.value.agentRunning) return
         auditLog.append("agent", "请求停止任务", "用户点击停止")
-        subagentManager.stopAll()
-        agentExtensions.close()
+        val id = _state.value.currentConversationId ?: return
         _state.update {
             it.copy(
                 agentStatus = "正在停止任务…",
                 queuePaused = true,
+                pendingApproval = null,
+                pendingUserChoice = null,
             )
         }
         saveComposer()
-        pendingApprovalDeferred?.complete(false)
-        pendingApprovalDeferred = null
-        pendingChoiceDeferred?.complete(null)
-        pendingChoiceDeferred = null
-        aiClient.cancel()
-        commandRunner.cancel()
-        agentJob?.cancel()
+        runtimes[id]?.cancel()
     }
 
     fun runMockAgent() {
@@ -3371,12 +3428,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 chat = emptyList(),
             )
         }
-        agentEngine.reset()
+        selectedRuntime?.engine?.reset()
         refreshModels()
         sendChat("请运行 hello.py 并确认输出。")
     }
 
     fun clearChat() {
+        if (_state.value.agentRunning) { newConversation(); return }
         pendingApprovalDeferred?.complete(false)
         pendingApprovalDeferred = null
         pendingChoiceDeferred?.complete(null)
@@ -3625,11 +3683,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         flushComposer()
+        runtimes.values.forEach { it.close() }
         subagentManager.stopAll()
         agentExtensions.close()
         aiClient.cancel()
         commandRunner.cancel()
-        agentJob?.cancel()
         AgentForegroundService.stop(appContext)
         super.onCleared()
     }

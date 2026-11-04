@@ -88,6 +88,7 @@ class AgentEngine(
     private val extensions: AgentExtensions? = null,
     private val readOnlySubagent: Boolean = false,
     private val commandAuth: () -> GitCommandAuth = { GitCommandAuth() },
+    private val toolScheduler: WorkspaceToolScheduler? = null,
 ) {
     private val conversation = mutableListOf<AgentMessage>()
 
@@ -126,9 +127,9 @@ class AgentEngine(
         } else {
             history
         }
-        conversation += safeHistory.filter {
+        conversation += repairInterruptedToolCalls(safeHistory.filter {
             it.role == "user" || it.role == "assistant" || it.role == "tool"
-        }
+        })
     }
 
     fun snapshotHistory(): List<AgentMessage> =
@@ -407,10 +408,15 @@ class AgentEngine(
                         } else if (!taskMode.allows(call.name)) {
                             ToolResult("TASK_MODE_DENIED: ${taskMode.name} does not allow ${call.name}.", false, "当前模式不允许此操作")
                         } else {
-                            val extra = if (taskMode == AgentTaskMode.EXECUTE) extensions?.execute(call, settings,
-                                conversation.takeLast(8).joinToString("\n") { "${it.role}: ${it.content.orEmpty().take(4000)}" }, authorize) else null
-                            if (extra != null) ToolResult(extra.content, extra.success, extra.preview)
-                            else executeTool(call, authorize, choose, taskMode)
+                            // Unknown remote tools may mutate external/workspace state; serialize conservatively.
+                            val extensionTool = extensions?.displayName(call.name, call.arguments) != null
+                            val execute = suspend {
+                                val extra = if (taskMode == AgentTaskMode.EXECUTE) extensions?.execute(call, settings,
+                                    conversation.takeLast(8).joinToString("\n") { "${it.role}: ${it.content.orEmpty().take(4000)}" }, authorize) else null
+                                if (extra != null) ToolResult(extra.content, extra.success, extra.preview)
+                                else executeTool(call, authorize, choose, taskMode)
+                            }
+                            toolScheduler?.execute(call.name, external = extensionTool) { execute() } ?: execute()
                         }
                     } catch (error: CancellationException) {
                         throw error
@@ -469,6 +475,12 @@ class AgentEngine(
                         ?: lastRetryCount,
                 ),
             )
+        } finally {
+            // Cancellation can interrupt a batch after the assistant tool_calls was recorded.
+            // Repair synchronously, before the ViewModel persists history or accepts another turn.
+            val repaired = repairInterruptedToolCalls(conversation)
+            conversation.clear()
+            conversation += repaired
         }
     }
 

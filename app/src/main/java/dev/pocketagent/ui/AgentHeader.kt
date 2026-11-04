@@ -158,7 +158,6 @@ fun AgentHeaderBar(
             AgentIconAction(
                 icon = Icons.Outlined.AddComment,
                 contentDescription = "新对话",
-                enabled = !state.agentRunning,
                 onClick = onNewConversation,
             )
         }
