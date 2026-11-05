@@ -107,6 +107,7 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
+    implementation("com.google.code.gson:gson:2.10.1")
     implementation(libs.commons.compress)
     implementation(libs.xz)
     implementation(project(":terminal-view"))

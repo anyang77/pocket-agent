@@ -230,25 +230,37 @@ fun PocketAgentApp(viewModel: AppViewModel) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            // Files and terminal own their toolbars; the editor uses the whole workspace.
-            if (state.tab != AppTab.FILES && state.tab != AppTab.TERMINAL) {
-                TopAppBar(
-                    expandedHeight = 52.dp,
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background,
-                    ),
-                    title = {
+            Column {
+                state.historyStorageError?.let { message ->
+                    Surface(color = MaterialTheme.colorScheme.errorContainer) {
                         Text(
-                            when (state.tab) {
-                                AppTab.AGENT -> "Agent"
-                                AppTab.GIT -> "Git"
-                                AppTab.SETTINGS -> "设置"
-                                else -> "CodeMate"
-                            },
-                            style = MaterialTheme.typography.titleLarge,
+                            text = message,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            style = MaterialTheme.typography.bodySmall,
                         )
-                    },
-                )
+                    }
+                }
+                // Files and terminal own their toolbars; the editor uses the whole workspace.
+                if (state.tab != AppTab.FILES && state.tab != AppTab.TERMINAL) {
+                    TopAppBar(
+                        expandedHeight = 52.dp,
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background,
+                        ),
+                        title = {
+                            Text(
+                                when (state.tab) {
+                                    AppTab.AGENT -> "Agent"
+                                    AppTab.GIT -> "Git"
+                                    AppTab.SETTINGS -> "设置"
+                                    else -> "CodeMate"
+                                },
+                                style = MaterialTheme.typography.titleLarge,
+                            )
+                        },
+                    )
+                }
             }
         },
         bottomBar = {

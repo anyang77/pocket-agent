@@ -274,7 +274,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     conversations = conversationStore.load(),
                 )
             }
+            conversationStore.loadFailure?.let { error ->
+                Log.e("ConversationStore", "Failed to load conversation history; overwrites disabled", error)
+                _state.publish { it.copy(historyStorageError = "历史记录读取失败，已保护原文件并暂停保存。请勿清除应用数据。") }
+            }
             viewModelScope.launch(Dispatchers.IO) {
+                if (conversationStore.loadFailure != null) return@launch
                 val referenced = loaded.conversations.flatMap { conversation ->
                     conversation.messages.flatMap { it.attachments.map { attachment -> attachment.path } } +
                         conversation.agentMessages.flatMap { it.imagePaths }
@@ -847,7 +852,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val revision = conversationSaveRevision.incrementAndGet()
         viewModelScope.launch(Dispatchers.IO) {
             conversationSaveMutex.withLock {
-                if (revision == conversationSaveRevision.get()) runCatching { conversationStore.save(snapshot) }
+                if (revision != conversationSaveRevision.get()) return@withLock
+                try {
+                    conversationStore.save(snapshot)
+                    _state.publish { it.copy(historyStorageError = null) }
+                } catch (error: kotlinx.coroutines.CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    Log.e("ConversationStore", "Failed to save conversation history", error)
+                    _state.publish { it.copy(historyStorageError =
+                        if (conversationStore.loadFailure != null) {
+                            "历史记录读取失败，已保护原文件并暂停保存。请勿清除应用数据。"
+                        } else {
+                            "历史记录保存失败，最新内容尚未落盘。请勿退出或清除数据；后续更新会重试。"
+                        }) }
+                }
             }
         }
     }

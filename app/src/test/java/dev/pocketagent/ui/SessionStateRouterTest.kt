@@ -97,6 +97,22 @@ class SessionStateRouterTest {
         assertEquals(global.withConversation(router.value), router.value)
     }
 
+    @Test fun historySaveErrorsAreGlobalAndClearOnlyGlobally() = runTest {
+        val router = SessionStateRouter(AppUiState())
+        router.show(session(1))
+        router.show(session(2))
+        withContext(router.context(1)) {
+            router.publish { it.copy(historyStorageError = "not saved") }
+        }
+        assertEquals("not saved", router.value.historyStorageError)
+        router.show(session(1))
+        assertEquals("not saved", router.value.historyStorageError)
+        router.publish { it.copy(historyStorageError = null) }
+        router.show(session(2))
+        router.show(session(1))
+        assertNull(router.value.historyStorageError)
+    }
+
     @Test fun twoConcurrentStreamsRetainAllTheirOwnDeltas() = runTest {
         val router = SessionStateRouter(AppUiState())
         router.show(session(1, ""))

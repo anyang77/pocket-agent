@@ -203,4 +203,5 @@ data class AppUiState(
     val internalRuntimeInstallMessage: String? = null,
     val internalRuntimeInstallProgress: Float = 0f,
     val notice: String? = null,
+    val historyStorageError: String? = null,
 )
