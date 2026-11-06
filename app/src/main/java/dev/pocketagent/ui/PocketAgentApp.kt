@@ -16,7 +16,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -230,7 +233,15 @@ fun PocketAgentApp(viewModel: AppViewModel) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            Column {
+            // This slot always emits a layout, even when a page owns its toolbar.
+            // Scaffold therefore uses its height instead of adding the top system inset.
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(
+                        WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
+                    ),
+            ) {
                 state.historyStorageError?.let { message ->
                     Surface(color = MaterialTheme.colorScheme.errorContainer) {
                         Text(
@@ -245,6 +256,8 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 if (state.tab != AppTab.FILES && state.tab != AppTab.TERMINAL) {
                     TopAppBar(
                         expandedHeight = 52.dp,
+                        // The parent owns system insets, including above the error banner.
+                        windowInsets = WindowInsets(0, 0, 0, 0),
                         colors = TopAppBarDefaults.topAppBarColors(
                             containerColor = MaterialTheme.colorScheme.background,
                         ),
