@@ -19,6 +19,6 @@ class WorkspaceToolScheduler {
     }
 
     private companion object {
-        val MUTATING_TOOLS = setOf("write_file", "edit_file", "run_command", "mcp_call")
+        val MUTATING_TOOLS = setOf("write_file", "edit_file", "run_command", "mcp_call", "generate_image")
     }
 }

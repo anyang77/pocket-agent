@@ -178,6 +178,7 @@ fun AgentScreen(
     LaunchedEffect(
         state.chat.size,
         lastEntry?.content?.length,
+        lastEntry?.attachments?.size,
         lastEntry?.activities?.size,
         lastEntry?.activities?.lastOrNull()?.success,
         state.agentStatus,
@@ -588,6 +589,8 @@ private fun ChatBubble(
                 liveRetry = liveRetry,
                 liveCompacting = liveCompacting,
             )
+
+            if (entry.attachments.isNotEmpty()) AttachmentRow(entry.attachments)
 
             if (entry.content.isNotBlank() && !entry.pending) {
                 MessageActions(

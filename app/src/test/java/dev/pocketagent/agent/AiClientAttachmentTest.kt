@@ -61,14 +61,14 @@ class AiClientAttachmentTest {
                 listOf(
                     AgentMessage("system", "system"),
                     AgentMessage("user", "看图", imagePaths = listOf(image.path)),
-                    AgentMessage("assistant", "已看到"),
+                    AgentMessage("assistant", "已看到 ![](data:image/png;base64,aGVsbG8=)", imagePaths = listOf(image.path)),
                     AgentMessage("user", "再看这张", imagePaths = listOf(image.path)),
                 ), emptyList(),
             )
             assertEquals("ok", turn.content)
             val messages = captured.get(5, TimeUnit.SECONDS).getJSONArray("messages")
             assertEquals("system", messages.getJSONObject(0).getString("content"))
-            assertEquals("已看到", messages.getJSONObject(2).getString("content"))
+            assertEquals("已看到 [图片数据已移除]", messages.getJSONObject(2).getString("content"))
             for (index in listOf(1, 3)) {
                 val content = messages.getJSONObject(index).getJSONArray("content")
                 assertEquals("text", content.getJSONObject(0).getString("type"))

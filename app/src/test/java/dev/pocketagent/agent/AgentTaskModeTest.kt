@@ -8,7 +8,7 @@ import org.junit.Test
 class AgentTaskModeTest {
     @Test fun planningAndReviewRejectEverySideEffectAndExtension() {
         val blocked = listOf("write_file", "edit_file", "run_command", "spawn_subagent",
-            "load_skill", "mcp_server_tool", "read_system_file", "list_system_dir", "unknown")
+            "load_skill", "mcp_server_tool", "read_system_file", "list_system_dir", "generate_image", "unknown")
         for (mode in listOf(AgentTaskMode.PLAN, AgentTaskMode.REVIEW)) {
             blocked.forEach { assertFalse("$mode allowed $it", mode.allows(it)) }
             listOf("list_files", "read_file", "search_files", "update_plan", "ask_user")
@@ -18,7 +18,7 @@ class AgentTaskModeTest {
 
     @Test fun initAllowsOnlyTheGuardedWriterBeyondReadOnlyTools() {
         assertTrue(AgentTaskMode.INIT.allows("write_file"))
-        listOf("edit_file", "run_command", "mcp_write", "spawn_subagent")
+        listOf("edit_file", "run_command", "mcp_write", "spawn_subagent", "generate_image")
             .forEach { assertFalse(AgentTaskMode.INIT.allows(it)) }
     }
 
@@ -37,7 +37,7 @@ class AgentTaskModeTest {
     }
 
     @Test fun normalExecutionKeepsExistingCapabilities() {
-        listOf("write_file", "edit_file", "run_command", "mcp_custom", "spawn_subagent")
+        listOf("write_file", "edit_file", "run_command", "mcp_custom", "spawn_subagent", "generate_image")
             .forEach { assertTrue(AgentTaskMode.EXECUTE.allows(it)) }
     }
 

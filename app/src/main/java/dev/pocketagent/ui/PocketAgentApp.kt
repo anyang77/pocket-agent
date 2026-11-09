@@ -41,6 +41,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -253,7 +254,7 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                     }
                 }
                 // Files and terminal own their toolbars; the editor uses the whole workspace.
-                if (state.tab != AppTab.FILES && state.tab != AppTab.TERMINAL) {
+                if (!state.imageStudioMode && state.tab != AppTab.FILES && state.tab != AppTab.TERMINAL) {
                     TopAppBar(
                         expandedHeight = 52.dp,
                         // The parent owns system insets, including above the error banner.
@@ -261,9 +262,14 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                         colors = TopAppBarDefaults.topAppBarColors(
                             containerColor = MaterialTheme.colorScheme.background,
                         ),
+                        actions = {
+                            TextButton(onClick = { viewModel.setImageStudioMode(!state.imageStudioMode) }) {
+                                Text(if (state.imageStudioMode) "切回编码" else "生图模式")
+                            }
+                        },
                         title = {
                             Text(
-                                when (state.tab) {
+                                if (state.imageStudioMode) "创作模式" else when (state.tab) {
                                     AppTab.AGENT -> "Agent"
                                     AppTab.GIT -> "Git"
                                     AppTab.SETTINGS -> "设置"
@@ -277,7 +283,7 @@ fun PocketAgentApp(viewModel: AppViewModel) {
             }
         },
         bottomBar = {
-            NavigationBar(
+            if (!state.imageStudioMode) NavigationBar(
                 modifier = Modifier.navigationBarsPadding().height(64.dp),
                 windowInsets = WindowInsets(0, 0, 0, 0),
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -317,7 +323,9 @@ fun PocketAgentApp(viewModel: AppViewModel) {
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
-        when (state.tab) {
+        if (state.imageStudioMode) {
+            ImageStudioScreen(state, viewModel.imageStudio, Modifier.padding(innerPadding), onExit = { viewModel.setImageStudioMode(false) })
+        } else when (state.tab) {
             AppTab.AGENT -> AgentScreen(
                 state = state,
                 onSend = viewModel::sendChat,

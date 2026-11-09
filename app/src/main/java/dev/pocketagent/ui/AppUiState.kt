@@ -107,6 +107,7 @@ data class AppUiState(
     val welcomeVisible: Boolean = false,
     val themePreference: ThemePreference = ThemePreference.SYSTEM,
     val tab: AppTab = AppTab.FILES,
+    val imageStudioMode: Boolean = false,
     val onboardingCompleted: Boolean = false,
     val capabilities: RuntimeCapabilities = RuntimeCapabilities(),
     val settings: AiSettings = AiSettings(),

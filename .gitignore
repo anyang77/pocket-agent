@@ -15,3 +15,7 @@ app/build/
 *.jks
 *.log
 signing.properties
+
+# Local artwork and device-verification captures (may contain private content).
+generated-images/
+verification/

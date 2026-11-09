@@ -68,6 +68,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
@@ -129,6 +131,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val onboardingRepository = OnboardingRepository(application)
     private val goalRepository = GoalRepository(application)
     private val aiClient = AiClient()
+    internal val imageStudio = ImageStudioController(viewModelScope, File(application.filesDir, "image-studio"))
     private val extensionRepository = ExtensionRepository(application)
     private val skillRepository = SkillRepository(application) { workspace.root }
     private val onlineCatalog = OnlineCatalog(File(application.cacheDir, "extension-catalog"))
@@ -253,6 +256,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         auditLog.append("app", "应用启动", "CodeMate 启动")
+        viewModelScope.launch {
+            imageStudio.state.map { it.running }.distinctUntilChanged().collect { running ->
+                if (running) {
+                    runCatching { AgentForegroundService.start(appContext) }
+                } else if (!anyAgentRunning()) {
+                    AgentForegroundService.stop(appContext)
+                }
+            }
+        }
         viewModelScope.launch {
             agentExtensions.servers.collect { servers ->
                 if (!anyAgentRunning()) _state.update { it.copy(mcpStates = servers) }
@@ -926,6 +938,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setThemePreference(preference: dev.pocketagent.ui.theme.ThemePreference) {
         appearanceRepository.saveThemePreference(preference)
         _state.update { it.copy(themePreference = preference) }
+    }
+
+    fun setImageStudioMode(enabled: Boolean) {
+        _state.update { it.copy(imageStudioMode = enabled) }
     }
 
     fun selectTab(tab: AppTab) {
@@ -2828,7 +2844,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 runtime.job = null
                 publishRunningConversations()
-                if (!anyAgentRunning()) AgentForegroundService.stop(appContext)
+                if (!anyAgentRunning() && !imageStudio.state.value.running) AgentForegroundService.stop(appContext)
                 _state.update {
                     it.copy(
                         agentRunning = false,
@@ -3055,6 +3071,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 ) { event ->
                     _state.update { it.copy(agentContextTokens = event.contextTokensForDisplay(it.agentContextTokens)) }
                     when (event) {
+                        is AgentEvent.AssistantImages -> {
+                            trimChatTail(assistantId, event.streamedChars)
+                            appendChatDelta(assistantId, event.text)
+                            val images = event.imagePaths.map { path ->
+                                val file = java.io.File(path)
+                                ChatAttachment(id = java.util.UUID.randomUUID().toString(), name = file.name,
+                                    path = path, kind = "image", mimeType = when (file.extension) {
+                                        "jpg" -> "image/jpeg"
+                                        "webp" -> "image/webp"
+                                        else -> "image/png"
+                                    })
+                            }
+                            _state.update { current -> current.copy(chat = current.chat.map { entry ->
+                                if (entry.id == assistantId) entry.copy(attachments = entry.attachments + images) else entry
+                            }) }
+                        }
                         is AgentEvent.AssistantText -> {
                             setTurnPhase(assistantId, AgentTurnPhase.RECEIVING)
                             appendChat(assistantId, event.text)
@@ -3235,6 +3267,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             appendToolOutput(assistantId, event.name, event.output)
                         }
                         is AgentEvent.ToolFinished -> {
+                            if (event.success && event.imagePaths.isNotEmpty()) {
+                                val images = event.imagePaths.map { path ->
+                                    val file = java.io.File(path)
+                                    ChatAttachment(id = java.util.UUID.randomUUID().toString(), name = file.name,
+                                        path = path, kind = "image", mimeType = when (file.extension) {
+                                            "jpg" -> "image/jpeg"
+                                            "webp" -> "image/webp"
+                                            else -> "image/png"
+                                        })
+                                }
+                                _state.update { current -> current.copy(chat = current.chat.map { entry ->
+                                    if (entry.id == assistantId) entry.copy(attachments = entry.attachments + images) else entry
+                                }) }
+                            }
                             setTurnPhase(assistantId, AgentTurnPhase.THINKING)
                             finishToolActivity(
                                 assistantId,
@@ -3383,7 +3429,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     queuedPrompts = state.queuedPrompts.map { it.copy(steering = false) }) }
                 val nextPrompt = _state.value.queuedPrompts.firstOrNull()
                 if (nextPrompt == null || _state.value.queuePaused) {
-                    if (!anyAgentRunning()) AgentForegroundService.stop(appContext)
+                    if (!anyAgentRunning() && !imageStudio.state.value.running) AgentForegroundService.stop(appContext)
                 } else {
                     // Dispatch synchronously on Main so a manual send cannot overtake this queue item.
                     dispatchQueuedPrompt()
@@ -3397,6 +3443,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onBackgroundServiceTimeout() {
+        imageStudio.stop()
         auditLog.append("agent", "后台服务超时", "系统前台服务运行时限已到，停止任务并保留会话")
         for (runtime in runtimes.values) {
             _state.forSession(runtime.id) {

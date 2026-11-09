@@ -33,6 +33,20 @@ class ConversationJsonTest {
         assertEquals(original, ConversationJson.read(StringReader(output.toString())))
     }
 
+    @Test fun generatedAssistantImagePersistsWithoutEnteringModelContext() {
+        val image = ChatAttachment("generated", "image.png", "/workspace/generated-images/image.png", "image", mimeType = "image/png")
+        val conversation = fullConversation().copy(
+            messages = listOf(StoredMessage(3, "ASSISTANT", "", 10, attachments = listOf(image))),
+            agentMessages = listOf(AgentMessage("tool", "IMAGE_GENERATED\npath=${image.path}", name = "generate_image", toolCallId = "image-call")),
+        )
+        val output = StringWriter()
+        ConversationJson.write(output, listOf(conversation))
+        val restored = ConversationJson.read(StringReader(output.toString())).single()
+        assertEquals(listOf(image), restored.messages.single().attachments)
+        assertTrue(restored.agentMessages.single().imagePaths.isEmpty())
+        assertFalse(output.toString().contains("base64"))
+    }
+
     @Test fun readsLegacyOptionalFieldsAndSkipsUnknownValues() {
         val text = """{"version":2,"future":{"array":[null,{},1]},"conversations":[
             {"id":1,"createdAt":10,"updatedAt":20,"messages":[

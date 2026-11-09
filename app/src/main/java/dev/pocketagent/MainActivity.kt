@@ -79,6 +79,7 @@ class MainActivity : ComponentActivity() {
                             viewModel.sendChat("读取我的手机信息，并总结型号、Android 版本、CPU、内存和存储。")
                         }
                         "mock_agent" -> viewModel.runMockAgent()
+                        "image_studio" -> if (BuildConfig.DEBUG) viewModel.setImageStudioMode(true)
                     }
                 }
                 PocketAgentApp(viewModel)

@@ -31,6 +31,7 @@ class AiClient(
     @Volatile
     private var activeAgentCall: Call? = null
     private val prefixTracker = PromptPrefixTracker()
+    private val MAX_CHAT_RESPONSE_BYTES = 48L * 1024 * 1024
 
     suspend fun listModels(settings: AiSettings): List<ModelInfo> = withContext(Dispatchers.IO) {
         if (settings.apiKey.isBlank()) {
@@ -122,26 +123,33 @@ class AiClient(
             .header("Accept", "text/event-stream, application/json")
             .post(
                 requestJson.toString()
-                    .toRequestBody("application/json; charset=utf-8".toMediaType()),
+                    .toRequestBody("application/json; charset=utf-8".toMediaType()).withoutAutomaticReplay(),
             )
             .build()
 
         var lastError: Exception? = null
         var receivedStreamOutput = false
         var streamedContentChars = 0
-        for (attempt in 1..MAX_REQUEST_ATTEMPTS) {
+        val imageDetector = InlineImagePreview()
+        // Image gateways may stay silent for minutes before returning a single image frame.
+        // Do not replay a potentially billed generation, even before any image bytes arrive.
+        val imageRequest = isImageGenerationModel(settings.model)
+        val requestAttempts = if (imageRequest) 1 else MAX_REQUEST_ATTEMPTS
+        for (attempt in 1..requestAttempts) {
             currentCoroutineContext().ensureActive()
             receivedStreamOutput = false
             streamedContentChars = 0
             try {
                 return@withContext executeCompletion(
                     request = request,
+                    imageRequest = imageRequest,
                     onUsageDiagnostic = { raw ->
                         onDiagnostic("缓存用量", "request=${diagnostic.id} attempt=$attempt $raw")
                     },
                     onDelta = { delta ->
                         receivedStreamOutput = true
                         streamedContentChars += delta.length
+                        imageDetector.append(delta)
                         onDelta(delta)
                     },
                     onReasoningDelta = { delta ->
@@ -152,8 +160,9 @@ class AiClient(
             } catch (error: IOException) {
                 currentCoroutineContext().ensureActive()
                 lastError = error
+                if (imageRequest || imageDetector.hidden) throw AgentException("图片请求中断或超时；服务端可能仍在生成或已计费，不会自动重试，请检查服务端记录").also { it.retryAttempts = attempt - 1 }
                 val interrupted = receivedStreamOutput
-                if (attempt == MAX_REQUEST_ATTEMPTS || !error.isTransientNetworkError()) {
+                if (attempt == requestAttempts || !error.isTransientNetworkError()) {
                     throw AgentException(
                         if (interrupted) {
                             "模型输出中断：${error.message ?: "网络连接已断开"}"
@@ -186,7 +195,7 @@ class AiClient(
                 delay(waitMs)
             } catch (error: AgentHttpException) {
                 lastError = error
-                if (attempt == MAX_REQUEST_ATTEMPTS || !error.isRetryable()) {
+                if (imageRequest || imageDetector.hidden || attempt == requestAttempts || !error.isRetryable()) {
                     throw AgentException(
                         message = error.message.orEmpty(),
                         retryAfterSeconds = error.retryAfterSeconds,
@@ -210,7 +219,7 @@ class AiClient(
                 delay(waitMs)
             } catch (error: AgentException) {
                 lastError = error
-                if (attempt == MAX_REQUEST_ATTEMPTS || !error.isRetryable()) {
+                if (imageRequest || imageDetector.hidden || attempt == requestAttempts || !error.isRetryable()) {
                     throw error.withRetryAttempts(attempt - 1)
                 }
                 val waitMs = error.retryAfterSeconds
@@ -236,16 +245,26 @@ class AiClient(
 
     private fun executeCompletion(
         request: Request,
+        imageRequest: Boolean,
         onUsageDiagnostic: (String) -> Unit,
         onDelta: (String) -> Unit,
         onReasoningDelta: (String) -> Unit,
     ): AssistantTurn {
-        val call = httpClient.newCall(request)
+        val builder = httpClient.newBuilder().retryOnConnectionFailure(false)
+        if (imageRequest) {
+            builder.readTimeout(IMAGE_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            // A stream can keep emitting heartbeats forever without ever hitting readTimeout.
+            val limit = TimeUnit.MINUTES.toMillis(7)
+            builder.callTimeout(httpClient.callTimeoutMillis.takeIf { it > 0 }?.toLong()?.coerceAtMost(limit) ?: limit,
+                TimeUnit.MILLISECONDS)
+        }
+        val call = builder.build().newCall(request)
         activeAgentCall = call
         try {
             call.execute().use { response ->
                 if (!response.isSuccessful) {
-                    val body = response.body?.string().orEmpty()
+                    val key = request.header("Authorization")?.removePrefix("Bearer ").orEmpty()
+                    val body = safeServiceError(response.peekBody(16 * 1024L).string(), key)
                     throw AgentHttpException(
                         statusCode = response.code,
                         body = body,
@@ -260,13 +279,16 @@ class AiClient(
                 if (contentType.contains("text/event-stream", ignoreCase = true)) {
                     return parseStreamingResponse(
                         source = responseBody.source(),
+                        imageRequest = imageRequest,
+                        apiKey = request.header("Authorization")?.removePrefix("Bearer ").orEmpty(),
                         onUsageDiagnostic = onUsageDiagnostic,
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
                     )
                 }
 
-                val body = responseBody.string()
+                val body = JsonResponseReader.read(responseBody.byteStream(), MAX_CHAT_RESPONSE_BYTES.toInt())
+                    .toString(Charsets.UTF_8)
                 val json = runCatching { JSONObject(body) }
                     .getOrElse { throw AgentException("模型返回不是有效 JSON") }
                 val choice = json.optJSONArray("choices")?.optJSONObject(0)
@@ -319,6 +341,8 @@ class AiClient(
 
     private fun parseStreamingResponse(
         source: BufferedSource,
+        imageRequest: Boolean,
+        apiKey: String,
         onUsageDiagnostic: (String) -> Unit,
         onDelta: (String) -> Unit,
         onReasoningDelta: (String) -> Unit,
@@ -333,8 +357,14 @@ class AiClient(
         var lastUsageFields = ""
         var sawDone = false
 
+        var responseBytes = 0L
         while (true) {
+            val remaining = MAX_CHAT_RESPONSE_BYTES - responseBytes
+            val newline = source.indexOf('\n'.code.toByte(), 0L, remaining + 1L)
+            if (newline == -1L && source.buffer.size > remaining) throw AgentException("模型响应超过 48 MB，不会自动重试")
             val line = source.readUtf8Line() ?: break
+            responseBytes += line.toByteArray(Charsets.UTF_8).size + 1L
+            if (responseBytes > MAX_CHAT_RESPONSE_BYTES) throw AgentException("模型响应超过 48 MB，不会自动重试")
             val trimmed = line.trim()
             if (trimmed.isBlank() || trimmed.startsWith(":")) continue
             if (!trimmed.startsWith("data:")) continue
@@ -349,7 +379,7 @@ class AiClient(
                     error.optString("detail").ifBlank { error.toString() }
                 }
                 throw AgentException(
-                    "模型流式响应失败: $message",
+                    "模型流式响应失败: ${safeServiceError(message, apiKey)}",
                     retryAfterSeconds = streamRetryAfterSeconds(error),
                 )
             }
@@ -364,7 +394,7 @@ class AiClient(
                 ?.let { finishReason = it }
             val delta = choice.optJSONObject("delta")
                 ?: choice.optJSONObject("message")
-                ?: continue
+                ?: if (imageRequest && finishReason != null) break else continue
 
             delta.opt("reasoning_content")
                 ?.takeUnless { it == JSONObject.NULL }
@@ -407,6 +437,10 @@ class AiClient(
                         ?.let(target.arguments::append)
                 }
             }
+            // Image gateways may send a terminal finish_reason but never [DONE] or EOF.
+            // Content in the terminal frame is already appended; do not wait minutes for closure.
+            // Normal chat still reads its separate usage frame as before.
+            if (imageRequest && finishReason != null) break
         }
         if (!sawDone && finishReason == null) {
             throw IOException("模型流式响应意外中断")
@@ -513,8 +547,9 @@ class AiClient(
             put(
                 JSONObject().apply {
                     put("role", message.role)
-                    if (message.imagePaths.isEmpty()) {
-                        message.content?.let { put("content", it) }
+                    if (message.imagePaths.isEmpty() || message.role == "assistant") {
+                        // Generated assistant images stay local; do not re-send megabytes of base64 as text.
+                        message.content?.let { put("content", InlineImages.strip(it)) }
                     } else {
                         put("content", multimodalContent(message))
                     }
@@ -575,6 +610,11 @@ class AiClient(
         private const val MAX_RETRIES = 5
         private const val MAX_REQUEST_ATTEMPTS = MAX_RETRIES + 1
         private const val REQUEST_TIMEOUT_SECONDS = 90
+        private const val IMAGE_READ_TIMEOUT_SECONDS = 300L
+
+        internal fun isImageGenerationModel(model: String): Boolean =
+            Regex("(?:^|[-_./])(?:image|images|imagen)(?:$|[-_./0-9])", RegexOption.IGNORE_CASE)
+                .containsMatchIn(model.trim())
     }
 }
 

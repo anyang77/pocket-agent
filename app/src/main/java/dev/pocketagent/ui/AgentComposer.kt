@@ -43,6 +43,10 @@ import androidx.compose.ui.window.Dialog
 import dev.pocketagent.data.ChatAttachment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.io.File
+import androidx.compose.runtime.saveable.rememberSaveable
+import android.widget.Toast
 import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -215,13 +219,44 @@ internal fun AgentComposer(
 }
 
 @Composable
-internal fun AttachmentRow(attachments: List<ChatAttachment>, onRemove: ((String) -> Unit)? = null) {
+internal fun AttachmentRow(attachments: List<ChatAttachment>, onRemove: ((String) -> Unit)? = null, previewLabel: String? = null, directSave: Boolean = false) {
     var preview by remember { mutableStateOf<ChatAttachment?>(null) }
+    var exportPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // Keep the source independent of the preview: opening the system picker dismisses/recreates UI.
+    val saveImage = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/*")) { uri ->
+        val sourcePath = exportPath
+        exportPath = null
+        if (uri != null && sourcePath != null) {
+            saving = true
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val source = File(sourcePath)
+                        require(source.isFile && source.length() > 0) { "原图已丢失，请检查工作区" }
+                        source.inputStream().use { input ->
+                            val output = context.contentResolver.openOutputStream(uri, "wt")
+                                ?: error("无法写入所选位置，请选择其他目录")
+                            output.use { input.copyTo(it) }
+                        }
+                    }
+                    Toast.makeText(context, "原图已保存到所选位置", Toast.LENGTH_LONG).show()
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    Toast.makeText(context, "保存失败：${error.message ?: "请重试或选择其他目录"}", Toast.LENGTH_LONG).show()
+                } finally {
+                    saving = false
+                }
+            }
+        }
+    }
     preview?.let { attachment ->
         Dialog(onDismissRequest = { preview = null }) {
             Surface(shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(16.dp)) {
-                    Text(attachment.name, style = MaterialTheme.typography.titleSmall)
+                    Text(attachment.name, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(12.dp))
                     if (attachment.isImage) AttachmentImage(attachment, Modifier.fillMaxWidth().heightIn(max = 480.dp), true)
                     else {
@@ -231,19 +266,58 @@ internal fun AttachmentRow(attachments: List<ChatAttachment>, onRemove: ((String
                         SelectionContainer { Text(content, Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).padding(4.dp),
                             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)) }
                     }
-                    TextButton(onClick = { preview = null }, modifier = Modifier.align(Alignment.End)) { Text("关闭") }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                        if (attachment.isImage) TextButton(
+                            enabled = !saving && exportPath == null,
+                            onClick = {
+                                exportPath = attachment.path
+                                try {
+                                    saveImage.launch(attachment.name)
+                                } catch (error: Exception) {
+                                    exportPath = null
+                                    Toast.makeText(context, "无法打开保存位置：${error.message}", Toast.LENGTH_LONG).show()
+                                }
+                            },
+                        ) {
+                            Icon(Icons.Outlined.FileDownload, contentDescription = null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (saving) "保存中…" else "保存原图")
+                        }
+                        TextButton(onClick = { preview = null }) { Text("关闭") }
+                    }
                 }
             }
         }
     }
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    if (directSave) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val attachment = attachments.firstOrNull()
+            OutlinedButton(onClick = { preview = attachment }, enabled = attachment != null, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Outlined.OpenInFull, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp)); Text("查看大图")
+            }
+            FilledTonalButton(enabled = attachment != null && !saving && exportPath == null,
+                onClick = {
+                    attachment?.let {
+                        exportPath = it.path
+                        try { saveImage.launch(it.name) } catch (error: Exception) {
+                            exportPath = null
+                            Toast.makeText(context, "无法打开保存位置：${error.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Outlined.FileDownload, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp)); Text(if (saving) "保存中…" else "保存原图")
+            }
+        }
+    } else LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         items(attachments, key = { it.id }) { attachment ->
             Surface(onClick = { preview = attachment }, shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                 Row(Modifier.padding(start = 8.dp, end = if (onRemove == null) 10.dp else 0.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (attachment.isImage) AttachmentImage(attachment, Modifier.size(36.dp))
                     else Icon(Icons.Outlined.Description, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text(attachment.sourcePath ?: attachment.name, Modifier.widthIn(max = 160.dp), maxLines = 1,
+                    Text(previewLabel ?: attachment.sourcePath ?: attachment.name, Modifier.widthIn(max = 160.dp), maxLines = 1,
                         overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
                     if (onRemove != null) IconButton(onClick = { onRemove(attachment.id) }, Modifier.size(32.dp)) {
                         Icon(Icons.Outlined.Close, "移除 ${attachment.name}", Modifier.size(16.dp))
@@ -258,7 +332,17 @@ internal fun AttachmentRow(attachments: List<ChatAttachment>, onRemove: ((String
 internal fun AttachmentImage(attachment: ChatAttachment, modifier: Modifier, full: Boolean = false) {
     val bitmap by produceState<android.graphics.Bitmap?>(null, attachment.path, full) {
         value = withContext(Dispatchers.IO) {
-            runCatching { BitmapFactory.decodeFile(attachment.path, BitmapFactory.Options().apply { inSampleSize = if (full) 1 else 8 }) }.getOrNull()
+            runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(attachment.path, bounds)
+                require(bounds.outWidth > 0 && bounds.outHeight > 0) { "无法解码图片" }
+                val maxDimension = if (full) 2048 else 256
+                val options = BitmapFactory.Options().apply { inSampleSize = 1 }
+                while (maxOf(bounds.outWidth, bounds.outHeight) / options.inSampleSize > maxDimension) {
+                    options.inSampleSize *= 2
+                }
+                BitmapFactory.decodeFile(attachment.path, options)
+            }.getOrNull()
         }
     }
     val decoded = bitmap

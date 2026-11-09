@@ -101,6 +101,7 @@ class SettingsRepository(
         require(profiles.size > 1) { "至少保留一个模型配置" }
         profiles.removeAll { it.id == id }
         secretStore.removeApiKey(id)
+        secretStore.removeApiKey("image-$id")
         val nextActive = if (activeProfileId() == id) profiles.first().id else activeProfileId()
         saveProfilesInternal(profiles, nextActive)
     }
@@ -202,6 +203,8 @@ class SettingsRepository(
                 },
             )
             secretStore.putApiKey(profile.id, profile.apiKey)
+            // Remove obsolete image-only credentials; image requests use the active profile.
+            secretStore.removeApiKey("image-${profile.id}")
         }
         preferences.edit()
             .putString("model_profiles", array.toString())

@@ -13,8 +13,9 @@ class AgentEngineEfficiencyPolicyTest {
         assertTrue(prompt.contains("shortest reliable tool path"))
         assertTrue(prompt.contains("execute in the same agent round"))
         assertTrue(prompt.contains("DUPLICATE_TOOL_CALL_SUPPRESSED"))
-        assertTrue(prompt.contains("Termux, Android system shell, and Root are independent"))
-        assertTrue(prompt.contains("pkg in Termux does not require disabling Root"))
+        assertTrue(prompt.contains("Agent and terminal share one Android/Termux toolchain"))
+        assertTrue(prompt.contains("root changes UID via su, not the toolchain or cwd"))
+        assertTrue(prompt.contains("Keep package installation and builds at normal UID"))
         assertTrue(prompt.contains("call ask_user with 2–3 concrete"))
         assertTrue(prompt.contains("keep the tested app in the foreground"))
     }

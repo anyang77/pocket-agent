@@ -99,7 +99,7 @@ class AgentEngine(
     fun loadHistory(history: List<AgentMessage>) {
         conversation.clear()
         conversation += AgentMessage(role = "system", content = buildSystemPrompt())
-        conversation += history
+        conversation += history.map { it.copy(content = it.content?.let(InlineImages::strip)) }
             .filter { it.role == "user" || it.role == "assistant" }
             .filter { !it.content.isNullOrBlank() || it.imagePaths.isNotEmpty() }
             .takeLast(MAX_HISTORY_MESSAGES)
@@ -127,7 +127,7 @@ class AgentEngine(
         } else {
             history
         }
-        conversation += repairInterruptedToolCalls(safeHistory.filter {
+        conversation += repairInterruptedToolCalls(safeHistory.map { it.copy(content = it.content?.let(InlineImages::strip)) }.filter {
             it.role == "user" || it.role == "assistant" || it.role == "tool"
         })
     }
@@ -227,6 +227,7 @@ class AgentEngine(
                 var streamedChars = 0
                 var emittedStreamChars = 0
                 var reasoningChars = 0
+                var imagePreview = InlineImagePreview()
                 val pendingDelta = StringBuilder()
                 var lastDeltaAt = 0L
                 fun flushStreamText() {
@@ -239,7 +240,7 @@ class AgentEngine(
                 }
                 val onDelta: (String) -> Unit = { delta ->
                     streamedChars += delta.length
-                    pendingDelta.append(delta)
+                    pendingDelta.append(imagePreview.append(delta))
                     val now = System.nanoTime()
                     if (
                         pendingDelta.length >= 80 ||
@@ -257,13 +258,14 @@ class AgentEngine(
                 }
                 val onStreamReset: (Int) -> Unit = { contentChars ->
                     pendingDelta.clear()
+                    imagePreview = InlineImagePreview()
                     val visibleChars = minOf(contentChars, emittedStreamChars)
                     streamedChars = 0
                     emittedStreamChars = 0
                     reasoningChars = 0
                     onEvent(AgentEvent.StreamOutputReset(visibleChars))
                 }
-                val turn = try {
+                val rawTurn = try {
                     aiClient.complete(
                         settings,
                         conversation,
@@ -304,7 +306,25 @@ class AgentEngine(
                         onDiagnostic = ::auditCacheDiagnostic,
                     )
                 }
+                pendingDelta.append(imagePreview.finish())
                 flushStreamText()
+                val rawText = rawTurn.content.orEmpty()
+                val directory = File(workspace.root, "generated-images").canonicalFile
+                val containsImage = InlineImages.strip(rawText) != rawText
+                val saveImages = containsImage && !readOnlySubagent && taskMode == AgentTaskMode.EXECUTE &&
+                    authorize(PermissionRequest(kind = PermissionKind.WRITE_FILES, title = "保存模型返回的图片",
+                        detail = "目录: ${directory.path}\n保存为唯一文件名，不覆盖已有文件", risk = "workspace-write")).allowed
+                val inlineImages = if (saveImages) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    require(directory.parentFile == workspace.root.canonicalFile) { "生成图片目录不能指向工作区外" }
+                    InlineImages.extract(rawText, directory)
+                } else InlineImages.Result(InlineImages.strip(rawText), emptyList())
+                val hasInlineImages = imagePreview.hidden || inlineImages.text != rawText
+                val turn = if (hasInlineImages) rawTurn.copy(content = inlineImages.text, contentWasStreamed = true) else rawTurn
+                if (hasInlineImages) {
+                    onEvent(AgentEvent.AssistantImages(inlineImages.text, emittedStreamChars, inlineImages.paths))
+                    // The gateway's prompt-token count can include huge inline image strings from old history.
+                    lastPromptTokens = 0
+                }
                 onEvent(
                     AgentEvent.ModelRequestFinished(
                         round = step,
@@ -336,6 +356,7 @@ class AgentEngine(
                 conversation += AgentMessage(
                     role = "assistant",
                     content = turn.content,
+                    imagePaths = inlineImages.paths,
                     reasoningContent = turn.reasoningContent,
                     toolCalls = turn.toolCalls,
                 )
@@ -414,7 +435,7 @@ class AgentEngine(
                                 val extra = if (taskMode == AgentTaskMode.EXECUTE) extensions?.execute(call, settings,
                                     conversation.takeLast(8).joinToString("\n") { "${it.role}: ${it.content.orEmpty().take(4000)}" }, authorize) else null
                                 if (extra != null) ToolResult(extra.content, extra.success, extra.preview)
-                                else executeTool(call, authorize, choose, taskMode) { output ->
+                                else executeTool(call, authorize, choose, taskMode, settings) { output ->
                                     onEvent(AgentEvent.ToolOutput(visibleToolName, output))
                                 }
                             }
@@ -452,6 +473,7 @@ class AgentEngine(
                             output = result.content,
                             additions = result.additions,
                             deletions = result.deletions,
+                            imagePaths = result.imagePaths,
                         ),
                     )
                     result.plan?.let { onEvent(AgentEvent.PlanUpdated(it)) }
@@ -743,6 +765,7 @@ class AgentEngine(
         authorize: suspend (PermissionRequest) -> PermissionDecision,
         choose: suspend (UserQuestion) -> AgentChoice?,
         taskMode: AgentTaskMode = AgentTaskMode.EXECUTE,
+        settings: AiSettings = AiSettings(),
         onToolOutput: (String) -> Unit = {},
     ): ToolResult {
         require(taskMode.allows(call.name)) { "当前模式不允许此操作" }
@@ -751,6 +774,40 @@ class AgentEngine(
             return writeProjectInstructions(arguments, authorize, choose)
         }
         return when (call.name) {
+            "generate_image" -> {
+                val prompt = arguments.optString("prompt").trim()
+                val size = arguments.optString("size", "1024x1024")
+                require(prompt.isNotBlank() && prompt.length <= 16_000) { "prompt 需要 1–16000 字符" }
+                require(size in ImageGenerationClient.SIZES) { "不支持的图片尺寸: $size" }
+                val endpoint = ImageGenerationClient.generationsUrl(settings.baseUrl)
+                val directory = File(workspace.root, "generated-images").canonicalFile
+                require(directory.parentFile == workspace.root.canonicalFile) { "生成图片目录不能指向工作区外" }
+                for (request in listOf(
+                    PermissionRequest(kind = PermissionKind.NETWORK, title = "调用出图服务（可能计费）",
+                        detail = "服务: ${endpoint.host}\n模型: ${settings.model}\n尺寸: $size\n提示词: $prompt", risk = "network"),
+                    PermissionRequest(kind = PermissionKind.WRITE_FILES, title = "保存生成的图片",
+                        detail = "目录: ${directory.path}\n使用唯一文件名，不覆盖已有文件", risk = "workspace-write"),
+                )) {
+                    val decision = authorize(request)
+                    if (!decision.allowed) return ToolResult("DENIED_BY_USER: ${decision.reason}", false, "出图未获授权")
+                }
+                auditLog.append("image", "请求生成图片", "host=${endpoint.host} model=${settings.model} size=$size")
+                val image = ImageGenerationClient().generate(settings, prompt, size)
+                val target = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    require(directory.mkdirs() || directory.isDirectory) { "无法创建生成图片目录" }
+                    require(directory.canonicalFile.parentFile == workspace.root.canonicalFile) { "生成图片目录已改变" }
+                    val file = File.createTempFile("image-", ".${image.extension}", directory)
+                    try {
+                        currentCoroutineContext().ensureActive()
+                        file.writeBytes(image.bytes)
+                        file
+                    } catch (error: Exception) { file.delete(); throw error }
+                }
+                auditLog.append("image", "图片已保存", "path=${target.path} bytes=${image.bytes.size}", "success")
+                ToolResult("IMAGE_GENERATED\npath=${target.absolutePath}\nsize=$size", true, "图片已生成并保存",
+                    imagePaths = listOf(target.absolutePath))
+            }
+
             "update_plan" -> {
                 val planArray = arguments.optJSONArray("plan") ?: JSONArray()
                 val plan = buildList {
@@ -1354,6 +1411,7 @@ class AgentEngine(
         "run_command" -> "命令"
         "device_info" -> "设备信息读取"
         "ask_user" -> "等待选择"
+        "generate_image" -> "生成图片"
         else -> name
     }
 
@@ -1389,6 +1447,7 @@ class AgentEngine(
         val success: Boolean,
         val preview: String,
         val plan: List<AgentPlanStep>? = null,
+        val imagePaths: List<String> = emptyList(),
         val additions: Int = 0,
         val deletions: Int = 0,
     )
@@ -1413,6 +1472,18 @@ class AgentEngine(
         )
 
         private val TOOLS = listOf(
+            ToolDefinition(
+                name = "generate_image",
+                description = "Generate one image from a text prompt. Built-in and enabled by default: always uses the user's currently selected model, API service and key. There are no separate image settings. Never substitute a hard-coded image model. Use for drawing/image-generation requests, not screenshots. May incur charges. Saves a unique file in generated-images and displays it in chat; returns its local path, never base64. Do not ask users to enable or separately configure image generation before calling it. If the service rejects image generation, report the actual error; do not claim an image was generated. Never retry a failed request automatically because it may have been billed. Select a size supported by the configured model.",
+                parameters = schema(
+                    properties = mapOf(
+                        "prompt" to stringProperty("Detailed description of the image to generate; preserve the user's subject and style"),
+                        "size" to JSONObject().put("type", "string").put("enum", JSONArray(ImageGenerationClient.SIZES.toList()))
+                            .put("description", "Image size; default 1024x1024. Supported sizes depend on the image model."),
+                    ),
+                    required = listOf("prompt"),
+                ),
+            ),
             ToolDefinition(
                 name = "update_plan",
                 description = "Create or update a plan only for a genuinely multi-phase task. Do not use it for simple questions or one-step operations.",
@@ -1660,6 +1731,16 @@ You are CodeMate, a coding and device-inspection agent running on an Android pho
           cannot be resolved from the request or repository, call ask_user with 2–3 concrete
           options. Do not guess between materially different outcomes. Ask only when the choice
           changes implementation or user experience; do not ask for routine confirmations.
+
+        Image generation:
+        - For image creation requests, use generate_image rather than only offering a prompt.
+          This is a default built-in capability, not an opt-in feature. Use the current API service and key
+          with the user's currently selected model; there are no separate image settings. Never substitute a fixed
+          image model. Do not ask the user to enable it or fill separate
+          image settings first. The service must support /images/generations; report actual API errors honestly.
+          The chat model does not need image output support. Never invent image output or retry
+          a failed generation automatically: it may already have incurred charges. Generated images are
+          displayed by the app; mention the saved path without embedding file:// Markdown or base64.
 
         Phone and system information:
         - When the user asks about the phone, device, Android version, hardware, memory, CPU,

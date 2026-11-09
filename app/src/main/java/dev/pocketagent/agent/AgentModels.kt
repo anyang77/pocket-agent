@@ -199,6 +199,8 @@ data class ToolDefinition(
 
 sealed interface AgentEvent {
     data class AssistantText(val text: String) : AgentEvent
+    /** Replace this request's streamed preview with sanitized text and local image attachments. */
+    data class AssistantImages(val text: String, val streamedChars: Int, val imagePaths: List<String>) : AgentEvent
     /** Compaction request usage counts toward billing, not the compacted context size. */
     data class Usage(val usage: TokenUsage, val updatesContext: Boolean = true) : AgentEvent
     data class ContextCompactionStarted(
@@ -244,6 +246,7 @@ sealed interface AgentEvent {
         val output: String = "",
         val additions: Int = 0,
         val deletions: Int = 0,
+        val imagePaths: List<String> = emptyList(),
     ) : AgentEvent
     data class State(val text: String) : AgentEvent
     data object Completed : AgentEvent
