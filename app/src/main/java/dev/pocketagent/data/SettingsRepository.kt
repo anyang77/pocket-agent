@@ -44,6 +44,36 @@ class SettingsRepository(
     }
 
     @Synchronized
+    fun loadPromptPresets(): PromptPresets = PromptPresets.loadSafely(
+        preferences.getString("prompt_presets", null),
+        preferences.getString("custom_prompt", "").orEmpty(),
+    )
+
+    @Synchronized
+    fun loadCustomPrompt(): String = loadPromptPresets().effectivePrompt
+
+    @Synchronized
+    fun savePromptPreset(id: String?, name: String, content: String, avatarPath: String): PromptPresets =
+        persistPromptPresets(loadPromptPresets().save(id ?: UUID.randomUUID().toString(), name, content, avatarPath))
+
+    @Synchronized
+    fun selectPromptPreset(id: String?): PromptPresets = persistPromptPresets(loadPromptPresets().select(id))
+
+    @Synchronized
+    fun deletePromptPreset(id: String): PromptPresets = persistPromptPresets(loadPromptPresets().delete(id))
+
+    private fun persistPromptPresets(next: PromptPresets): PromptPresets {
+        check(next.loadError == null) { next.loadError.orEmpty() }
+        val previous = preferences.getString("prompt_presets", null)
+        if (!preferences.edit().putString("prompt_presets", next.encode()).commit()) {
+            // commit updates memory even on disk failure. Restore the previous effective state.
+            preferences.edit().putString("prompt_presets", previous).apply()
+            error("提示词保存失败，请重试")
+        }
+        return next
+    }
+
+    @Synchronized
     fun loadProfiles(): List<ModelProfile> = loadProfilesInternal()
 
     @Synchronized
@@ -234,6 +264,7 @@ class SettingsRepository(
     )
 
     companion object {
+        const val MAX_CUSTOM_PROMPT_LENGTH = 16_000
         const val MIN_CONTEXT_WINDOW = 128_000
         const val MAX_CONTEXT_WINDOW = 1_000_000
     }

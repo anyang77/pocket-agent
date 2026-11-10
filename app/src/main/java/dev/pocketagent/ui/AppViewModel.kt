@@ -146,7 +146,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val subagentManager = SubagentManager(viewModelScope, extensionRepository::settings) { client, prompt, settings, onEvent ->
         // Each child owns its command runner and model client; cancelling it cannot cancel the parent.
         AgentEngine(workspace, CommandRunner(), systemAccess, permissions = { permissionSettingsRepository.load() },
-            aiClient = client, auditLog = auditLog, readOnlySubagent = true).run(
+            aiClient = client, auditLog = auditLog, readOnlySubagent = true,
+                customPrompt = settingsRepository::loadCustomPrompt).run(
                 userText = prompt, settings = settings,
                 authorize = { PermissionDecision(false, "子代理仅进行只读检查") }, onEvent = onEvent)
     }
@@ -161,7 +162,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val children = SubagentManager(viewModelScope, extensionRepository::settings) { childClient, prompt, settings, onEvent ->
             val childRunner = CommandRunner(rootDetector, TermuxRuntime(getApplication()))
             AgentEngine(workspace, childRunner, system, permissions = { permissionSettingsRepository.load() },
-                aiClient = childClient, auditLog = auditLog, readOnlySubagent = true).run(
+                aiClient = childClient, auditLog = auditLog, readOnlySubagent = true,
+                customPrompt = settingsRepository::loadCustomPrompt).run(
                 userText = prompt, settings = settings,
                 authorize = { PermissionDecision(false, "子代理仅进行只读检查") }, onEvent = onEvent)
         }
@@ -169,9 +171,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runtime, { workspace.root }, auditLog)
         val engine = AgentEngine(workspace, runner, system, rootAvailable = { autoUseRoot },
             aiClient = client, auditLog = auditLog, extensions = extensions,
-            commandAuth = gitRepository::commandAuth, toolScheduler = workspaceToolScheduler)
+            commandAuth = gitRepository::commandAuth, toolScheduler = workspaceToolScheduler,
+            customPrompt = settingsRepository::loadCustomPrompt)
         var job: Job? = null
         var assistantId: Long? = null
+        var goalId: String? = null
         var approval: CompletableDeferred<Boolean>? = null
         var choice: CompletableDeferred<AgentChoice?>? = null
         val observers = listOf(
@@ -236,6 +240,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             welcomeAccepted = onboardingRepository.isWelcomeAccepted(),
             welcomeVisible = false,
             themePreference = appearanceRepository.loadThemePreference(),
+            promptPresets = settingsRepository.loadPromptPresets(),
             onboardingCompleted = onboardingRepository.isCompleted(),
             capabilities = RuntimeCapabilities(
                 internalTermuxReady = internalRuntime.isReady(),
@@ -792,6 +797,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     },
                 reasoning = message.reasoning,
                 attachments = message.attachments,
+                agentName = message.agentName,
+                agentAvatarPath = message.agentAvatarPath,
             )
         }
         val history = chat.mapNotNull { message ->
@@ -914,7 +921,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         role = role.name,
         content = content,
         timestamp = timestamp,
-        activities = activities,
+        activities = activities.filter { it.previewKey == null },
         usage = usage,
         lastRequestUsage = lastRequestUsage,
         lastRequestAt = lastRequestAt,
@@ -925,6 +932,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         phase = phase.name,
         reasoning = reasoning,
         attachments = attachments,
+        agentName = agentName,
+        agentAvatarPath = agentAvatarPath,
     )
 
     private data class LoadedState(
@@ -938,6 +947,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setThemePreference(preference: dev.pocketagent.ui.theme.ThemePreference) {
         appearanceRepository.saveThemePreference(preference)
         _state.update { it.copy(themePreference = preference) }
+    }
+
+    suspend fun savePromptPreset(id: String?, name: String, content: String, avatarPath: String): Boolean =
+        mutatePromptPresets("Agent 已保存，可在菜单中选择使用") { settingsRepository.savePromptPreset(id, name, content, avatarPath) }
+
+    suspend fun selectPromptPreset(id: String?): Boolean =
+        mutatePromptPresets("Agent 已切换，下次任务生效") { settingsRepository.selectPromptPreset(id) }
+
+    suspend fun deletePromptPreset(id: String): Boolean =
+        mutatePromptPresets("Agent 已删除；若正在使用则恢复默认") { settingsRepository.deletePromptPreset(id) }
+
+    private val promptPresetMutex = Mutex()
+
+    private suspend fun mutatePromptPresets(
+        notice: String,
+        mutation: () -> dev.pocketagent.data.PromptPresets,
+    ): Boolean = withContext(kotlinx.coroutines.NonCancellable) {
+        promptPresetMutex.withLock {
+            try {
+                val presets = withContext(Dispatchers.IO) { mutation() }
+                _state.publish { it.copy(promptPresets = presets, notice = notice) }
+                true
+            } catch (error: Exception) {
+                _state.publish { it.copy(notice = error.message ?: "提示词保存失败，请重试") }
+                false
+            }
+        }
     }
 
     fun setImageStudioMode(enabled: Boolean) {
@@ -2728,19 +2764,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         appendTerminal("\n[已请求停止]\n")
     }
 
+    private fun cancelGoalRuns(goalId: String) {
+        runtimes.values.filter { it.goalId == goalId && it.job != null }.forEach { runtime ->
+            _state.forSession(runtime.id) {
+                _state.update { it.copy(agentStatus = "正在停止目标…", queuePaused = true) }
+            }
+            runtime.cancel()
+        }
+    }
+
     fun pauseGoal() {
         val current = _state.value.agentGoal ?: return
         val updated = current.copy(phase = GoalPhase.PAUSED)
         goalRepository.save(updated)
-        _state.update { it.copy(agentGoal = updated, notice = "目标已暂停") }
+        _state.publish { it.copy(agentGoal = updated, notice = "目标已暂停") }
         auditLog.append("goal", "暂停目标", updated.objective)
+        cancelGoalRuns(current.id)
     }
 
     fun resumeGoal() {
         val current = _state.value.agentGoal ?: return
-        val updated = current.copy(phase = GoalPhase.ACTIVE)
+        cancelGoalRuns(current.id)
+        val updated = current.copy(phase = GoalPhase.ACTIVE, id = java.util.UUID.randomUUID().toString())
         goalRepository.save(updated)
-        _state.update { it.copy(agentGoal = updated, notice = "目标已继续") }
+        _state.publish { it.copy(agentGoal = updated, notice = "目标已继续") }
         auditLog.append("goal", "继续目标", updated.objective)
         if (!_state.value.agentRunning) sendChat(updated.objective)
     }
@@ -2748,8 +2795,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun clearGoal() {
         val current = _state.value.agentGoal ?: return
         goalRepository.save(null)
-        _state.update { it.copy(agentGoal = null, notice = "目标已清除") }
+        _state.publish { it.copy(agentGoal = null, notice = "目标已清除") }
         auditLog.append("goal", "清除目标", current.objective)
+        cancelGoalRuns(current.id)
     }
 
     private fun handleGoalCommand(prompt: String): Boolean {
@@ -2763,9 +2811,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "resume" -> resumeGoal()
             "clear" -> clearGoal()
             else -> {
+                _state.value.agentGoal?.let { cancelGoalRuns(it.id) }
                 val goal = AgentGoal(argument, GoalPhase.ACTIVE)
                 goalRepository.save(goal)
-                _state.update { it.copy(agentGoal = goal) }
+                _state.publish { it.copy(agentGoal = goal) }
                 auditLog.append("goal", "创建目标", argument)
                 if (!_state.value.agentRunning) sendChat(argument)
             }
@@ -2959,11 +3008,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val taskAgent = settingsRepository.loadPromptPresets().active
         val taskSettings = _state.value.settings
         val taskWorkspacePath = workspace.root.canonicalPath
         val conversationId = targetId
         val runtime = runtimeFor(conversationId)
         val sessionEngine = runtime.engine
+        val taskGoal = _state.value.agentGoal?.takeIf { goal ->
+            goal.phase == GoalPhase.ACTIVE && taskMode == AgentTaskMode.EXECUTE &&
+                runtimes.values.none { it.goalId == goal.id && it.job != null }
+        }
+        runtime.goalId = taskGoal?.id
         runtime.children.reset()
         val user = ChatEntry(nextId.getAndIncrement(), ChatRole.USER, prompt, attachments = attachments)
         var assistantId = nextId.getAndIncrement()
@@ -2973,6 +3028,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             content = "",
             pending = true,
             goal = prompt,
+            agentName = taskAgent?.name ?: "CodeMate",
+            agentAvatarPath = taskAgent?.avatarPath.orEmpty(),
             phase = AgentTurnPhase.THINKING,
         )
         activeAssistantId = assistantId
@@ -3026,6 +3083,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     authorize = ::authorizeAgentAction,
                     choose = ::requestUserChoice,
                     taskMode = taskMode,
+                    persistentGoal = taskGoal?.objective,
                     takeSteering = {
                         val queued = if (taskMode == AgentTaskMode.EXECUTE)
                             _state.value.queuedPrompts.filter { it.steering && it.taskMode == taskMode } else emptyList()
@@ -3057,7 +3115,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                     } + admitted.map { (item, _) ->
                                         ChatEntry(item.id, ChatRole.USER, item.text, attachments = item.attachments)
                                     } + ChatEntry(assistantId, ChatRole.ASSISTANT, "", pending = true,
-                                        phase = AgentTurnPhase.THINKING),
+                                        phase = AgentTurnPhase.THINKING,
+                                        agentName = taskAgent?.name ?: "CodeMate",
+                                        agentAvatarPath = taskAgent?.avatarPath.orEmpty()),
                                 ) }
                                 streamChars = 0
                                 streamStartedAt = System.currentTimeMillis()
@@ -3248,12 +3308,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             persistCurrentConversation()
                             setTurnPhase(assistantId, AgentTurnPhase.THINKING)
                         }
+                        is AgentEvent.FilePreview -> updateFilePreview(assistantId, event)
+                        is AgentEvent.FilePreviewsReset -> clearFilePreviews(assistantId)
                         is AgentEvent.ToolStarted -> {
                             setTurnPhase(assistantId, AgentTurnPhase.TOOL_RUNNING)
                             startToolActivity(
                                 assistantId,
                                 event.name,
                                 event.summary,
+                                previewKey = event.previewKey,
                             )
                             _state.update {
                                 it.copy(
@@ -3288,6 +3351,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 event.summary,
                                 event.success,
                                 output = event.output,
+                                additions = event.additions,
+                                deletions = event.deletions,
+                                fileDiff = event.fileDiff,
                             )
                             _state.update {
                                 it.copy(
@@ -3303,6 +3369,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         is AgentEvent.State -> {
                             updateRunningActivitySummary(assistantId, "模型请求", event.text)
                             _state.update { it.copy(agentStatus = event.text) }
+                        }
+                        is AgentEvent.GoalFinished -> {
+                            val current = _state.value.agentGoal
+                            if (current?.isActiveRun(taskGoal?.id) == true) {
+                                val completed = current.copy(phase = GoalPhase.COMPLETED)
+                                goalRepository.save(completed)
+                                _state.publish { it.copy(agentGoal = completed, notice = "目标已完成") }
+                                auditLog.append("goal", "完成目标", "${completed.objective}\n${event.summary}", "success")
+                            }
                         }
                         is AgentEvent.Stopped -> {
                             setTurnPhase(assistantId, AgentTurnPhase.STOPPED)
@@ -3322,7 +3397,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                         is AgentEvent.Failed -> {
+                            clearFilePreviews(assistantId)
                             setTurnPhase(assistantId, AgentTurnPhase.FAILED)
+                            _state.value.agentGoal?.takeIf { it.isActiveRun(taskGoal?.id) }?.let { goal ->
+                                val blocked = goal.copy(phase = GoalPhase.BLOCKED)
+                                goalRepository.save(blocked)
+                                _state.publish { it.copy(agentGoal = blocked) }
+                            }
                             finishToolActivity(
                                 id = assistantId,
                                 name = "模型请求",
@@ -3372,6 +3453,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         phase = AgentTurnPhase.FAILED) else entry
                 }) }
             } finally {
+                clearFilePreviews(assistantId)
+                runtime.goalId = null
                 runtime.job = null
                 publishRunningConversations()
                 if (activeAssistantId == assistantId) activeAssistantId = null
@@ -3444,6 +3527,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onBackgroundServiceTimeout() {
         imageStudio.stop()
+        _state.value.agentGoal?.takeIf { it.phase == GoalPhase.ACTIVE }?.let { goal ->
+            val paused = goal.copy(phase = GoalPhase.PAUSED)
+            goalRepository.save(paused)
+            _state.publish { it.copy(agentGoal = paused) }
+            auditLog.append("goal", "暂停目标", "后台服务运行时限已到：${paused.objective}")
+        }
         auditLog.append("agent", "后台服务超时", "系统前台服务运行时限已到，停止任务并保留会话")
         for (runtime in runtimes.values) {
             _state.forSession(runtime.id) {
@@ -3457,6 +3546,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun stopAgent() {
         if (!_state.value.agentRunning) return
         auditLog.append("agent", "请求停止任务", "用户点击停止")
+        _state.value.agentGoal?.takeIf { it.isActiveRun(selectedRuntime?.goalId) }?.let { goal ->
+            val paused = goal.copy(phase = GoalPhase.PAUSED)
+            goalRepository.save(paused)
+            _state.publish { it.copy(agentGoal = paused, notice = "目标已暂停") }
+            auditLog.append("goal", "暂停目标", paused.objective)
+        }
         val id = _state.value.currentConversationId ?: return
         _state.update {
             it.copy(
@@ -3590,13 +3685,42 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun startToolActivity(id: Long, name: String, summary: String) {
+    private fun clearFilePreviews(id: Long) {
+        _state.update { current -> current.copy(chat = current.chat.map { entry ->
+            if (entry.id != id) entry else entry.copy(activities = entry.activities.filter { it.previewKey == null })
+        }) }
+    }
+
+    private fun updateFilePreview(id: Long, event: AgentEvent.FilePreview) {
+        _state.update { current -> current.copy(chat = current.chat.map { entry ->
+            if (entry.id != id) entry else {
+                val index = if (event.key == "executing") entry.activities.indexOfLast {
+                    it.name == event.name && it.success == null && it.previewKey == null
+                } else entry.activities.indexOfFirst { it.previewKey == event.key }
+                val summary = "${event.path} · ${if (event.key == "executing") "待写入" else "生成中 · 预览，尚未写入"}"
+                if (index < 0) entry.copy(activities = entry.activities + ToolActivity(
+                    event.name, summary, contentOffset = entry.content.length,
+                    additions = event.additions, deletions = event.deletions, fileDiff = event.diff,
+                    previewKey = event.key,
+                )) else entry.copy(activities = entry.activities.mapIndexed { i, activity ->
+                    if (i != index) activity else activity.copy(summary = summary, additions = event.additions,
+                        deletions = event.deletions, fileDiff = event.diff)
+                })
+            }
+        }) }
+    }
+
+    private fun startToolActivity(id: Long, name: String, summary: String, previewKey: String? = null) {
         _state.update { current ->
             current.copy(
                 chat = current.chat.map { entry ->
                     if (entry.id == id) {
                         entry.copy(
-                            activities = entry.activities + ToolActivity(
+                            activities = if (previewKey != null && entry.activities.any { it.previewKey == previewKey }) {
+                                entry.activities.map { if (it.previewKey == previewKey) it.copy(
+                                    summary = summary, startedAt = System.currentTimeMillis(), previewKey = null,
+                                ) else it }
+                            } else entry.activities + ToolActivity(
                                 name = name,
                                 summary = summary,
                                 startedAt = System.currentTimeMillis(),
@@ -3615,7 +3739,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { current ->
             current.copy(chat = current.chat.map { entry ->
                 if (entry.id != id) return@map entry
-                val index = entry.activities.indexOfLast { it.name == name && it.success == null }
+                val index = entry.activities.indexOfLast { it.name == name && it.success == null && it.previewKey == null }
                 entry.copy(activities = entry.activities.mapIndexed { i, activity ->
                     if (i == index) activity.copy(result = (activity.result.orEmpty() + output).takeLast(24_000))
                     else activity
@@ -3668,7 +3792,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 chat = current.chat.map { entry ->
                     if (entry.id != id) return@map entry
                     val index = entry.activities.indexOfLast {
-                        it.name == name && it.success == null
+                        it.name == name && it.success == null && it.previewKey == null
                     }
                     if (index < 0) return@map entry
                     entry.copy(
@@ -3694,13 +3818,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         activitySummary: String? = null,
         additions: Int = 0,
         deletions: Int = 0,
+        fileDiff: String = "",
     ) {
         _state.update { current ->
             current.copy(
                 chat = current.chat.map { entry ->
                     if (entry.id != id) return@map entry
                     val index = entry.activities.indexOfLast {
-                        it.name == name && it.success == null
+                        it.name == name && it.success == null && it.previewKey == null
                     }
                     if (index < 0) return@map entry
                     entry.copy(
@@ -3708,13 +3833,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             if (activityIndex == index) {
                                 val finishedAt = System.currentTimeMillis()
                                 activity.copy(
-                                    summary = activitySummary ?: activity.summary,
+                                    summary = activitySummary ?: if (name in setOf("edit_file", "write_file")) summary else activity.summary,
                                     result = output ?: summary,
                                     success = success,
                                     durationMs = activity.startedAt
                                         ?.let { (finishedAt - it).coerceAtLeast(0) },
                                     additions = additions,
                                     deletions = deletions,
+                                    fileDiff = fileDiff.ifEmpty { activity.fileDiff },
+                                    previewKey = null,
                                 )
                             } else {
                                 activity

@@ -346,6 +346,9 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onProfileSelected = viewModel::selectModelProfile,
                 onReasoningEffortSelected = viewModel::selectReasoningEffort,
                 onRefreshModels = viewModel::refreshModels,
+                promptActions = PromptPresetActions(
+                    viewModel::savePromptPreset, viewModel::selectPromptPreset, viewModel::deletePromptPreset,
+                ),
                 onSelectConversation = viewModel::selectConversation,
                 onDeleteConversation = viewModel::deleteConversation,
                 onApprovePending = viewModel::approvePending,
@@ -436,6 +439,9 @@ fun PocketAgentApp(viewModel: AppViewModel) {
                 onCreateProfile = viewModel::createModelProfile,
                 onDeleteProfile = viewModel::deleteModelProfile,
                 onThemePreferenceChanged = viewModel::setThemePreference,
+                promptActions = PromptPresetActions(
+                    viewModel::savePromptPreset, viewModel::selectPromptPreset, viewModel::deletePromptPreset,
+                ),
                 extensionActions = ExtensionActions(
                     viewModel::refreshExtensions, viewModel::saveExtensionSettings, viewModel::setSkillEnabled,
                     viewModel::saveSkill, viewModel::removeSkill, viewModel::saveMcpServer,

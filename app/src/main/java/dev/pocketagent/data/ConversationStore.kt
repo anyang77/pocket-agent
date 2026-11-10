@@ -26,6 +26,8 @@ data class StoredMessage(
     val phase: String = "",
     val reasoning: String = "",
     val attachments: List<ChatAttachment> = emptyList(),
+    val agentName: String = "CodeMate",
+    val agentAvatarPath: String = "",
 )
 
 data class StoredConversation(

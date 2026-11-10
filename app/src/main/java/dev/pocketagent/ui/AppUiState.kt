@@ -65,6 +65,8 @@ data class ChatEntry(
     val phase: AgentTurnPhase = AgentTurnPhase.IDLE,
     val reasoning: String = "",
     val attachments: List<ChatAttachment> = emptyList(),
+    val agentName: String = "CodeMate",
+    val agentAvatarPath: String = "",
 )
 
 data class AgentRetryState(
@@ -98,6 +100,8 @@ data class QueuedPrompt(
     val id: Long,
     val text: String,
     val attachments: List<ChatAttachment> = emptyList(),
+    val agentName: String = "CodeMate",
+    val agentAvatarPath: String = "",
     val steering: Boolean = false,
     val taskMode: dev.pocketagent.agent.AgentTaskMode = dev.pocketagent.agent.AgentTaskMode.EXECUTE,
 )
@@ -106,6 +110,7 @@ data class AppUiState(
     val welcomeAccepted: Boolean = false,
     val welcomeVisible: Boolean = false,
     val themePreference: ThemePreference = ThemePreference.SYSTEM,
+    val promptPresets: dev.pocketagent.data.PromptPresets = dev.pocketagent.data.PromptPresets(),
     val tab: AppTab = AppTab.FILES,
     val imageStudioMode: Boolean = false,
     val onboardingCompleted: Boolean = false,

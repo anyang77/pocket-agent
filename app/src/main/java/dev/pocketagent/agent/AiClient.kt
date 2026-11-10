@@ -87,6 +87,7 @@ class AiClient(
         onReasoningDelta: (String) -> Unit = {},
         onStreamReset: (Int) -> Unit = {},
         onDiagnostic: (String, String) -> Unit = { _, _ -> },
+        onToolCallDelta: (Int, String, String) -> Unit = { _, _, _ -> },
     ): AssistantTurn = withContext(Dispatchers.IO) {
         if (settings.apiKey.isBlank()) {
             throw AgentException("请先在设置里填写 API Key")
@@ -143,6 +144,7 @@ class AiClient(
                 return@withContext executeCompletion(
                     request = request,
                     imageRequest = imageRequest,
+                    onToolCallDelta = onToolCallDelta,
                     onUsageDiagnostic = { raw ->
                         onDiagnostic("缓存用量", "request=${diagnostic.id} attempt=$attempt $raw")
                     },
@@ -249,6 +251,7 @@ class AiClient(
         onUsageDiagnostic: (String) -> Unit,
         onDelta: (String) -> Unit,
         onReasoningDelta: (String) -> Unit,
+        onToolCallDelta: (Int, String, String) -> Unit,
     ): AssistantTurn {
         val builder = httpClient.newBuilder().retryOnConnectionFailure(false)
         if (imageRequest) {
@@ -284,6 +287,7 @@ class AiClient(
                         onUsageDiagnostic = onUsageDiagnostic,
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
+                        onToolCallDelta = onToolCallDelta,
                     )
                 }
 
@@ -346,6 +350,7 @@ class AiClient(
         onUsageDiagnostic: (String) -> Unit,
         onDelta: (String) -> Unit,
         onReasoningDelta: (String) -> Unit,
+        onToolCallDelta: (Int, String, String) -> Unit,
     ): AssistantTurn {
         val content = StringBuilder()
         val reasoning = StringBuilder()
@@ -435,6 +440,7 @@ class AiClient(
                         ?.takeUnless { it == JSONObject.NULL }
                         ?.toString()
                         ?.let(target.arguments::append)
+                    onToolCallDelta(index, target.name, target.arguments.toString())
                 }
             }
             // Image gateways may send a terminal finish_reason but never [DONE] or EOF.

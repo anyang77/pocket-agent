@@ -61,6 +61,8 @@ fun AgentHeaderBar(
     onProfileSelected: (String) -> Unit,
     onReasoningEffortSelected: (String) -> Unit,
     onRefreshModels: () -> Unit,
+    onPromptSelected: (String?) -> Unit,
+    onManagePrompts: () -> Unit,
     onNewConversation: () -> Unit,
     onOpenHistory: () -> Unit,
 ) {
@@ -100,6 +102,7 @@ fun AgentHeaderBar(
                     modelLabel = modelLabel,
                     effortLabel = reasoningEffortLabel(state.settings.reasoningEffort),
                     profileName = activeProfile?.name,
+                    agent = state.promptPresets.active,
                     onClick = { modelMenuExpanded = true },
                 )
                 AgentDropdown(
@@ -123,6 +126,14 @@ fun AgentHeaderBar(
                         },
                         onRefreshModels = {
                             onRefreshModels()
+                            modelMenuExpanded = false
+                        },
+                        onPromptSelected = {
+                            onPromptSelected(it)
+                            modelMenuExpanded = false
+                        },
+                        onManagePrompts = {
+                            onManagePrompts()
                             modelMenuExpanded = false
                         },
                     )
@@ -241,6 +252,7 @@ private fun ModelControl(
     modelLabel: String,
     effortLabel: String,
     profileName: String?,
+    agent: dev.pocketagent.data.PromptPreset?,
     onClick: () -> Unit,
 ) {
     Surface(
@@ -256,9 +268,10 @@ private fun ModelControl(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            AgentAvatar(agent?.avatarPath.orEmpty(), Modifier.size(28.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    modelLabel,
+                    "${agent?.name ?: "CodeMate"} · $modelLabel",
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.SemiBold,
                     ),
@@ -279,7 +292,7 @@ private fun ModelControl(
             Icons.Filled.ArrowDropDown.let { arrow ->
                 androidx.compose.material3.Icon(
                     arrow,
-                    contentDescription = "切换模型与思考等级",
+                    contentDescription = "切换 Agent、模型与思考等级",
                     modifier = Modifier.size(18.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -342,6 +355,8 @@ private fun ModelMenuContent(
     onModelSelected: (String) -> Unit,
     onReasoningEffortSelected: (String) -> Unit,
     onRefreshModels: () -> Unit,
+    onPromptSelected: (String?) -> Unit,
+    onManagePrompts: () -> Unit,
 ) {
     AgentMenuSection(
         text = if (state.modelProfiles.size > 1) "模型配置" else "当前配置",
@@ -383,6 +398,27 @@ private fun ModelMenuContent(
     }
     AgentMenuDivider()
     EffortMenuContent(state = state, onSelected = onReasoningEffortSelected)
+    AgentMenuDivider()
+    AgentMenuSection(text = "Agent", trailing = state.promptPresets.active?.name ?: "默认")
+    AgentMenuItem(
+        title = "默认",
+        subtitle = "仅使用内置通用提示词",
+        selected = state.promptPresets.activeId == null,
+        onClick = { onPromptSelected(null) },
+    )
+    state.promptPresets.items.forEach { preset ->
+        AgentMenuItem(
+            title = preset.name,
+            subtitle = preset.content,
+            selected = state.promptPresets.activeId == preset.id,
+            onClick = { onPromptSelected(preset.id) },
+        )
+    }
+    AgentMenuItem(
+        title = "管理 Agent…",
+        subtitle = "自定义名字、头像和角色提示词",
+        onClick = onManagePrompts,
+    )
     AgentMenuDivider()
     AgentMenuItem(
         title = if (state.modelsLoading) "正在刷新模型列表…" else "刷新模型列表",

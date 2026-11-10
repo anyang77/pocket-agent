@@ -1,17 +1,23 @@
 package dev.pocketagent.data
 
 import android.content.Context
+import java.util.UUID
 
 enum class GoalPhase {
     ACTIVE,
     PAUSED,
     BLOCKED,
+    COMPLETED,
 }
 
 data class AgentGoal(
     val objective: String,
     val phase: GoalPhase = GoalPhase.ACTIVE,
-)
+    val id: String = UUID.randomUUID().toString(),
+) {
+    internal fun isActiveRun(runGoalId: String?): Boolean =
+        runGoalId != null && id == runGoalId && phase == GoalPhase.ACTIVE
+}
 
 class GoalRepository(context: Context) {
     private val preferences = context.applicationContext
@@ -29,7 +35,10 @@ class GoalRepository(context: Context) {
                     .uppercase(),
             )
         }.getOrDefault(GoalPhase.ACTIVE)
-        return AgentGoal(objective, phase)
+        val id = preferences.getString("id", null) ?: UUID.randomUUID().toString().also {
+            preferences.edit().putString("id", it).apply()
+        }
+        return AgentGoal(objective, phase, id)
     }
 
     fun save(goal: AgentGoal?) {
@@ -37,6 +46,7 @@ class GoalRepository(context: Context) {
             preferences.edit().clear().apply()
         } else {
             preferences.edit()
+                .putString("id", goal.id)
                 .putString("objective", goal.objective)
                 .putString("phase", goal.phase.name)
                 .apply()

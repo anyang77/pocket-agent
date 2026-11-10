@@ -26,6 +26,7 @@ internal object ConversationJson {
             c.messages.takeLast(500).forEach { m ->
                 w.beginObject().name("id").value(m.id).name("role").value(m.role)
                     .name("content").value(m.content).name("timestamp").value(m.timestamp)
+                w.name("agent_name").value(m.agentName).name("agent_avatar_path").value(m.agentAvatarPath)
                 w.optional("error", m.error); w.optional("goal", m.goal)
                 w.name("phase").value(m.phase).name("reasoning").value(m.reasoning)
                     .name("retry_count").value(m.retryCount)
@@ -41,6 +42,7 @@ internal object ConversationJson {
                     w.beginObject().name("name").value(a.name).name("summary").value(a.summary)
                     a.success?.let { w.name("success").value(it) }
                     w.optional("result", a.result)
+                    if (a.fileDiff.isNotEmpty()) w.name("file_diff").value(a.fileDiff)
                     a.startedAt?.let { w.name("started_at").value(it) }
                     a.durationMs?.let { w.name("duration_ms").value(it) }
                     w.name("content_offset").value(a.contentOffset)
@@ -111,12 +113,15 @@ internal object ConversationJson {
         var attachments = emptyList<ChatAttachment>(); var activities = emptyList<ToolActivity>()
         var usage: TokenUsage? = null; var lastUsage: TokenUsage? = null; var lastAt: Long? = null
         var plan = emptyList<AgentPlanStep>()
+        var agentName = "CodeMate"; var agentAvatarPath = ""
         r.fields { when (it) {
             "id" -> id = r.nextLong(); "role" -> role = r.nextString()
             "content" -> content = r.nextString(); "timestamp" -> timestamp = r.nextLong()
             "error" -> error = r.nextString().takeIf(String::isNotBlank)
             "goal" -> goal = r.nextString().takeIf(String::isNotBlank)
             "phase" -> phase = r.nextString(); "reasoning" -> reasoning = r.nextString()
+            "agent_name" -> agentName = r.nextString()
+            "agent_avatar_path" -> agentAvatarPath = r.nextString()
             "retry_count" -> retries = r.nextInt()
             "attachments" -> attachments = r.items { readAttachment(r) }
             "activities" -> activities = r.items { readActivity(r) }
@@ -135,7 +140,7 @@ internal object ConversationJson {
             else -> r.skipValue()
         } }
         return StoredMessage(id, role, content, timestamp, activities, usage, lastUsage, lastAt,
-            plan, error, retries, goal, phase, reasoning, attachments)
+            plan, error, retries, goal, phase, reasoning, attachments, agentName, agentAvatarPath)
     }
 
     private fun readAgentMessage(r: JsonReader): AgentMessage {
@@ -171,6 +176,7 @@ internal object ConversationJson {
 
     private fun readActivity(r: JsonReader): ToolActivity {
         var name = ""; var summary = ""; var success: Boolean? = null; var result: String? = null
+        var fileDiff = ""
         var start: Long? = null; var duration: Long? = null; var offset = 0; var additions = 0; var deletions = 0
         r.fields { when (it) {
             "name" -> name = r.nextString(); "summary" -> summary = r.nextString()
@@ -178,9 +184,9 @@ internal object ConversationJson {
             "started_at" -> start = r.nextLong().takeIf { n -> n > 0 }
             "duration_ms" -> duration = r.nextLong().takeIf { n -> n >= 0 }
             "content_offset" -> offset = r.nextInt(); "additions" -> additions = r.nextInt()
-            "deletions" -> deletions = r.nextInt(); else -> r.skipValue()
+            "deletions" -> deletions = r.nextInt(); "file_diff" -> fileDiff = r.nextString(); else -> r.skipValue()
         } }
-        return ToolActivity(name, summary, success, result, start, duration, offset, additions, deletions)
+        return ToolActivity(name, summary, success, result, start, duration, offset, additions, deletions, fileDiff)
     }
 
     private fun writeUsage(w: JsonWriter, u: TokenUsage) {

@@ -59,22 +59,8 @@ internal fun contextCompactionThreshold(contextLimit: Int): Int {
 }
 
 internal fun countLineDiff(before: String, after: String): LineDiffStats {
-    val beforeLines = if (before.isEmpty()) emptyList() else before.lines()
-    val afterLines = if (after.isEmpty()) emptyList() else after.lines()
-    if (beforeLines == afterLines) return LineDiffStats(0, 0)
-    val prefix = beforeLines.zip(afterLines)
-        .takeWhile { (oldLine, newLine) -> oldLine == newLine }
-        .size
-    val suffixLimit = minOf(beforeLines.size, afterLines.size) - prefix
-    val suffix = beforeLines.asReversed()
-        .zip(afterLines.asReversed())
-        .take(suffixLimit)
-        .takeWhile { (oldLine, newLine) -> oldLine == newLine }
-        .size
-    return LineDiffStats(
-        additions = afterLines.size - prefix - suffix,
-        deletions = beforeLines.size - prefix - suffix,
-    )
+    val diff = fileChangePreview(before, after)
+    return LineDiffStats(diff.additions, diff.deletions)
 }
 
 class AgentEngine(
@@ -89,6 +75,7 @@ class AgentEngine(
     private val readOnlySubagent: Boolean = false,
     private val commandAuth: () -> GitCommandAuth = { GitCommandAuth() },
     private val toolScheduler: WorkspaceToolScheduler? = null,
+    private val customPrompt: () -> String = { "" },
 ) {
     private val conversation = mutableListOf<AgentMessage>()
 
@@ -143,12 +130,17 @@ class AgentEngine(
         imagePaths: List<String> = emptyList(),
         takeSteering: suspend () -> List<AgentMessage> = { emptyList() },
         taskMode: AgentTaskMode = AgentTaskMode.EXECUTE,
+        persistentGoal: String? = null,
         onEvent: (AgentEvent) -> Unit,
     ) {
         if (!readOnlySubagent && taskMode == AgentTaskMode.EXECUTE) extensions?.prepare(authorize)
-        val tools = if (readOnlySubagent) TOOLS.filter { it.name in setOf("list_files", "read_file", "search_files") }
+        val activeGoal = persistentGoal?.trim()?.takeIf {
+            it.isNotEmpty() && !readOnlySubagent && taskMode == AgentTaskMode.EXECUTE
+        }
+        val baseTools = if (readOnlySubagent) TOOLS.filter { it.name in setOf("list_files", "read_file", "search_files") }
             else if (taskMode != AgentTaskMode.EXECUTE) TOOLS.filter { taskMode.allows(it.name) }
             else TOOLS + extensions?.tools().orEmpty()
+        val tools = if (activeGoal == null) baseTools else baseTools + FINISH_GOAL_TOOL
         ensureSystemMessage(taskMode)
         val projectInstructions = try {
             if (workspace.resolve("AGENTS.md").isFile) {
@@ -161,12 +153,14 @@ class AgentEngine(
         }
         conversation[0] = conversation[0].copy(content = conversation[0].content.orEmpty() +
             "\nProject instructions (AGENTS.md; subordinate to system and task restrictions):\n" +
-            projectInstructions + "\nActive task restrictions:\n" + taskMode.instructions)
+            projectInstructions + "\nActive task restrictions:\n" + taskMode.instructions +
+            activeGoal?.let(::persistentGoalInstructions).orEmpty())
         conversation += AgentMessage(role = "user", content = userText, imagePaths = imagePaths)
         auditLog.append("chat", "用户消息", userText, "received")
 
         var step = 0
         var lastRetryCount = 0
+        var goalFinished = false
         val completedToolCalls = mutableMapOf<String, ToolResult>()
         try {
             var lastPromptTokens = 0
@@ -264,6 +258,41 @@ class AgentEngine(
                     emittedStreamChars = 0
                     reasoningChars = 0
                     onEvent(AgentEvent.StreamOutputReset(visibleChars))
+                    onEvent(AgentEvent.FilePreviewsReset)
+                }
+                // Preview only: never write a partial tool argument to disk.
+                val previewTimes = mutableMapOf<Int, Long>()
+                val originals = mutableMapOf<String, String?>()
+                val onToolCallDelta: (Int, String, String) -> Unit = preview@{ index, name, raw ->
+                    if (name !in setOf("write_file", "edit_file") || readOnlySubagent || !taskMode.allows(name)) return@preview
+                    val now = System.currentTimeMillis()
+                    if (now - (previewTimes[index] ?: 0) < 150) return@preview
+                    previewTimes[index] = now
+                    val fields = partialToolStrings(raw)
+                    val path = fields["path"]?.takeIf { fields["path:complete"] == "true" && it.isNotBlank() } ?: return@preview
+                    val valueKey = if (name == "write_file") "content" else "new_text"
+                    val value = fields[valueKey] ?: return@preview
+                    val original = originals.getOrPut(path) {
+                        runCatching {
+                            val file = workspace.resolve(path)
+                            if (!file.exists() && name == "write_file") "" else {
+                                require(file.isFile && file.length() <= WorkspaceRepository.MAX_FILE_CHARS)
+                                file.readText().also { require(!it.contains('\u0000')) }
+                            }
+                        }.getOrNull()
+                    } ?: return@preview
+                    // Keep the not-yet-generated tail: do not report it as deleted mid-stream.
+                    val after = if (name == "write_file") {
+                        if (fields["content:complete"] == "true") value else value + original.drop(value.length)
+                    } else {
+                        val old = fields["old_text"]?.takeIf { fields["old_text:complete"] == "true" && it.isNotBlank() } ?: return@preview
+                        if (!original.contains(old)) return@preview
+                        if (fields["replace_all"] != "true" && countOccurrences(original, old) != 1) return@preview
+                        val replacement = if (fields["new_text:complete"] == "true") value else value + old.drop(value.length)
+                        if (fields["replace_all"] == "true") original.replace(old, replacement) else original.replaceFirst(old, replacement)
+                    }
+                    val diff = fileChangePreview(original, after)
+                    onEvent(AgentEvent.FilePreview("$step:$index", name, path, diff.additions, diff.deletions, diff.diff))
                 }
                 val rawTurn = try {
                     aiClient.complete(
@@ -272,12 +301,15 @@ class AgentEngine(
                         tools,
                         onRetry = { notice ->
                             lastRetryCount = notice.attempt
+                            previewTimes.clear(); originals.clear()
+                            onEvent(AgentEvent.FilePreviewsReset)
                             onEvent(AgentEvent.RetryScheduled(notice))
                         },
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
                         onStreamReset = onStreamReset,
                         onDiagnostic = ::auditCacheDiagnostic,
+                        onToolCallDelta = onToolCallDelta,
                     )
                 } catch (error: AgentException) {
                     currentCoroutineContext().ensureActive()
@@ -298,12 +330,15 @@ class AgentEngine(
                         tools,
                         onRetry = { notice ->
                             lastRetryCount = notice.attempt
+                            previewTimes.clear(); originals.clear()
+                            onEvent(AgentEvent.FilePreviewsReset)
                             onEvent(AgentEvent.RetryScheduled(notice))
                         },
                         onDelta = onDelta,
                         onReasoningDelta = onReasoningDelta,
                         onStreamReset = onStreamReset,
                         onDiagnostic = ::auditCacheDiagnostic,
+                        onToolCallDelta = onToolCallDelta,
                     )
                 }
                 pendingDelta.append(imagePreview.finish())
@@ -361,6 +396,7 @@ class AgentEngine(
                     toolCalls = turn.toolCalls,
                 )
                 if (turn.toolCalls.isEmpty()) {
+                    onEvent(AgentEvent.FilePreviewsReset)
                     if (!turn.contentWasStreamed) {
                         turn.content?.takeIf { it.isNotBlank() }?.let {
                             onEvent(AgentEvent.AssistantText(it))
@@ -382,6 +418,17 @@ class AgentEngine(
                         lastPromptTokens = 0
                         continue
                     }
+                    if (activeGoal != null) {
+                        conversation += AgentMessage(
+                            role = "user",
+                            content = "目标模式仍在运行：尚未收到 finish_goal。继续执行目标，不要只汇报阶段性进展；" +
+                                "若被真正阻塞，使用 ask_user 获取用户决定。",
+                        )
+                        lastPromptTokens = 0
+                        completedToolCalls.clear()
+                        onEvent(AgentEvent.State("目标尚未完成，正在继续执行"))
+                        continue
+                    }
                     auditLog.append("agent", "任务完成", "模型未再请求工具", "success")
                     onEvent(AgentEvent.Completed)
                     return
@@ -398,21 +445,30 @@ class AgentEngine(
                     )
                 }
 
-                for (call in turn.toolCalls) {
+                for ((callIndex, call) in turn.toolCalls.withIndex()) {
                     currentCoroutineContext().ensureActive()
                     val summary = summarizeArguments(call.arguments)
                     val signature = reusableToolSignature(call)
                     val callable = taskMode.allows(call.name) &&
                         (!readOnlySubagent || call.name in setOf("list_files", "read_file", "search_files"))
                     val cachedResult = if (callable) signature?.let(completedToolCalls::get) else null
+                    val invalidGoalFinishBatch = call.name == "finish_goal" &&
+                        !canFinishGoal(activeGoal, turn.toolCalls.size)
                     auditLog.append(
                         "tool",
                         if (cachedResult == null) "调用 ${call.name}" else "跳过重复 ${call.name}",
                         summary,
                     )
                     val visibleToolName = extensions?.displayName(call.name, call.arguments) ?: call.name
-                    onEvent(AgentEvent.ToolStarted(visibleToolName, summary))
-                    val result = cachedResult?.let {
+                    onEvent(AgentEvent.ToolStarted(visibleToolName, summary, "$step:$callIndex"))
+                    val result = if (invalidGoalFinishBatch) {
+                        ToolResult(
+                            content = "GOAL_NOT_FINISHED: An active goal is required and finish_goal must be the only tool call in its round. " +
+                                "Finish all verification first, then call finish_goal alone.",
+                            success = false,
+                            preview = "目标完成信号无效",
+                        )
+                    } else cachedResult?.let {
                         ToolResult(
                             content = "DUPLICATE_TOOL_CALL_SUPPRESSED: This exact " +
                                 "${call.name} request already completed successfully in " +
@@ -435,7 +491,9 @@ class AgentEngine(
                                 val extra = if (taskMode == AgentTaskMode.EXECUTE) extensions?.execute(call, settings,
                                     conversation.takeLast(8).joinToString("\n") { "${it.role}: ${it.content.orEmpty().take(4000)}" }, authorize) else null
                                 if (extra != null) ToolResult(extra.content, extra.success, extra.preview)
-                                else executeTool(call, authorize, choose, taskMode, settings) { output ->
+                                else executeTool(call, authorize, choose, taskMode, settings, onFilePreview = { path, diff ->
+                                    onEvent(AgentEvent.FilePreview("executing", call.name, path, diff.additions, diff.deletions, diff.diff))
+                                }) { output ->
                                     onEvent(AgentEvent.ToolOutput(visibleToolName, output))
                                 }
                             }
@@ -449,6 +507,13 @@ class AgentEngine(
                             success = false,
                             preview = "工具调用失败",
                         )
+                    }
+                    if (call.name == "finish_goal" && result.success) {
+                        val summary = runCatching {
+                            JSONObject(call.arguments.ifBlank { "{}" }).optString("summary").trim()
+                        }.getOrDefault("").ifBlank { "目标已完成并通过验证" }
+                        goalFinished = true
+                        onEvent(AgentEvent.GoalFinished(summary))
                     }
                     if (cachedResult == null && signature != null && result.success) {
                         completedToolCalls[signature] = result
@@ -474,9 +539,16 @@ class AgentEngine(
                             additions = result.additions,
                             deletions = result.deletions,
                             imagePaths = result.imagePaths,
+                            fileDiff = result.fileDiff,
                         ),
                     )
                     result.plan?.let { onEvent(AgentEvent.PlanUpdated(it)) }
+                }
+                onEvent(AgentEvent.FilePreviewsReset)
+                if (goalFinished) {
+                    auditLog.append("agent", "目标完成", activeGoal.orEmpty(), "success")
+                    onEvent(AgentEvent.Completed)
+                    return
                 }
             }
         } catch (error: CancellationException) {
@@ -766,6 +838,7 @@ class AgentEngine(
         choose: suspend (UserQuestion) -> AgentChoice?,
         taskMode: AgentTaskMode = AgentTaskMode.EXECUTE,
         settings: AiSettings = AiSettings(),
+        onFilePreview: (String, FileChangePreview) -> Unit = { _, _ -> },
         onToolOutput: (String) -> Unit = {},
     ): ToolResult {
         require(taskMode.allows(call.name)) { "当前模式不允许此操作" }
@@ -774,6 +847,16 @@ class AgentEngine(
             return writeProjectInstructions(arguments, authorize, choose)
         }
         return when (call.name) {
+            "finish_goal" -> {
+                val summary = arguments.optString("summary").trim()
+                require(summary.isNotBlank()) { "完成目标时必须提供验证摘要" }
+                ToolResult(
+                    content = "GOAL_FINISHED: $summary",
+                    success = true,
+                    preview = "目标已完成",
+                )
+            }
+
             "generate_image" -> {
                 val prompt = arguments.optString("prompt").trim()
                 val size = arguments.optString("size", "1024x1024")
@@ -927,6 +1010,8 @@ class AgentEngine(
                 } else {
                     original.replaceFirst(oldText, newText)
                 }
+                val change = fileChangePreview(original, updated)
+                onFilePreview(path, change)
                 val permission = authorize(
                     PermissionRequest(
                         kind = PermissionKind.WRITE_FILES,
@@ -946,7 +1031,7 @@ class AgentEngine(
                     )
                 }
                 workspace.writeText(path, updated)
-                val lineStats = lineDiffStats(original, updated)
+                val lineStats = change
                 auditLog.append(
                     "file",
                     "局部修改文件",
@@ -962,6 +1047,7 @@ class AgentEngine(
                     preview = "编辑 $path · +${lineStats.additions} -${lineStats.deletions}",
                     additions = lineStats.additions,
                     deletions = lineStats.deletions,
+                    fileDiff = change.diff,
                 )
             }
 
@@ -1147,6 +1233,10 @@ class AgentEngine(
                 val path = arguments.optString("path")
                 val content = arguments.optString("content")
                 require(path.isNotBlank()) { "path 不能为空" }
+                val original = if (workspace.resolve(path).exists()) workspace.readText(path,
+                    maxChars = WorkspaceRepository.MAX_FILE_CHARS, requireComplete = true) else ""
+                val change = fileChangePreview(original, content)
+                onFilePreview(path, change)
                 val permission = authorize(
                     PermissionRequest(
                         kind = PermissionKind.WRITE_FILES,
@@ -1168,15 +1258,8 @@ class AgentEngine(
                         preview = "写入未获授权",
                     )
                 }
-                val original = runCatching {
-                    workspace.readText(
-                        path = path,
-                        maxChars = WorkspaceRepository.MAX_FILE_CHARS,
-                        requireComplete = true,
-                    )
-                }.getOrDefault("")
                 workspace.writeText(path, content)
-                val lineStats = lineDiffStats(original, content)
+                val lineStats = change
                 auditLog.append(
                     "file",
                     "写入文件",
@@ -1192,6 +1275,7 @@ class AgentEngine(
                     preview = "写入 $path · +${lineStats.additions} -${lineStats.deletions}",
                     additions = lineStats.additions,
                     deletions = lineStats.deletions,
+                    fileDiff = change.diff,
                 )
             }
 
@@ -1377,7 +1461,7 @@ class AgentEngine(
         }
     }
 
-    private fun buildSystemPrompt(taskMode: AgentTaskMode = AgentTaskMode.EXECUTE): String = agentSystemPrompt(permissions()) +
+    private fun buildSystemPrompt(taskMode: AgentTaskMode = AgentTaskMode.EXECUTE): String = agentSystemPrompt(permissions(), customPrompt()) +
         if (readOnlySubagent) "\nYou are a read-only child. Only list_files, read_file and search_files are available. Return findings to the parent."
         else if (taskMode != AgentTaskMode.EXECUTE) "\n" + taskMode.instructions
         else "\n" + commandAuth().description + extensions?.instructions().orEmpty()
@@ -1450,6 +1534,7 @@ class AgentEngine(
         val imagePaths: List<String> = emptyList(),
         val additions: Int = 0,
         val deletions: Int = 0,
+        val fileDiff: String = "",
     )
 
     private fun lineDiffStats(before: String, after: String): LineDiffStats =
@@ -1469,6 +1554,17 @@ class AgentEngine(
             "list_system_dir",
             "run_command",
             "device_info",
+        )
+
+        private val FINISH_GOAL_TOOL = ToolDefinition(
+            name = "finish_goal",
+            description = "Finish an active persistent goal. Call this only after the entire objective is satisfied and relevant verification has passed. A normal assistant response does not end goal mode.",
+            parameters = schema(
+                properties = mapOf(
+                    "summary" to stringProperty("Concise completion and verification summary"),
+                ),
+                required = listOf("summary"),
+            ),
         )
 
         private val TOOLS = listOf(
@@ -1695,7 +1791,14 @@ class AgentEngine(
     }
 }
 
-internal fun agentSystemPrompt(permissions: AgentPermissions): String = """
+internal fun persistentGoalInstructions(goal: String): String = """
+
+Persistent goal mode is active.
+Objective: $goal
+Keep working across model rounds until the whole objective is complete. A text response or a round without tool calls is only progress and must not end the run. Do not call finish_goal for partial work, an unverified change, or merely because you explained next steps. Call finish_goal exactly once only after relevant verification passes and the objective is satisfied. If a material decision or external input blocks progress, use ask_user instead of ending the run. The run ends only when finish_goal succeeds, the user pauses/stops it, or execution fails with a concrete blocker.
+""".trimEnd()
+
+internal fun agentSystemPrompt(permissions: AgentPermissions, customPrompt: String = ""): String = """
 You are CodeMate, a coding and device-inspection agent running on an Android phone.
         Treat the latest user request as the active task goal. Keep work aligned with that goal,
         mark plan steps accurately as you progress, and verify the result against the goal before
@@ -1765,4 +1868,10 @@ You are CodeMate, a coding and device-inspection agent running on an Android pho
           approved per action in ask mode and fully audited. Raw device nodes are not exposed
           through the system-read tools, but shell behavior is not artificially restricted.
         - Keep edits focused and explain remaining limitations briefly.
-    """.trimIndent()
+    """.trimIndent() + customPrompt.trim().let { prompt ->
+        if (prompt.isEmpty()) "" else "\n\nUser custom instructions (role, tone and response preferences; " +
+            "supplement the base instructions, do not override tool permissions or task restrictions):\n" + prompt
+    }
+
+internal fun canFinishGoal(activeGoal: String?, toolCallCount: Int): Boolean =
+    !activeGoal.isNullOrBlank() && toolCallCount == 1

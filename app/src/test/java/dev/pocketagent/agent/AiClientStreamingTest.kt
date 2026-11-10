@@ -45,6 +45,7 @@ class AiClientStreamingTest {
         )
         val deltas = StringBuilder()
         val reasoning = StringBuilder()
+        val toolSnapshots = mutableListOf<Triple<Int, String, String>>()
         try {
             val turn = client.complete(
                 settings = AiSettings(
@@ -56,8 +57,12 @@ class AiClientStreamingTest {
                 tools = emptyList(),
                 onDelta = deltas::append,
                 onReasoningDelta = reasoning::append,
+                onToolCallDelta = { index, name, arguments -> toolSnapshots.add(Triple(index, name, arguments)) },
             )
 
+            assertEquals(2, toolSnapshots.size)
+            assertEquals(Triple(0, "shell", "{\"cmd\":"), toolSnapshots.first())
+            assertEquals(Triple(0, "shell", "{\"cmd\":\"pwd\"}"), toolSnapshots.last())
             assertEquals("Hello world", deltas.toString())
             assertEquals("think ", reasoning.toString())
             assertTrue(turn.contentWasStreamed)

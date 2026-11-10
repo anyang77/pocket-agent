@@ -77,6 +77,7 @@ class SessionStateRouterTest {
         router.show(session(2))
         router.publish { it.copy(
             onboardingCompleted = true, welcomeAccepted = true,
+            promptPresets = dev.pocketagent.data.PromptPresets().save("teacher", "导师", "你是一位 Kotlin 导师").select("teacher"),
             tab = AppTab.AGENT, availableModels = listOf("current-model"),
             activeFile = "unsaved.kt", editorContent = "unsaved changes", editorDirty = true,
             currentDirectory = "src", terminalOutput = "latest output",

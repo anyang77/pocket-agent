@@ -61,6 +61,7 @@ fun SettingsScreen(
     onCreateProfile: (String, String, String, Int) -> Unit,
     onDeleteProfile: (String) -> Unit,
     onThemePreferenceChanged: (ThemePreference) -> Unit,
+    promptActions: PromptPresetActions,
     extensionActions: ExtensionActions,
     modifier: Modifier = Modifier,
 ) {
@@ -353,6 +354,9 @@ fun SettingsScreen(
                     Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
             }
+        }
+        item {
+            CustomPromptSettings(presets = state.promptPresets, actions = promptActions)
         }
         item { ExtensionsSettings(state, extensionActions) }
         item {

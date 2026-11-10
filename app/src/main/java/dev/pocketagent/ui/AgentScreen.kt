@@ -29,6 +29,8 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
@@ -127,6 +129,7 @@ fun AgentScreen(
     onProfileSelected: (String) -> Unit,
     onReasoningEffortSelected: (String) -> Unit,
     onRefreshModels: () -> Unit,
+    promptActions: PromptPresetActions,
     onSelectConversation: (Long) -> Unit,
     onDeleteConversation: (Long) -> Unit,
     onApprovePending: () -> Unit,
@@ -143,6 +146,7 @@ fun AgentScreen(
     modifier: Modifier = Modifier,
 ) {
     var historyVisible by rememberSaveable { mutableStateOf(false) }
+    var promptManagerVisible by rememberSaveable { mutableStateOf(false) }
     var autoFollow by rememberSaveable { mutableStateOf(true) }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -181,6 +185,7 @@ fun AgentScreen(
         lastEntry?.attachments?.size,
         lastEntry?.activities?.size,
         lastEntry?.activities?.lastOrNull()?.success,
+        lastEntry?.activities?.lastOrNull()?.result?.length,
         state.agentStatus,
     ) {
         if (lastEntry?.role == ChatRole.USER) autoFollow = true
@@ -194,6 +199,10 @@ fun AgentScreen(
         if (state.chat.isNotEmpty()) {
             listState.scrollToItem(bottomAnchorIndex)
         }
+    }
+
+    if (promptManagerVisible) {
+        PromptPresetManager(state.promptPresets, promptActions) { promptManagerVisible = false }
     }
 
     state.pendingUserChoice?.let { pending ->
@@ -278,6 +287,8 @@ fun AgentScreen(
             onProfileSelected = onProfileSelected,
             onReasoningEffortSelected = onReasoningEffortSelected,
             onRefreshModels = onRefreshModels,
+            onPromptSelected = { id -> coroutineScope.launch { promptActions.select(id) } },
+            onManagePrompts = { promptManagerVisible = true },
             onNewConversation = onNewConversation,
             onOpenHistory = { historyVisible = true },
         )
@@ -372,6 +383,7 @@ fun AgentScreen(
         state.agentGoal?.let { goal ->
             GoalDockBar(
                 goal = goal,
+                running = state.agentRunning,
                 onPause = onPauseGoal,
                 onResume = onResumeGoal,
                 onClear = onClearGoal,
@@ -547,11 +559,7 @@ private fun ChatBubble(
         horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.Top,
     ) {
-        androidx.compose.foundation.Image(
-            painter = androidx.compose.ui.res.painterResource(dev.pocketagent.R.drawable.ic_launcher),
-            contentDescription = null, // The adjacent CodeMate label identifies the speaker.
-            modifier = Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)),
-        )
+        AgentAvatar(entry.agentAvatarPath, Modifier.size(28.dp))
         Spacer(Modifier.width(9.dp))
         Column(
             modifier = Modifier.weight(1f),
@@ -562,7 +570,9 @@ private fun ChatBubble(
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
                 Text(
-                    "CodeMate",
+                    entry.agentName,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.SemiBold,
                     ),
@@ -715,6 +725,7 @@ private fun AssistantReasoningRow(
 @Composable
 private fun GoalDockBar(
     goal: AgentGoal,
+    running: Boolean,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onClear: () -> Unit,
@@ -738,17 +749,18 @@ private fun GoalDockBar(
             )
             Text(
                 when (goal.phase) {
-                    GoalPhase.ACTIVE -> "进行中"
+                    GoalPhase.ACTIVE -> if (running) "进行中" else "待继续"
                     GoalPhase.PAUSED -> "已暂停"
                     GoalPhase.BLOCKED -> "受阻"
+                    GoalPhase.COMPLETED -> "已完成"
                 },
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = FontWeight.SemiBold,
                 ),
-                color = if (goal.phase == GoalPhase.BLOCKED) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.primary
+                color = when (goal.phase) {
+                    GoalPhase.BLOCKED -> MaterialTheme.colorScheme.error
+                    GoalPhase.COMPLETED -> MaterialTheme.colorScheme.tertiary
+                    else -> MaterialTheme.colorScheme.primary
                 },
             )
             Text(
@@ -761,13 +773,14 @@ private fun GoalDockBar(
             )
             when (goal.phase) {
                 GoalPhase.ACTIVE -> TextButton(
-                    onClick = onPause,
+                    onClick = if (running) onPause else onResume,
                     contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
-                ) { Text("暂停", style = MaterialTheme.typography.labelSmall) }
+                ) { Text(if (running) "暂停" else "继续", style = MaterialTheme.typography.labelSmall) }
                 GoalPhase.PAUSED, GoalPhase.BLOCKED -> TextButton(
                     onClick = onResume,
                     contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
                 ) { Text("继续", style = MaterialTheme.typography.labelSmall) }
+                GoalPhase.COMPLETED -> Unit
             }
             TextButton(
                 onClick = onClear,
@@ -1208,127 +1221,153 @@ private fun AgentTimeline(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun InlineActivity(
     entryId: Long,
     index: Int,
     activity: ToolActivity,
 ) {
-    var expanded by rememberSaveable(entryId, index) { mutableStateOf(activity.name == "run_command" && activity.success == null) }
+    var expanded by rememberSaveable(entryId, index) { mutableStateOf(false) }
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    val outputScrollState = rememberScrollState()
     val running = activity.success == null
-    val hasFileChanges = activity.additions > 0 || activity.deletions > 0
-    val hasDetails = activity.result?.isNotBlank() == true
+    val hasFileChanges = activity.name in setOf("edit_file", "write_file")
+    val diffColors = fileDiffColors()
+    val hasDetails = activity.result?.isNotBlank() == true || activity.fileDiff.isNotBlank()
     val visual = activityVisual(activity.name)
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 10.dp)
-            .clickable(enabled = hasDetails) { expanded = !expanded },
-        shape = RoundedCornerShape(9.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            delay(80)
+            bringIntoViewRequester.bringIntoView()
+        }
+    }
+    LaunchedEffect(expanded, outputScrollState.maxValue) {
+        if (expanded && outputScrollState.maxValue > 0) {
+            outputScrollState.scrollTo(outputScrollState.maxValue)
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (hasFileChanges) Row(
+            Modifier.fillMaxWidth().padding(start = 10.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            Text(if (activity.previewKey != null) "文件改动 · 生成中" else if (running) "文件改动 · 待写入"
+                else if (activity.success == true) "文件改动 · 已写入" else "文件改动 · 未写入",
+                Modifier.weight(1f), style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (activity.fileDiff.startsWith("≈")) Text("≈", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("+${activity.additions}", color = diffColors.added,
+                style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+            Text("−${activity.deletions}", color = diffColors.removed,
+                style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        }
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 10.dp)
+                .clickable(enabled = hasDetails) { expanded = !expanded },
+            shape = RoundedCornerShape(9.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
-                when {
-                    running -> CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 1.7.dp,
-                        color = MaterialTheme.colorScheme.tertiary,
-                    )
-                    else -> Icon(
-                        visual.icon,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = if (activity.success == false) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    when {
+                        running -> CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 1.7.dp,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                        else -> Icon(
+                            visual.icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = if (activity.success == false) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                visual.tint
+                            },
+                        )
+                    }
+                    Text(
+                        activityDisplayName(activity.name),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = if (activity.success == false) {
                             MaterialTheme.colorScheme.error
                         } else {
-                            visual.tint
+                            MaterialTheme.colorScheme.onSurface
                         },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
+                    activity.durationMs
+                        ?.let(::formatActivityDuration)
+                        ?.let { duration ->
+                            Text(
+                                duration,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    if (hasDetails) {
+                        Icon(
+                            if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = if (expanded) "收起" else "展开",
+                            modifier = Modifier.size(17.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 Text(
-                    activityDisplayName(activity.name),
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        fontWeight = FontWeight.SemiBold,
+                    activity.summary.replace(Regex(""" · \+\d+ -\d+$"""), ""),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 16.sp,
                     ),
-                    color = if (activity.success == false) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                    maxLines = 1,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (expanded) 4 else 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (hasFileChanges) {
-                    Text(
-                        "+${activity.additions}",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        "−${activity.deletions}",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-                activity.durationMs
-                    ?.let(::formatActivityDuration)
-                    ?.let { duration ->
-                        Text(
-                            duration,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                if (expanded) {
+                    if (activity.fileDiff.isNotBlank()) {
+                        FileDiffContent(activity.fileDiff, outputScrollState)
+                        if (activity.success == false) Text(activity.result.orEmpty(), color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall)
+                    } else activity.result?.takeIf { it.isNotBlank() }?.let { result ->
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
                         )
+                        SelectionContainer {
+                            Text(
+                                result,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 320.dp)
+                                    .verticalScroll(outputScrollState),
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    lineHeight = 16.sp,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                     }
-                if (hasDetails) {
-                    Icon(
-                        if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = if (expanded) "收起" else "展开",
-                        modifier = Modifier.size(17.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Spacer(
+                        Modifier
+                            .height(1.dp)
+                            .bringIntoViewRequester(bringIntoViewRequester),
                     )
-                }
-            }
-            Text(
-                activity.summary,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontFamily = FontFamily.Monospace,
-                    lineHeight = 16.sp,
-                ),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = if (expanded) 4 else 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (expanded) {
-                activity.result?.takeIf { it.isNotBlank() }?.let { result ->
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
-                    )
-                    SelectionContainer {
-                        Text(
-                            result,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 320.dp)
-                                .verticalScroll(rememberScrollState()),
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                lineHeight = 16.sp,
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
                 }
             }
         }
@@ -1343,6 +1382,7 @@ private fun formatActivityDuration(durationMs: Long): String =
     }
 
 private fun activityDisplayName(name: String): String = when (name) {
+    "finish_goal" -> "完成目标"
     "load_skill" -> "加载技能"
     "spawn_subagent" -> "启动子代理"
     "wait_subagents" -> "等待子代理"

@@ -93,6 +93,8 @@ data class ToolActivity(
     val contentOffset: Int = 0,
     val additions: Int = 0,
     val deletions: Int = 0,
+    val fileDiff: String = "",
+    val previewKey: String? = null,
 )
 
 /** Keeps an older measured speed visible while a new request is still warming up. */
@@ -237,7 +239,9 @@ sealed interface AgentEvent {
     data class ModelReasoningProgress(val chars: Int) : AgentEvent
     data class ReasoningCompleted(val text: String) : AgentEvent
     data class PlanUpdated(val steps: List<AgentPlanStep>) : AgentEvent
-    data class ToolStarted(val name: String, val summary: String) : AgentEvent
+    data class FilePreview(val key: String, val name: String, val path: String, val additions: Int, val deletions: Int, val diff: String) : AgentEvent
+    data object FilePreviewsReset : AgentEvent
+    data class ToolStarted(val name: String, val summary: String, val previewKey: String? = null) : AgentEvent
     data class ToolOutput(val name: String, val output: String) : AgentEvent
     data class ToolFinished(
         val name: String,
@@ -247,8 +251,10 @@ sealed interface AgentEvent {
         val additions: Int = 0,
         val deletions: Int = 0,
         val imagePaths: List<String> = emptyList(),
+        val fileDiff: String = "",
     ) : AgentEvent
     data class State(val text: String) : AgentEvent
+    data class GoalFinished(val summary: String) : AgentEvent
     data object Completed : AgentEvent
     data class Stopped(val message: String) : AgentEvent
     data class Failed(

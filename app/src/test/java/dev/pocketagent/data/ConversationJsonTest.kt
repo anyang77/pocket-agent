@@ -10,10 +10,20 @@ import java.io.StringWriter
 import java.io.Writer
 
 class ConversationJsonTest {
+    @Test fun identitySnapshotSurvivesRestartAndPresetChanges() {
+        val original = fullConversation().copy(messages = listOf(
+            StoredMessage(1, "ASSISTANT", "第一位", 1, agentName = "导师", agentAvatarPath = "/private/old.png"),
+            StoredMessage(2, "ASSISTANT", "第二位", 2, agentName = "作家", agentAvatarPath = "/private/new.png"),
+        ))
+        val output = StringWriter()
+        ConversationJson.write(output, listOf(original))
+        assertEquals(original, ConversationJson.read(StringReader(output.toString())).single())
+    }
+
     private fun fullConversation() = StoredConversation(
         9, "中文会话 😀", 11, 22,
         listOf(StoredMessage(3, "ASSISTANT", "正文\n\t\"\\😀", 10,
-            activities = listOf(ToolActivity("run_command", "测试", false, "结果", 123, 0, 5, 2, 1),
+            activities = listOf(ToolActivity("edit_file", "测试", false, "结果", 123, 0, 5, 2, 1, fileDiff = "@@ -1 +1 @@\n-old\n+new"),
                 ToolActivity("pending", "等待")),
             usage = TokenUsage(100, 30, 130, 20, 80, 4, 2, true, 100),
             lastRequestUsage = TokenUsage(3, 2, 5), lastRequestAt = 99,
@@ -58,6 +68,8 @@ class ConversationJsonTest {
         val c = ConversationJson.read(StringReader(text)).single()
         assertEquals("对话", c.title)
         assertEquals("旧历史", c.messages.single().content)
+        assertEquals("CodeMate", c.messages.single().agentName)
+        assertEquals("", c.messages.single().agentAvatarPath)
         assertEquals(100, c.messages.single().usage?.cacheMeasuredPromptTokens)
         assertEquals(AgentPlanStatus.PENDING, c.messages.single().plan.single().status)
         assertNull(c.agentMessages.single().content)
