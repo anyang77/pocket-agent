@@ -9,7 +9,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.Base64
 
 data class FileEntry(
     val relativePath: String,
@@ -607,29 +606,12 @@ class WorkspaceRepository(
         }
     }
 
-    private suspend fun writeTextAsRoot(file: File, content: String) {
-        val encoded = Base64.getEncoder().encodeToString(content.toByteArray(Charsets.UTF_8))
-        val script = buildString {
-            append("mkdir -p -- ${shellQuote(file.parentFile?.absolutePath.orEmpty())} && ")
-            append("printf %s ${shellQuote(encoded)} | base64 -d > ")
-            append(shellQuote(file.absolutePath))
-        }
-        val result = runRoot(script)
-        require(result.exitCode == 0) {
-            result.output.ifBlank { result.error ?: "Root 无法写入文件" }
-        }
-    }
+    private suspend fun writeTextAsRoot(file: File, content: String) =
+        writeStagedRootFile(appContext.cacheDir, file, content.toByteArray(Charsets.UTF_8), execute = ::runRoot)
 
-    private suspend fun createFileAsRoot(file: File, content: String) {
-        val encoded = Base64.getEncoder().encodeToString(content.toByteArray(Charsets.UTF_8))
-        val script = "test ! -e ${shellQuote(file.absolutePath)} && " +
-            "mkdir -p -- ${shellQuote(file.parentFile?.absolutePath.orEmpty())} && " +
-            "printf %s ${shellQuote(encoded)} | base64 -d > ${shellQuote(file.absolutePath)}"
-        val result = runRoot(script)
-        require(result.exitCode == 0) {
-            result.output.ifBlank { result.error ?: "文件已存在或无法创建" }
-        }
-    }
+    private suspend fun createFileAsRoot(file: File, content: String) =
+        writeStagedRootFile(appContext.cacheDir, file, content.toByteArray(Charsets.UTF_8),
+            createOnly = true, execute = ::runRoot)
 
     private suspend fun renameAsRoot(source: File, destination: File) {
         val result = runRoot(
@@ -673,6 +655,8 @@ class WorkspaceRepository(
         command = command,
         workingDir = File("/"),
         asRoot = true,
+        // Internal file operations do not depend on a working Termux installation.
+        useInternalRuntime = false,
         timeoutMs = 30_000,
     )
 

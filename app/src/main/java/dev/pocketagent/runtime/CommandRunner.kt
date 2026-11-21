@@ -85,31 +85,18 @@ class CommandRunner(
                 put("PATH", "/product/bin:/apex/com.android.runtime/bin:/system/bin:/system/xbin")
             }
             putAll(extraEnv)
+            if (effectiveRoot) {
+                sanitizeRootLauncherEnvironment(this)
+                if (!useInternalRuntime) put("PATH", "/system/bin:/system/xbin:/product/bin")
+            }
         }
 
         val process = try {
             processBuilder.start()
         } catch (error: Exception) {
-            if (effectiveRoot && internalRuntime?.isReady() == true) {
-                val fallback = internalRuntime.run(
-                    command = command,
-                    workingDir = workingDir,
-                    timeoutMs = timeoutMs,
-                    extraEnv = extraEnv,
-                    onOutput = onOutput,
-                )
-                return@withContext fallback.copy(
-                    output = "[Root 启动失败，已自动降级为普通 UID]\n" + fallback.output,
-                    error = fallback.error,
-                )
-            }
-            return@withContext CommandResult(
-                exitCode = -1,
-                output = "",
-                timedOut = false,
-                durationMs = System.currentTimeMillis() - start,
-                error = error.message ?: "无法启动命令",
-            )
+            // Root was explicitly requested. Do not replay the same operation
+            // as the app UID, or hide the original errno behind fallback output.
+            return@withContext commandStartFailure(error, effectiveRoot, System.currentTimeMillis() - start)
         }
 
         activeProcess = process
