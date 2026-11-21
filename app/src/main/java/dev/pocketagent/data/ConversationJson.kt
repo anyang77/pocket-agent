@@ -22,7 +22,13 @@ internal object ConversationJson {
         conversations.sortedByDescending { it.updatedAt }.take(50).forEach { c ->
             w.beginObject().name("id").value(c.id).name("title").value(c.title)
                 .name("createdAt").value(c.createdAt).name("updatedAt").value(c.updatedAt)
-                .name("messages").beginArray()
+                .name("deep_id").value(c.deepId)
+            w.optional("inherited_from_deep_id", c.inheritedFromDeepId)
+            c.modelSelection?.let { selection ->
+                w.name("model_selection").beginObject().name("profile_id").value(selection.profileId)
+                    .name("model").value(selection.model).name("reasoning_effort").value(selection.reasoningEffort).endObject()
+            }
+            w.name("messages").beginArray()
             c.messages.takeLast(500).forEach { m ->
                 w.beginObject().name("id").value(m.id).name("role").value(m.role)
                     .name("content").value(m.content).name("timestamp").value(m.timestamp)
@@ -96,15 +102,30 @@ internal object ConversationJson {
     private fun readConversation(r: JsonReader): StoredConversation {
         var id: Long? = null; var title = "对话"; var created = 0L; var updated = 0L
         var messages: List<StoredMessage>? = null; var agent = emptyList<AgentMessage>()
+        var deepId: String? = null; var inherited: String? = null
+        var selection: ConversationModelSelection? = null
         r.fields { when (it) {
             "id" -> id = r.nextLong(); "title" -> title = r.nextString()
             "createdAt" -> created = r.nextLong(); "updatedAt" -> updated = r.nextLong()
             "messages" -> messages = r.items { readMessage(r) }
             "agent_messages" -> agent = r.items { readAgentMessage(r) }
+            "deep_id" -> deepId = r.nextString().takeIf { value -> value.isNotBlank() }
+            "inherited_from_deep_id" -> inherited = r.nextString()
+            "model_selection" -> {
+                var profile = ""; var model = ""; var effort = "auto"
+                r.fields { key -> when (key) {
+                    "profile_id" -> profile = r.nextString()
+                    "model" -> model = r.nextString()
+                    "reasoning_effort" -> effort = r.nextString()
+                    else -> r.skipValue()
+                } }
+                selection = ConversationModelSelection(profile, model, effort)
+            }
             else -> r.skipValue()
         } }
         return StoredConversation(id ?: throw IOException("历史会话缺少 id"), title, created, updated,
-            messages ?: throw IOException("历史会话缺少有效的 messages 字段"), agent)
+            messages ?: throw IOException("历史会话缺少有效的 messages 字段"), agent,
+            deepId ?: legacyConversationDeepId(requireNotNull(id), created), selection, inherited)
     }
 
     private fun readMessage(r: JsonReader): StoredMessage {

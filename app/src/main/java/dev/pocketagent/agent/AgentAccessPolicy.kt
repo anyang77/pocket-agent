@@ -17,7 +17,10 @@ object AgentAccessPolicy {
               binary files, and operations not supported by the dedicated file tools.
             - run_command accepts an absolute cwd in this mode. Full shell syntax is supported.
             - Do not refuse an authorized operation merely because its path is outside the workspace
-              or is a system path. Do not request redundant per-action approval in this mode.
+              or is a system path. Ordinary commands do not need per-action approval.
+            - Critical commands (root/device-wide deletion, formatting, raw disk writes, partition
+              table changes, factory reset) ALWAYS require explicit confirmation, even in full access.
+              Never hide or split such operations to evade the app's safety check.
             - Root is used automatically only when already granted. Android permissions, SELinux,
               read-only mounts, and actual OS capabilities still apply; report concrete failures.
             - Inspect before editing, back up important configuration, preserve ownership and modes,
@@ -26,7 +29,11 @@ object AgentAccessPolicy {
     } else {
         """
             Access mode: LIMITED (full access is not enabled).
-            - Workspace writes must use write_file or edit_file. Do not write to system paths.
+            - Workspace writes should use write_file or edit_file. Do not write to system paths
+              without approval. Ordinary workspace operations run without per-command approval in ASK.
+            - Access outside the workspace requires approval in ASK. cwd alone is not confinement;
+              dynamic/opaque shell operations may require approval when their scope cannot be verified.
+            - Critical destructive commands always require confirmation in every execution mode.
             - Follow the app's permission decisions and approval requests. Do not bypass disabled
               permissions through shell commands. Network access follows the network permission.
             - System-read tools are read-only and have their own path restrictions. Do not use the

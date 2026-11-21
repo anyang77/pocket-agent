@@ -1,5 +1,6 @@
 package dev.pocketagent.ui
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,19 +18,25 @@ internal class SessionStateRouter(initial: AppUiState) {
     val value: AppUiState
         @Synchronized get() {
             val id = contextId.get() ?: return visible.value
-            return visible.value.withConversation(sessions[id] ?: error("Unknown conversation $id"))
+            return visible.value.withConversation(sessions[id]
+                ?: throw CancellationException("Conversation $id was removed"))
         }
 
     @Synchronized
     fun update(transform: (AppUiState) -> AppUiState) {
         val id = contextId.get()
-        if (id == null || sessions[id] == null) {
-            val next = transform(visible.value)
+        // A delayed save may finish after its conversation was deleted. Never
+        // apply that callback to whichever conversation happens to be visible.
+        if (id != null && sessions[id] == null) return
+        if (id == null) {
+            val next = transform(visible.value).bindModelChange(visible.value)
             visible.value = next
             next.currentConversationId?.let { sessions[it] = next }
         } else {
-            val next = transform(value)
+            val before = value
+            val next = transform(before).bindModelChange(before)
             sessions[id] = next
+            if (next.modelProfiles != before.modelProfiles) visible.value = visible.value.copy(modelProfiles = next.modelProfiles)
             if (visible.value.currentConversationId == id) {
                 visible.value = visible.value.withConversation(next)
             }
@@ -66,6 +73,15 @@ internal class SessionStateRouter(initial: AppUiState) {
 
 internal fun AppUiState.withConversation(session: AppUiState): AppUiState = copy(
     currentConversationId = session.currentConversationId, chat = session.chat,
+    conversationModel = session.conversationModel, pendingResumeDeepId = session.pendingResumeDeepId,
+    settings = session.conversationModel?.let { selection ->
+        selection.resolve(modelProfiles, workspacePath) ?: settings.copy(model = selection.model,
+            reasoningEffort = selection.reasoningEffort, apiKey = "")
+    } ?: settings,
+    activeProfileId = session.conversationModel?.profileId ?: activeProfileId,
+    availableModels = session.availableModels, modelReasoningEfforts = session.modelReasoningEfforts,
+    modelsLoading = session.modelsLoading, modelsError = session.modelsError,
+    modelSettingsSaving = session.modelSettingsSaving, modelSettingsError = session.modelSettingsError,
     agentInputDraft = session.agentInputDraft, agentAttachments = session.agentAttachments,
     agentPlanMode = session.agentPlanMode, agentActiveTaskMode = session.agentActiveTaskMode,
     agentPlanToExecute = session.agentPlanToExecute, agentPlanWorkspacePath = session.agentPlanWorkspacePath,
@@ -79,3 +95,10 @@ internal fun AppUiState.withConversation(session: AppUiState): AppUiState = copy
     mentionFiles = session.mentionFiles, mentionFilesLoading = session.mentionFilesLoading,
     notice = session.notice ?: notice,
 )
+
+/** Capture explicit picker edits atomically with settings, before a session can be switched. */
+private fun AppUiState.bindModelChange(previous: AppUiState): AppUiState =
+    if (currentConversationId != null && (settings.model != previous.settings.model ||
+            settings.reasoningEffort != previous.settings.reasoningEffort || activeProfileId != previous.activeProfileId)) {
+        copy(conversationModel = dev.pocketagent.data.ConversationModelSelection(activeProfileId, settings.model, settings.reasoningEffort))
+    } else this

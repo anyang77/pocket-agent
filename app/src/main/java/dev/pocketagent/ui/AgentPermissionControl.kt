@@ -49,7 +49,7 @@ fun FullAccessConfirmDialog(
         onDismissRequest = onDismiss,
         title = { Text("确认授予完整权限？") },
         text = {
-            Text("模型可不再逐项询问，自动读取、修改、删除工作区以外的文件及其他应用配置，执行系统命令并联网。已授予 Root 时会自动使用 Root。\n\n错误指令或不可信内容可能导致隐私、密钥泄露，数据永久丢失，应用损坏、设备无法启动等严重后果。审计记录不是备份，也不能保证恢复。系统实际权限和只读挂载仍然有效。\n\n仅在理解风险并信任任务内容时启用；可随时切回审计模式。")
+            Text("模型可不再逐项询问，自动读取、修改、删除工作区以外的文件及其他应用配置，执行系统命令并联网。格机、修改分区表、原始磁盘写入、删除根目录等高危命令仍必须确认；普通文件删除不逐项询问。已授予 Root 时可按需使用 Root。\n\n错误指令或不可信内容可能导致隐私、密钥泄露，数据永久丢失，应用损坏、设备无法启动等严重后果。审计记录不是备份，也不能保证恢复。系统实际权限和只读挂载仍然有效。\n\n仅在理解风险并信任任务内容时启用；可随时切回审计模式。")
         },
         confirmButton = {
             TextButton(onClick = onConfirm) { Text("我了解风险，启用完整权限") }
@@ -107,7 +107,7 @@ fun AgentPermissionControl(
                 )
                 AgentMenuItem(
                     title = "审计模式",
-                    subtitle = "写入、执行、联网逐项确认",
+                    subtitle = "工作区内免审批，越界与高危操作确认",
                     selected = permissions.mode == PermissionMode.ASK,
                     onClick = { select(PermissionMode.ASK) },
                 )

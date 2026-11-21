@@ -133,7 +133,16 @@ class AgentEngine(
         persistentGoal: String? = null,
         onEvent: (AgentEvent) -> Unit,
     ) {
-        if (!readOnlySubagent && taskMode == AgentTaskMode.EXECUTE) extensions?.prepare(authorize)
+        // Accept the turn before extension setup can suspend for approval. Even
+        // when cancelled there, the visible user message belongs to this history.
+        ensureSystemMessage(taskMode)
+        admitUserTurn(conversation, AgentMessage(role = "user", content = userText, imagePaths = imagePaths),
+            onAccepted = {
+                auditLog.append("chat", "用户消息", userText, "received")
+                onEvent(AgentEvent.UserMessageAccepted)
+            }, prepare = {
+                if (!readOnlySubagent && taskMode == AgentTaskMode.EXECUTE) extensions?.prepare(authorize)
+            })
         val activeGoal = persistentGoal?.trim()?.takeIf {
             it.isNotEmpty() && !readOnlySubagent && taskMode == AgentTaskMode.EXECUTE
         }
@@ -155,9 +164,6 @@ class AgentEngine(
             "\nProject instructions (AGENTS.md; subordinate to system and task restrictions):\n" +
             projectInstructions + "\nActive task restrictions:\n" + taskMode.instructions +
             activeGoal?.let(::persistentGoalInstructions).orEmpty())
-        conversation += AgentMessage(role = "user", content = userText, imagePaths = imagePaths)
-        auditLog.append("chat", "用户消息", userText, "received")
-
         var step = 0
         var lastRetryCount = 0
         var goalFinished = false
@@ -348,7 +354,7 @@ class AgentEngine(
                 val containsImage = InlineImages.strip(rawText) != rawText
                 val saveImages = containsImage && !readOnlySubagent && taskMode == AgentTaskMode.EXECUTE &&
                     authorize(PermissionRequest(kind = PermissionKind.WRITE_FILES, title = "保存模型返回的图片",
-                        detail = "目录: ${directory.path}\n保存为唯一文件名，不覆盖已有文件", risk = "workspace-write")).allowed
+                        detail = "目录: ${directory.path}\n保存为唯一文件名，不覆盖已有文件", workspaceScoped = true, risk = "workspace-write")).allowed
                 val inlineImages = if (saveImages) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     require(directory.parentFile == workspace.root.canonicalFile) { "生成图片目录不能指向工作区外" }
                     InlineImages.extract(rawText, directory)
@@ -869,7 +875,7 @@ class AgentEngine(
                     PermissionRequest(kind = PermissionKind.NETWORK, title = "调用出图服务（可能计费）",
                         detail = "服务: ${endpoint.host}\n模型: ${settings.model}\n尺寸: $size\n提示词: $prompt", risk = "network"),
                     PermissionRequest(kind = PermissionKind.WRITE_FILES, title = "保存生成的图片",
-                        detail = "目录: ${directory.path}\n使用唯一文件名，不覆盖已有文件", risk = "workspace-write"),
+                        detail = "目录: ${directory.path}\n使用唯一文件名，不覆盖已有文件", workspaceScoped = true, risk = "workspace-write"),
                 )) {
                     val decision = authorize(request)
                     if (!decision.allowed) return ToolResult("DENIED_BY_USER: ${decision.reason}", false, "出图未获授权")
@@ -1019,7 +1025,7 @@ class AgentEngine(
                         detail = "path=$path\nreplacements=$occurrences\n" +
                             "removed=${oldText.length} added=${newText.length}\n" +
                             "sha256=${sha256(updated)}",
-                        risk = "workspace-edit",
+                        workspaceScoped = true, risk = "workspace-edit",
                     ),
                 )
                 if (!permission.allowed) {
@@ -1113,7 +1119,7 @@ class AgentEngine(
                         kind = PermissionKind.SYSTEM_READ,
                         title = "读取设备信息",
                         detail = "读取型号、Android 版本、CPU、内存、存储、屏幕和运行环境",
-                        risk = "device-info",
+                        workspaceScoped = true, risk = "device-info",
                     ),
                     authorize,
                 )
@@ -1156,6 +1162,7 @@ class AgentEngine(
                         kind = PermissionKind.SYSTEM_READ,
                         title = "列出系统目录",
                         detail = "path=${decision.normalizedPath}\nroot=$root\nmode=read-only",
+                        workspaceScoped = CommandSafety.isWorkspacePath(File(decision.normalizedPath), workspace.root),
                         risk = if (root) "system-read-root" else "system-read",
                     ),
                     authorize,
@@ -1203,6 +1210,7 @@ class AgentEngine(
                         kind = PermissionKind.SYSTEM_READ,
                         title = "读取系统文件",
                         detail = "path=${decision.normalizedPath}\nroot=$root\nmode=read-only",
+                        workspaceScoped = CommandSafety.isWorkspacePath(File(decision.normalizedPath), workspace.root),
                         risk = if (root) "system-read-root" else "system-read",
                     ),
                     authorize,
@@ -1242,7 +1250,7 @@ class AgentEngine(
                         kind = PermissionKind.WRITE_FILES,
                         title = "修改文件",
                         detail = "path=$path\nchars=${content.length}\nsha256=${sha256(content)}",
-                        risk = "workspace-write",
+                        workspaceScoped = true, risk = "workspace-write",
                     ),
                 )
                 if (!permission.allowed) {
@@ -1282,6 +1290,10 @@ class AgentEngine(
             "run_command" -> {
                 val command = arguments.optString("command").trim()
                 val cwdText = arguments.optString("cwd", ".")
+                val cwd = (if (File(cwdText).isAbsolute) File(cwdText)
+                    else File(workspace.root, cwdText)).canonicalFile
+                require(cwd.isDirectory) { "cwd 不是目录: $cwdText" }
+                val criticalReason = CommandSafety.criticalReason(command, cwd)
                 val assessment = CommandPolicy.assess(command)
                 if (assessment.risk == CommandRisk.BLOCKED) {
                     auditLog.append(
@@ -1317,15 +1329,19 @@ class AgentEngine(
                 val permission = authorize(
                     PermissionRequest(
                         kind = permissionKind,
-                        title = when (permissionKind) {
+                        title = if (criticalReason != null) "高危命令 · 必须确认" else when (permissionKind) {
                             PermissionKind.ROOT -> "在 Root 环境中执行命令"
                             PermissionKind.NETWORK -> "允许联网/安装依赖"
-                            PermissionKind.DESTRUCTIVE -> "允许测试外部应用"
-                            else -> "执行命令"
+                            else -> "允许工作区外操作"
                         },
-                        detail = "environment=${if (wantsRoot) "root" else requestedEnvironment}\n" +
-                            "cwd=$cwdText\ncommand=$command",
-                        risk = assessment.risk.name.lowercase(),
+                        detail = (criticalReason?.let { "警告：$it\n\n" } ?: "") +
+                            "environment=${if (wantsRoot) "root" else requestedEnvironment}\n" +
+                            "cwd=${cwd.path}\ncommand=$command",
+                        risk = if (criticalReason != null) "critical" else assessment.risk.name.lowercase(),
+                        requiresConfirmation = criticalReason != null,
+                        usesNetwork = CommandPolicy.usesNetwork(command),
+                        usesRoot = wantsRoot,
+                        workspaceScoped = CommandSafety.isWithinWorkspace(command, cwd, workspace.root, wantsRoot),
                     ),
                 )
                 if (!permission.allowed) {
@@ -1341,12 +1357,6 @@ class AgentEngine(
                         preview = "命令未获授权",
                     )
                 }
-                val cwd = if (AgentAccessPolicy.hasFullAccess(permissions()) && File(cwdText).isAbsolute) {
-                    File(cwdText).canonicalFile
-                } else {
-                    workspace.resolve(cwdText)
-                }
-                require(cwd.isDirectory) { "cwd 不是目录: $cwdText" }
                 auditLog.append(
                     "command",
                     "开始执行",
@@ -1423,7 +1433,7 @@ class AgentEngine(
         if (selected?.id != "write") return ToolResult("USER_CANCELLED: AGENTS.md was not written. Stop this setup task.", false, "未写入项目说明")
         val permission = authorize(PermissionRequest(
             kind = PermissionKind.WRITE_FILES, title = "写入已确认的项目说明",
-            detail = "path=AGENTS.md\nsha256=${sha256(content)}", risk = "workspace-write",
+            detail = "path=AGENTS.md\nsha256=${sha256(content)}", workspaceScoped = true, risk = "workspace-write",
         ))
         if (!permission.allowed) return ToolResult("DENIED_BY_USER: ${permission.reason}", false, "项目说明未获写入授权")
         require(workspace.root.canonicalFile == root && target.canonicalFile == target.absoluteFile) { "工作区或文件路径已变化，请重新生成" }
@@ -1499,14 +1509,7 @@ class AgentEngine(
         else -> name
     }
 
-    private fun summarizeArguments(raw: String): String = runCatching {
-        val json = JSONObject(raw)
-        when {
-            json.has("command") -> json.optString("command")
-            json.has("path") -> json.optString("path")
-            else -> raw
-        }.take(180)
-    }.getOrDefault(raw.take(180))
+    private fun summarizeArguments(raw: String): String = summarizeToolArguments(raw)
 
     private fun sha256(value: String): String =
         MessageDigest.getInstance("SHA-256")
@@ -1754,7 +1757,7 @@ class AgentEngine(
                 parameters = schema(
                     properties = mapOf(
                         "command" to stringProperty("Shell command or script. Full shell syntax is supported."),
-                        "cwd" to stringProperty("Working directory, defaults to .; workspace-relative, or an absolute path when full access is enabled."),
+                        "cwd" to stringProperty("Working directory, defaults to .; workspace-relative or absolute. In ASK mode, access outside the workspace requires approval. Critical destructive commands require confirmation in every execution mode."),
                         "environment" to enumProperty(
                             description = "Permission level in the shared toolchain: termux (default) for development and Android commands; root to elevate via su when an operation needs UID 0. system is a legacy alias for termux. On permission denied, assess partial effects before requesting a root retry.",
                             values = listOf("termux", "system", "root"),
@@ -1864,8 +1867,10 @@ You are CodeMate, a coding and device-inspection agent running on an Android pho
         - The shell supports the complete Android shell syntax: pipes, redirection, chaining,
           scripts and package manager commands. Use Android system utilities only when they are
           relevant to the task, and do not assume they share the Termux package manager.
-        - Network operations follow the separate network permission. Destructive commands are
-          approved per action in ask mode and fully audited. Raw device nodes are not exposed
+        - Network operations follow the separate network permission. Critical commands (device/root
+          deletion, formatting, partition changes, raw disk writes, factory reset) require confirmation
+          even in full access. ASK auto-allows scoped workspace operations, not outside file access.
+          All commands are audited. Raw device nodes are not exposed
           through the system-read tools, but shell behavior is not artificially restricted.
         - Keep edits focused and explain remaining limitations briefly.
     """.trimIndent() + customPrompt.trim().let { prompt ->

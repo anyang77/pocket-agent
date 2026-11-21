@@ -28,6 +28,8 @@ import dev.pocketagent.agent.PermissionDecision
 import dev.pocketagent.agent.PermissionKind
 import dev.pocketagent.agent.PermissionMode
 import dev.pocketagent.agent.PermissionRequest
+import dev.pocketagent.agent.AgentAuthorizationPolicy
+import dev.pocketagent.agent.AuthorizationAction
 import dev.pocketagent.agent.TokenEstimator
 import dev.pocketagent.agent.TokenUsage
 import dev.pocketagent.agent.ToolActivity
@@ -55,6 +57,9 @@ import dev.pocketagent.data.PermissionSettingsRepository
 import dev.pocketagent.data.SettingsRepository
 import dev.pocketagent.data.WorkspaceRepository
 import dev.pocketagent.data.StoredConversation
+import dev.pocketagent.data.ConversationModelSelection
+import dev.pocketagent.data.newConversationDeepId
+import dev.pocketagent.data.forkInto
 import dev.pocketagent.data.StoredMessage
 import dev.pocketagent.runtime.CommandRunner
 import dev.pocketagent.runtime.AgentForegroundService
@@ -305,7 +310,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             val settings = loaded.settings
             conversationCache.clear()
-            loaded.conversations.forEach { conversationCache[it.id] = it }
+            // Bind all legacy sessions now, so changing A cannot alter an unvisited B.
+            val legacyModel = ConversationModelSelection(loaded.activeProfileId, settings.model, settings.reasoningEffort)
+            loaded.conversations.forEach { conversationCache[it.id] =
+                if (it.modelSelection == null) it.copy(modelSelection = legacyModel) else it }
             nextConversationId.set(
                 (conversationCache.keys.maxOrNull() ?: 0L) + 1,
             )
@@ -721,13 +729,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             createdAt = now,
             updatedAt = now,
             messages = listOf(welcome.toStoredMessage()),
+            deepId = newConversationDeepId(),
+            modelSelection = selectedConversationModel(),
         )
         conversationCache[id] = conversation
         currentConversation = conversation
         currentConversationRepository.save(id)
-        _state.show(AppUiState(currentConversationId = id, chat = listOf(welcome)))
+        modelsRevision.incrementAndGet()
+        modelsJob?.cancel()
+        _state.show(AppUiState(currentConversationId = id, chat = listOf(welcome), conversationModel = conversation.modelSelection))
         _state.publish { it.copy(conversations = conversationSummaries()) }
         saveConversationCache()
+        refreshModels()
         auditLog.append("conversation", "新建对话", "id=$id")
     }
 
@@ -763,10 +776,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auditLog.append("conversation", "删除对话", "id=$id")
     }
 
+    private fun selectedConversationModel(): ConversationModelSelection = _state.value.let {
+        ConversationModelSelection(it.activeProfileId, it.settings.model, it.settings.reasoningEffort)
+    }
+
+    private fun rememberConversationModel() {
+        val id = _state.value.currentConversationId ?: return
+        val selection = selectedConversationModel()
+        _state.update { it.copy(conversationModel = selection) }
+        conversationCache[id]?.let { conversationCache[id] = it.copy(modelSelection = selection) }
+        saveConversationCache()
+    }
+
     private fun loadConversation(conversation: StoredConversation) {
+        modelsRevision.incrementAndGet()
+        modelsJob?.cancel()
+        val bound = conversation.modelSelection ?: selectedConversationModel()
+        val conversation = conversation.copy(modelSelection = bound)
+        conversationCache[conversation.id] = conversation
         currentConversation = conversation
         currentConversationRepository.save(conversation.id)
-        _state.snapshot(conversation.id)?.let { _state.show(it); return }
+        _state.snapshot(conversation.id)?.let {
+            _state.show(it)
+            _state.update { current -> current.copy(availableModels = emptyList(), modelReasoningEfforts = emptyMap(), modelsLoading = false) }
+            refreshModels()
+            return
+        }
         val chat = conversation.messages.mapNotNull { message ->
             val role = runCatching { ChatRole.valueOf(message.role) }.getOrNull() ?: return@mapNotNull null
             val content = if (role == ChatRole.ASSISTANT && message.activities.isEmpty()) {
@@ -812,13 +847,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         val composer = composerStore.load(conversation.id)
         nextId.updateAndGet { maxOf(it, (composer.queue.maxOfOrNull { item -> item.id } ?: 0L) + 1) }
-        _state.show(AppUiState(currentConversationId = conversation.id, chat = chat,
+        _state.show(AppUiState(currentConversationId = conversation.id, chat = chat, conversationModel = bound,
             agentInputDraft = composer.text, agentAttachments = composer.attachments,
             queuedPrompts = composer.queue, queuePaused = composer.queue.isNotEmpty()))
         val engine = runtimeFor(conversation.id).engine
         if (conversation.agentMessages.isNotEmpty()) engine.loadConversation(conversation.agentMessages)
         else engine.loadHistory(history)
 
+        refreshModels()
         auditLog.append(
             "conversation",
             "切换对话",
@@ -858,7 +894,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             updatedAt = chat.lastOrNull { it.role == ChatRole.USER }?.timestamp
                 ?: conversation.createdAt,
             messages = chat.map { it.toStoredMessage() },
-            agentMessages = history ?: runtimes[id]?.engine?.snapshotHistory().orEmpty(),
+            agentMessages = history ?: runtimes[id]?.engine?.snapshotHistory() ?: conversation.agentMessages,
+            modelSelection = session.conversationModel ?: conversation.modelSelection,
         )
         conversationCache[updated.id] = updated
         if (state.value.currentConversationId == id) currentConversation = updated
@@ -913,6 +950,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     updatedAt = conversation.updatedAt,
                     messageCount = conversation.messages.size,
                     preview = preview,
+                    deepId = conversation.deepId,
                 )
             }
 
@@ -1089,9 +1127,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshModels() {
+        val requested = _state.value
+        // A hidden conversation reloads its catalog when shown. Its pending save
+        // must not cancel whichever conversation is currently loading a catalog.
+        if (requested.currentConversationId != state.value.currentConversationId) return
         val revision = modelsRevision.incrementAndGet()
         modelsJob?.cancel()
-        val requested = _state.value
         val settings = requested.settings
         if (settings.apiKey.isBlank() || settings.baseUrl.isBlank()) {
             _state.update { it.copy(modelsLoading = false, availableModels = emptyList(),
@@ -1099,7 +1140,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         _state.update { it.copy(modelsLoading = true, modelsError = null) }
-        modelsJob = viewModelScope.launch {
+        modelsJob = viewModelScope.launch(requested.currentConversationId?.let(_state::context) ?: kotlin.coroutines.EmptyCoroutineContext) {
             try {
                 val infos = aiClient.listModels(settings)
                 modelSettingsMutex.withLock {
@@ -1107,11 +1148,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             _state.value.activeProfileId, settings, _state.value.settings)) return@withLock
                     val models = infos.map { it.id }.distinct()
                     val efforts = infos.associate { it.id to it.reasoningEfforts }
-                    val preferred = when {
-                        settings.model in models -> settings.model
-                        "deepseek-chat" in models -> "deepseek-chat"
-                        else -> models.firstOrNull() ?: settings.model
-                    }
+                    val preferred = settings.model
                     val updated = settings.copy(model = preferred, reasoningEffort =
                         dev.pocketagent.agent.ReasoningEffortSupport.retainSelection(settings.reasoningEffort, efforts[preferred].orEmpty(), settings.customReasoningEfforts))
                     val profiles = withContext(Dispatchers.IO) {
@@ -1138,7 +1175,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.modelSettingsSaving) return false
         val profileId = _state.value.activeProfileId
         // Persist in the ViewModel scope so navigating away cannot cancel an accepted save.
-        return viewModelScope.async { persistModelSettings(settings, profileId) }.await()
+        return viewModelScope.async(_state.value.currentConversationId?.let(_state::context) ?: kotlin.coroutines.EmptyCoroutineContext) { persistModelSettings(settings, profileId) }.await()
     }
 
     private suspend fun persistModelSettings(settings: AiSettings, profileId: String): Boolean {
@@ -1163,6 +1200,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         notice = if (current.agentRunning) "配置已保存，下次任务生效" else "模型配置已保存")
                 }
             }
+            rememberConversationModel()
             refreshModels()
             true
         } catch (error: CancellationException) { throw error }
@@ -1174,7 +1212,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun updateSelectedModel(transform: (AiSettings) -> AiSettings) {
         val profileId = _state.value.activeProfileId
-        viewModelScope.launch {
+        val sessionContext = _state.value.currentConversationId?.let(_state::context) ?: kotlin.coroutines.EmptyCoroutineContext
+        viewModelScope.launch(sessionContext) {
             try {
                 modelSettingsMutex.withLock {
                     if (_state.value.activeProfileId != profileId) return@withLock
@@ -1184,6 +1223,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         settingsRepository.loadProfiles()
                     }
                     _state.update { if (it.activeProfileId != profileId) it else it.copy(settings = updated, modelProfiles = profiles) }
+                    rememberConversationModel()
                 }
             } catch (error: CancellationException) { throw error }
             catch (error: Exception) { _state.update { it.copy(notice = error.message ?: "模型配置保存失败") } }
@@ -1202,18 +1242,27 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         else settings.copy(reasoningEffort = effort)
     }
 
-    private fun mutateModelProfiles(notice: String? = null, action: () -> Unit) {
-        viewModelScope.launch {
+    private fun mutateModelProfiles(notice: String? = null, selectActive: Boolean = false, action: () -> Unit) {
+        val sessionContext = _state.value.currentConversationId?.let(_state::context) ?: kotlin.coroutines.EmptyCoroutineContext
+        viewModelScope.launch(sessionContext) {
             try {
                 modelSettingsMutex.withLock {
+                    val selected = selectedConversationModel()
                     val (profiles, activeId) = withContext(Dispatchers.IO) {
                         action()
                         settingsRepository.loadProfiles() to settingsRepository.activeProfileId()
                     }
-                    val profile = profiles.first { it.id == activeId }
-                    _state.update { it.copy(settings = profile.toSettings(it.workspacePath), modelProfiles = profiles,
-                        activeProfileId = activeId, availableModels = emptyList(), modelReasoningEfforts = emptyMap(),
-                        modelsError = null, modelSettingsError = null, notice = notice) }
+                    _state.update { current ->
+                        // Rename/delete metadata is global; it must not pick the last
+                        // profile or model another conversation happened to select.
+                        val retained = if (selectActive) null else selected.resolve(profiles, current.workspacePath)
+                        val profile = profiles.first { it.id == activeId }
+                        current.copy(settings = retained ?: profile.toSettings(current.workspacePath), modelProfiles = profiles,
+                            activeProfileId = if (retained != null) selected.profileId else activeId,
+                            availableModels = emptyList(), modelReasoningEfforts = emptyMap(),
+                            modelsError = null, modelSettingsError = null, notice = notice)
+                    }
+                    rememberConversationModel()
                 }
                 refreshModels()
             } catch (error: CancellationException) { throw error }
@@ -1221,12 +1270,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun selectModelProfile(profileId: String) = mutateModelProfiles {
+    fun selectModelProfile(profileId: String) = mutateModelProfiles(selectActive = true) {
         settingsRepository.setActiveProfile(profileId)
     }
 
     fun createModelProfile(name: String, baseUrl: String, apiKey: String, contextWindow: Int) =
-        mutateModelProfiles("已创建模型配置 ${name.trim()}") {
+        mutateModelProfiles("已创建模型配置 ${name.trim()}", selectActive = true) {
             settingsRepository.createProfile(name, baseUrl, apiKey, contextWindow)
         }
 
@@ -1304,88 +1353,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun authorizeAgentAction(request: PermissionRequest): PermissionDecision {
-        val permissions = _state.value.permissions
-        fun deny(reason: String): PermissionDecision {
-            auditLog.append("permission", "拒绝 ${request.title}", request.detail, reason)
-            return PermissionDecision(false, reason)
-        }
-        fun allow(reason: String): PermissionDecision {
-            auditLog.append("permission", "允许 ${request.title}", request.detail, reason)
-            return PermissionDecision(true, reason)
-        }
-
-        return when (request.kind) {
-            PermissionKind.WRITE_FILES -> {
-                if (permissions.mode == PermissionMode.READ_ONLY) {
-                    deny("当前是只读模式")
-                } else if (!permissions.allowFileWrite) {
-                    deny("文件写入权限已关闭")
-                } else if (permissions.mode == PermissionMode.AUTO) {
-                    allow("自动模式")
-                } else {
-                    requestApproval(request)
-                }
-            }
-            PermissionKind.RUN_COMMAND -> {
-                if (permissions.mode == PermissionMode.READ_ONLY) {
-                    deny("当前是只读模式")
-                } else if (!permissions.allowCommands) {
-                    deny("命令执行权限已关闭")
-                } else if (permissions.mode == PermissionMode.AUTO) {
-                    allow("自动模式")
-                } else {
-                    requestApproval(request)
-                }
-            }
-            PermissionKind.NETWORK -> {
-                if (permissions.mode == PermissionMode.READ_ONLY) {
-                    deny("当前是只读模式")
-                } else if (!permissions.allowCommands) {
-                    deny("命令执行权限已关闭")
-                } else if (permissions.mode == PermissionMode.AUTO && permissions.allowNetwork) {
-                    allow("自动模式且已允许联网")
-                } else {
-                    requestApproval(request)
-                }
-            }
-            PermissionKind.DESTRUCTIVE -> {
-                if (permissions.mode == PermissionMode.READ_ONLY) {
-                    deny("当前是只读模式")
-                } else if (!permissions.allowCommands) {
-                    deny("命令执行权限已关闭")
-                } else if (permissions.mode == PermissionMode.AUTO) {
-                    allow("自动模式 · 命令已完整审计")
-                } else {
-                    requestApproval(request)
-                }
-            }
-            PermissionKind.SYSTEM_READ -> {
-                if (!permissions.allowSystemRead) {
-                    deny("系统信息读取权限已关闭")
-                } else if (permissions.mode == PermissionMode.ASK) {
-                    requestApproval(request)
-                } else {
-                    allow(
-                        if (autoUseRoot) {
-                            "允许系统只读 · 自动使用 Root"
-                        } else {
-                            "允许系统只读 · 普通 App 权限"
-                        },
-                    )
-                }
-            }
-            PermissionKind.ROOT -> {
-                if (!_state.value.capabilities.rootGranted) {
-                    deny("尚未授予 Root 权限")
-                } else if (permissions.mode == PermissionMode.READ_ONLY) {
-                    deny("当前是只读模式")
-                } else if (permissions.mode == PermissionMode.ASK) {
-                    requestApproval(request)
-                } else {
-                    allow("自动模式 · 明确请求 Root 环境")
-                }
-            }
-        }
+        val assessment = AgentAuthorizationPolicy.assess(
+            request, _state.value.permissions, _state.value.capabilities.rootGranted,
+        )
+        if (assessment.action == AuthorizationAction.CONFIRM) return requestApproval(request)
+        val allowed = assessment.action == AuthorizationAction.ALLOW
+        auditLog.append("permission", "${if (allowed) "允许" else "拒绝"} ${request.title}", request.detail, assessment.reason)
+        return PermissionDecision(allowed, assessment.reason)
     }
 
     private suspend fun requestApproval(request: PermissionRequest): PermissionDecision {
@@ -2944,11 +2918,58 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun resumeConversation(deepId: String, confirmed: Boolean = false) {
+        val targetId = _state.value.currentConversationId ?: return
+        if (_state.value.agentRunning) {
+            _state.update { it.copy(notice = "请先停止或等待当前任务结束") }; return
+        }
+        val source = conversationCache.values.firstOrNull { it.deepId.equals(deepId, ignoreCase = true) }
+        if (source == null || source.id == targetId) {
+            _state.update { it.copy(notice = if (source == null) "本地找不到该会话 ID；ID 不会自动下载其他设备的历史" else "不能继承当前对话自身") }; return
+        }
+        if (runtimes[source.id]?.job != null) {
+            _state.update { it.copy(notice = "源对话正在运行，请结束后再继承") }; return
+        }
+        if (!confirmed && (_state.value.chat.any { it.role == ChatRole.USER } || _state.value.queuedPrompts.isNotEmpty())) {
+            _state.update { it.copy(pendingResumeDeepId = source.deepId) }; return
+        }
+        flushComposer()
+        persistCurrentConversation()
+        composerSaveJobs.remove(targetId)?.cancel()
+        val target = conversationCache[targetId] ?: return
+        val fork = source.forkInto(target) { nextId.getAndIncrement() }
+        runtimes.remove(targetId)?.close()
+        _state.remove(targetId)
+        composerStore.delete(targetId)
+        conversationCache[targetId] = fork
+        loadConversation(fork)
+        _state.update { it.copy(agentInputDraft = "", pendingResumeDeepId = null,
+            notice = "已继承源对话上下文；源对话未改变，继续使用本对话模型") }
+        _state.publish { it.copy(conversations = conversationSummaries()) }
+        saveConversationCache()
+        auditLog.append("conversation", "继承会话", "source=${source.deepId} target=${target.deepId}")
+    }
+
     fun sendChat(text: String) {
         if (_state.value.agentAttachmentsLoading) {
             _state.update { it.copy(notice = "附件正在准备，请稍候") }; return
         }
         val command = text.trim().lowercase()
+        if (command == "/resume-cancel") {
+            _state.update { it.copy(pendingResumeDeepId = null) }; return
+        }
+        if (command.startsWith("/resume-confirm ")) {
+            val id = command.substringAfter(' ').trim()
+            if (_state.value.pendingResumeDeepId == id) resumeConversation(id, confirmed = true)
+            return
+        }
+        if (_state.value.agentAttachments.isEmpty() && (command == "/resume" || command.startsWith("/resume ") ||
+                Regex("[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}").matches(command))) {
+            val id = command.removePrefix("/resume").trim()
+            if (id.isEmpty()) _state.update { it.copy(notice = "用法：/resume 会话ID，或直接发送历史里的会话ID") }
+            else resumeConversation(id)
+            return
+        }
         if (_state.value.agentAttachments.isEmpty() && command in setOf("/plan", "/review", "/init", "/compact")) {
             if (!_state.value.agentRunning) _state.update { it.copy(agentInputDraft = "") }
             runComposerCommand(command)
@@ -3147,6 +3168,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 if (entry.id == assistantId) entry.copy(attachments = entry.attachments + images) else entry
                             }) }
                         }
+                        AgentEvent.UserMessageAccepted -> persistCurrentConversation()
                         is AgentEvent.AssistantText -> {
                             setTurnPhase(assistantId, AgentTurnPhase.RECEIVING)
                             appendChat(assistantId, event.text)

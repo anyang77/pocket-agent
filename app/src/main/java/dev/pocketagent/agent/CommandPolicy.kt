@@ -24,7 +24,7 @@ object CommandPolicy {
         Regex("""\b(pip|pip3)\s+(install|uninstall)\b"""),
         Regex("""\b(npm|pnpm|yarn)\s+(install|add|remove|uninstall|publish)\b"""),
         Regex("""\b(apt|apt-get|pkg)\s+(install|update|upgrade|remove|uninstall)\b"""),
-        Regex("""\b(git\s+(clone|pull|fetch)|cargo\s+install|go\s+install)\b"""),
+        Regex("""\b(git\s+(clone|pull|fetch|push)|cargo\s+install|go\s+install)\b"""),
     )
 
     private val destructivePatterns = listOf(
@@ -49,6 +49,12 @@ object CommandPolicy {
         "gcc", "clang", "cc", "make", "cmake", "javac", "gradle", "./gradlew",
         "mkdir", "touch", "cp", "mv",
     )
+
+    /** Independent of risk ordering: a destructive command may also use the network. */
+    fun usesNetwork(command: String): Boolean {
+        val normalized = command.replace("'", "").replace("\"", "").replace("\\", "")
+        return networkPatterns.any { it.containsMatchIn(normalized) }
+    }
 
     fun assess(command: String): CommandAssessment {
         val normalized = command.trim()

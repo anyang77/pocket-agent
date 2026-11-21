@@ -37,6 +37,9 @@ data class StoredConversation(
     val updatedAt: Long,
     val messages: List<StoredMessage>,
     val agentMessages: List<AgentMessage> = emptyList(),
+    val deepId: String = legacyConversationDeepId(id, createdAt),
+    val modelSelection: ConversationModelSelection? = null,
+    val inheritedFromDeepId: String? = null,
 )
 
 data class ConversationSummary(
@@ -45,6 +48,7 @@ data class ConversationSummary(
     val updatedAt: Long,
     val messageCount: Int,
     val preview: String,
+    val deepId: String = "",
 )
 
 class ConversationStore(context: Context) {

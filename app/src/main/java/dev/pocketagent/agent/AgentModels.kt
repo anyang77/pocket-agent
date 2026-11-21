@@ -200,6 +200,8 @@ data class ToolDefinition(
 )
 
 sealed interface AgentEvent {
+    /** Emitted before extension setup can suspend; persist the newly accepted turn. */
+    data object UserMessageAccepted : AgentEvent
     data class AssistantText(val text: String) : AgentEvent
     /** Replace this request's streamed preview with sanitized text and local image attachments. */
     data class AssistantImages(val text: String, val streamedChars: Int, val imagePaths: List<String>) : AgentEvent

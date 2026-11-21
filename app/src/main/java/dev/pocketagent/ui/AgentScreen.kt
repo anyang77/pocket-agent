@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -214,6 +215,14 @@ fun AgentScreen(
         )
     }
 
+    state.pendingResumeDeepId?.let { deepId ->
+        AlertDialog(onDismissRequest = { onSend("/resume-cancel") },
+            title = { Text("继承并替换当前对话？") },
+            text = { Text("当前消息和待执行队列将被源会话的上下文副本替换，原有目标历史不会保留。源会话不受影响，本对话继续使用当前模型。") },
+            confirmButton = { TextButton(onClick = { onSend("/resume-confirm $deepId") }) { Text("确认替换并继承") } },
+            dismissButton = { TextButton(onClick = { onSend("/resume-cancel") }) { Text("取消") } })
+    }
+
     state.pendingApproval?.let { pending ->
         AlertDialog(
             onDismissRequest = onDenyPending,
@@ -232,7 +241,9 @@ fun AgentScreen(
                 TextButton(onClick = onApprovePending) {
                     Text(
                         "允许一次",
-                        color = if (pending.risk == "destructive" || pending.risk == "network") {
+                        color = if (pending.risk == "critical") {
+                            MaterialTheme.colorScheme.error
+                        } else if (pending.risk == "destructive" || pending.risk == "network") {
                             MaterialTheme.colorScheme.tertiary
                         } else {
                             MaterialTheme.colorScheme.primary
@@ -401,6 +412,7 @@ fun AgentScreen(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationHistory(
     conversations: List<ConversationSummary>,
@@ -411,6 +423,7 @@ private fun ConversationHistory(
     onNew: () -> Unit,
 ) {
     val formatter = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
+    val context = LocalContext.current
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -419,7 +432,7 @@ private fun ConversationHistory(
             Column(Modifier.weight(1f)) {
                 Text("历史对话", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "${conversations.size} 个本地会话",
+                    "${conversations.size} 个本地会话 · 长按 ID 复制，可发到其他对话继承",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -483,6 +496,20 @@ private fun ConversationHistory(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
+                                )
+                                val copyDeepId = {
+                                    (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                                        .setPrimaryClip(ClipData.newPlainText("深度 ID", conversation.deepId))
+                                    android.widget.Toast.makeText(context, "深度 ID 已复制", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                                Text(
+                                    "深度 ID：${conversation.deepId}",
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).combinedClickable(
+                                        onClickLabel = "复制深度 ID", onClick = copyDeepId,
+                                        onLongClickLabel = "复制深度 ID", onLongClick = copyDeepId,
+                                    ).padding(vertical = 8.dp),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                                 Text(
                                     formatter.format(Date(conversation.updatedAt)),
@@ -1234,7 +1261,7 @@ private fun InlineActivity(
     val running = activity.success == null
     val hasFileChanges = activity.name in setOf("edit_file", "write_file")
     val diffColors = fileDiffColors()
-    val hasDetails = activity.result?.isNotBlank() == true || activity.fileDiff.isNotBlank()
+    val hasDetails = activity.summary.isNotBlank() || activity.result?.isNotBlank() == true || activity.fileDiff.isNotBlank()
     val visual = activityVisual(activity.name)
     LaunchedEffect(expanded) {
         if (expanded) {
@@ -1330,16 +1357,27 @@ private fun InlineActivity(
                     }
                 }
                 Text(
-                    activity.summary.replace(Regex(""" · \+\d+ -\d+$"""), ""),
+                    (if (activity.name == "run_command" && activity.summary.startsWith("environment="))
+                        activity.summary.lineSequence().drop(2).joinToString(separator = 10.toChar().toString())
+                        else activity.summary)
+                        .replace(Regex(""" · \+\d+ -\d+$"""), ""),
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontFamily = FontFamily.Monospace,
                         lineHeight = 16.sp,
                     ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = if (expanded) 4 else 2,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (expanded) {
+                    if (activity.summary.isNotBlank()) SelectionContainer {
+                        Text(activity.summary,
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(rememberScrollState()),
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, lineHeight = 16.sp))
+                    }
+                    if (running && activity.result.isNullOrBlank()) Text(
+                        if (activity.name == "run_command") "命令正在执行，暂未输出…" else "工具正在执行，暂未返回结果…",
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (activity.fileDiff.isNotBlank()) {
                         FileDiffContent(activity.fileDiff, outputScrollState)
                         if (activity.success == false) Text(activity.result.orEmpty(), color = MaterialTheme.colorScheme.error,
@@ -1418,38 +1456,58 @@ private fun activityVisual(name: String): ActivityVisual = when (name) {
 internal fun MarkdownContent(content: String) {
     val blocks = remember(content) { parseMarkdown(content) }
     val inlineCodeBackground = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        blocks.forEach { block ->
-            when (block) {
-                is MarkdownBlock.Heading -> RichText(
-                    text = block.text,
-                    inlineCodeBackground = inlineCodeBackground,
-                    style = if (block.level <= 2) {
-                        MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-                    } else {
-                        MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
-                    },
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+    SelectionContainer {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            blocks.forEach { block ->
+                when (block) {
+                    is MarkdownBlock.Heading -> RichText(
+                        text = block.text,
+                        inlineCodeBackground = inlineCodeBackground,
+                        style = if (block.level <= 2) {
+                            MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                        } else {
+                            MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                        },
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
 
-                is MarkdownBlock.Paragraph -> RichText(
-                    text = block.text,
-                    inlineCodeBackground = inlineCodeBackground,
-                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                    is MarkdownBlock.Paragraph -> RichText(
+                        text = block.text,
+                        inlineCodeBackground = inlineCodeBackground,
+                        style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
 
-                is MarkdownBlock.ListItem -> {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    is MarkdownBlock.ListItem -> {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Text(
+                                block.marker,
+                                modifier = Modifier.width(20.dp),
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            RichText(
+                                text = block.text,
+                                modifier = Modifier.weight(1f),
+                                inlineCodeBackground = inlineCodeBackground,
+                                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+
+                    is MarkdownBlock.Quote -> Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.Top,
                     ) {
                         Text(
-                            block.marker,
-                            modifier = Modifier.width(20.dp),
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontWeight = FontWeight.SemiBold,
-                            ),
+                            "▎",
+                            style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.primary,
                         )
                         RichText(
@@ -1457,47 +1515,29 @@ internal fun MarkdownContent(content: String) {
                             modifier = Modifier.weight(1f),
                             inlineCodeBackground = inlineCodeBackground,
                             style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                            color = MaterialTheme.colorScheme.onSurface,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                }
 
-                is MarkdownBlock.Quote -> Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    Text(
-                        "▎",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    RichText(
-                        text = block.text,
-                        modifier = Modifier.weight(1f),
-                        inlineCodeBackground = inlineCodeBackground,
-                        style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                    is MarkdownBlock.Code -> CopyableCodeBlock(block.language, block.code)
 
-                is MarkdownBlock.Code -> CopyableCodeBlock(block.language, block.code)
-
-                is MarkdownBlock.Table -> Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                ) {
-                    Text(
-                        block.text,
-                        modifier = Modifier
-                            .padding(11.dp)
-                            .horizontalScroll(rememberScrollState()),
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            lineHeight = 19.sp,
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        softWrap = false,
-                    )
+                    is MarkdownBlock.Table -> Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    ) {
+                        Text(
+                            block.text,
+                            modifier = Modifier
+                                .padding(11.dp)
+                                .horizontalScroll(rememberScrollState()),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                lineHeight = 19.sp,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            softWrap = false,
+                        )
+                    }
                 }
             }
         }
