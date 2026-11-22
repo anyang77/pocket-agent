@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
+import dev.pocketagent.BuildConfig
 import dev.pocketagent.data.AiSettings
 import dev.pocketagent.ui.theme.ThemePreference
 
@@ -361,7 +362,7 @@ fun SettingsScreen(
         item { ExtensionsSettings(state, extensionActions) }
         item {
             Text(
-                "CodeMate · 0.1.0",
+                "CodeMate · ${BuildConfig.VERSION_NAME}",
                 modifier = Modifier.padding(vertical = 8.dp),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

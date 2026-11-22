@@ -6,7 +6,11 @@ Android 上的移动 AI 编码工作区原型。目标不是复刻桌面 IDE，�
 读取项目 -> 修改文件 -> 运行构建/测试 -> 读取错误 -> 继续修复
 ```
 
-当前版本是第一个可安装里程碑：
+当前版本：**0.2.0**（`versionCode = 2`）。
+
+发行时同步递增 `app/build.gradle.kts` 中的 `versionName` 和 `versionCode`；设置页、欢迎页和 MCP 客户端版本统一读取 `BuildConfig.VERSION_NAME`。
+
+当前可安装版本包含：
 
 - Jetpack Compose 手机界面
 - `/sdcard` 工作区、目录搜索、文件/目录增删改和安全确认删除

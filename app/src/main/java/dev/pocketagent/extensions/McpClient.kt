@@ -1,5 +1,6 @@
 package dev.pocketagent.extensions
 
+import dev.pocketagent.BuildConfig
 import dev.pocketagent.agent.ToolDefinition
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -168,7 +169,7 @@ class McpClient(private val config: McpServerConfig, private val transport: McpT
                 .put("capabilities", JSONObject().apply {
                     if (transport is StdioMcpTransport) put("roots", JSONObject().put("listChanged", false))
                 })
-                .put("clientInfo", JSONObject().put("name", "CodeMate").put("version", "0.1.0")))
+                .put("clientInfo", JSONObject().put("name", "CodeMate").put("version", BuildConfig.VERSION_NAME)))
             val version = result.getString("protocolVersion")
             require(version in listOf("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")) { "不支持 MCP 协议版本 $version" }
             (transport as? HttpMcpTransport)?.protocol = version
