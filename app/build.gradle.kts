@@ -30,8 +30,8 @@ android {
         // directly at runtime. Shared storage still uses the all-files app-op on
         // Android 11+ because the workspace needs arbitrary project directories.
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         buildConfigField(

@@ -33,6 +33,54 @@ class CommandSafetyTest {
         }
     }
 
+    @Test fun sourceSearchOutputCommentsAndHeredocsAreNotExecutedCommands() {
+        listOf(
+            "rg 'mkfs|fdisk|fastboot|factory_reset' app/src",
+            "echo '\$(rm -rf /)'", "echo '`rm -rf /`'",
+            "grep -n 'rm -rf /' README.md",
+            "echo 'mkfs.ext4 /dev/block/sda'",
+            "printf '%s\\n' 'rm -rf /data/*'",
+            "python3 -c 'print(\"fdisk /dev/block/sda\")'",
+            "git diff -- app/src/main/java/CommandSafety.kt",
+            "# rm -rf /\npwd # mkfs.ext4 /dev/block/sda",
+            "cat <<'EOF' > example.txt\nrm -rf /\nmkfs.ext4 /dev/block/sda\nEOF\npwd",
+            "rm \"\$TARGET\"", "rm -f build/{a,b}.tmp", "rm ~/project/build.tmp",
+            "cat /dev/block/sda > backup.img", "cp /dev/block/sda backup.img",
+        ).forEach { assertNull(it, CommandSafety.criticalReason(it, root)) }
+    }
+
+    @Test fun readOnlyDeviceQueriesAndNormalSystemCommandsAreNotCritical() {
+        listOf("fdisk -l /dev/block/sda", "sfdisk --dump /dev/block/sda",
+            "sgdisk --print /dev/block/sda", "parted /dev/block/sda print",
+            "wipefs /dev/block/sda", "wipefs -n /dev/block/sda", "mkfs.ext4 --help",
+            "command -v fdisk", "find / -name rm -exec echo {} +",
+            "fastboot devices", "fastboot getvar all", "fastboot reboot", "adb devices",
+            "reboot", "settings put system screen_brightness 100", "pm clear com.example",
+            "rm -rf build; ./gradlew assembleDebug").forEach {
+            assertNull(it, CommandSafety.criticalReason(it, root))
+            val request = PermissionRequest(PermissionKind.DESTRUCTIVE, "command", it,
+                requiresConfirmation = CommandSafety.criticalReason(it, root) != null)
+            assertEquals(it, AuthorizationAction.ALLOW, AgentAuthorizationPolicy.assess(request,
+                AgentPermissions(mode = PermissionMode.AUTO, allowNetwork = true), true).action)
+        }
+    }
+
+    @Test fun actualDestructiveCommandsStillMatchAfterQuotingAndWrappers() {
+        listOf("r'm' -rf /", "env LC_ALL=C busybox rm -rf /data/*",
+            "sh -c 'rm -rf /'", "su -c 'sh -c \"rm -rf /\"'",
+            "echo \"\$(rm -rf /)\"", "echo `rm -rf /`",
+            "echo hello; mkfs.ext4 /dev/block/sda", "pwd # comment\nrm -rf /",
+            "cat <<EOF\nsample text\nEOF\nrm -rf /",
+            "cd /data && rm -rf *", "rm -rf /data/../system/*",
+            "tee /dev/block/by-name/boot < image", "cp image /dev/block/by-name/boot",
+            "sgdisk --print --zap-all /dev/block/sda", "sgdisk --print -G /dev/block/sda", "wipefs -a /dev/block/sda",
+            "fastboot flash boot boot.img", "fastboot -w", "fastboot flashing unlock",
+            "parted /dev/block/sda mklabel gpt print", "fdisk /dev/block/sda",
+            "cmd activity broadcast -a android.intent.action.FACTORY_RESET").forEach {
+            assertNotNull(it, CommandSafety.criticalReason(it, root))
+        }
+    }
+
     @Test fun workspaceOperationsSkipAskApproval() {
         listOf("pwd", "ls -la", "rm -rf build", "git diff", "./gradlew test", "npm run build",
             "mkdir -p output; cp src/a output/a", "cat src/a | grep hello > output/a").forEach {
